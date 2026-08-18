@@ -125,7 +125,7 @@ function Workspace() {
 
 function App() {
   const client = useMemo(() => createAuthClient(apiUrl), []);
-  return <PwaRuntime config={{ appName: 'helloworld', version: '0.1.1', updateIntervalMs: 60 * 60 * 1000 }}><AuthProvider client={client}><AuthGuard fallback={<Access />}><Workspace /></AuthGuard></AuthProvider></PwaRuntime>;
+  return <PwaRuntime config={{ appName: 'helloworld', version: '0.1.2', serviceWorkerUrl: '/sw.js?v=0.1.2', updateIntervalMs: 5 * 60 * 1000 }}><AuthProvider client={client}><AuthGuard fallback={<Access />}><Workspace /></AuthGuard></AuthProvider></PwaRuntime>;
 }
 
 export default App;
