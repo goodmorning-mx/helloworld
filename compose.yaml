@@ -1,0 +1,58 @@
+# Local development only. Coolify deployments use three independent resources:
+# frontend Application from /frontend, backend Application from /backend, and a native PostgreSQL resource.
+services:
+  frontend:
+    build:
+      context: ./frontend
+      args:
+        VITE_API_URL: ${VITE_API_URL:-http://localhost:8000}
+    # Local development port mapping only; public Coolify URLs must not include ports.
+    ports:
+      - "8080:80"
+    depends_on:
+      backend:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1/"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+  backend:
+    build: ./backend
+    environment:
+      APP_NAME: ${APP_NAME:-GoodMorning MVP Template API}
+      APP_ENV: ${APP_ENV:-local}
+      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:5173,http://localhost:8080}
+      DATABASE_URL: ${DATABASE_URL:-postgresql+psycopg://goodmorning:goodmorning_local_password@postgres:5432/goodmorning_mvp}
+    # Local development port mapping only; public Coolify URLs must not include ports.
+    ports:
+      - "8000:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=3)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-goodmorning_mvp}
+      POSTGRES_USER: ${POSTGRES_USER:-goodmorning}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-goodmorning_local_password}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+volumes:
+  postgres_data:
