@@ -31,7 +31,10 @@
 .drawing-line { stroke: #f5b84b; stroke-width: 2; }
 .drawing-ruler { stroke: #3b82f6; stroke-width: 2; stroke-dasharray: 6 4; }
 .drawing-label { fill: #f5b84b; font: 12px 'DM Mono', monospace; }
-.drawing-handle { fill: #f5b84b; stroke: #11151a; stroke-width: 2; pointer-events: none; }
+.drawing-handle { fill: #f5b84b; stroke: #fff; stroke-width: 3; pointer-events: none; }
+.handle-long { fill: #22c55e; }
+.handle-short { fill: #ef4444; }
+.handle-ruler { fill: #3b82f6; }
 .measurement-box { fill: #3b82f622; stroke: #3b82f6; stroke-width: 1.5; }
 .measurement-label { fill: #93c5fd; font: 12px 'DM Mono', monospace; }
 .position-profit { fill: #64d39a22; stroke: #64d39a; stroke-width: 1; }

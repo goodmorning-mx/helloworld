@@ -45,6 +45,7 @@ function Workspace() {
   type Drawing = { type: 'line' | 'ruler' | 'long' | 'short'; start: ChartPoint; end: ChartPoint };
   const [drawings, setDrawings] = useState<Drawing[]>([]);
   const [drawingStart, setDrawingStart] = useState<ChartPoint | null>(null);
+  const [drawingEnd, setDrawingEnd] = useState<ChartPoint | null>(null);
   const [resizeStart, setResizeStart] = useState<{ index: number; endpoint: 'start' | 'end' } | null>(null);
 
   useEffect(() => {
@@ -170,7 +171,16 @@ function Workspace() {
     event.stopPropagation();
     event.currentTarget.setPointerCapture(event.pointerId);
     const chartPoint = chartPointFromEvent(event);
-    if (chartPoint) setDrawingStart(chartPoint);
+    if (chartPoint) {
+      setDrawingStart(chartPoint);
+      setDrawingEnd(chartPoint);
+    }
+  }
+
+  function updateDrawing(event: PointerEvent<HTMLDivElement>) {
+    if (!tool || !drawingStart || resizeStart) return;
+    const point = chartPointFromEvent(event);
+    if (point) setDrawingEnd(point);
   }
 
   function finishDrawing(event: PointerEvent<HTMLDivElement>) {
@@ -189,10 +199,11 @@ function Workspace() {
     if (!end) return;
     setDrawings(current => [...current, { type: tool, start: drawingStart, end }]);
     setDrawingStart(null);
+    setDrawingEnd(null);
     if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
   }
 
-  const renderDrawing = (drawing: Drawing, index: number) => {
+  const renderDrawing = (drawing: Drawing, index: number | string) => {
     void viewportRevision;
     const chart = chartRef.current;
     const candles = candlesRef.current;
@@ -204,8 +215,9 @@ function Workspace() {
     if (startX === null || endX === null || startY === null || endY === null) return null;
     const start = { x: startX, y: startY };
     const end = { x: endX, y: endY };
-    const handles = drawingHandles(drawing, index);
-    const handleNodes = handles.map((handle, handleIndex) => <circle key={handleIndex} cx={handle.x} cy={handle.y} r="5" className="drawing-handle" />);
+    const handles = drawingHandles(drawing, typeof index === 'number' ? index : -1);
+    const handleClass = drawing.type === 'long' ? 'drawing-handle handle-long' : drawing.type === 'short' ? 'drawing-handle handle-short' : drawing.type === 'ruler' ? 'drawing-handle handle-ruler' : 'drawing-handle';
+    const handleNodes = handles.map((handle, handleIndex) => <circle key={handleIndex} cx={handle.x} cy={handle.y} r="7" className={handleClass} />);
     const pricePercent = ((drawing.end.price - drawing.start.price) / drawing.start.price) * 100;
     if (drawing.type === 'line') return <g key={index}><line x1={start.x} y1={start.y} x2={end.x} y2={end.y} className="drawing-line" /><text x={(start.x + end.x) / 2} y={(start.y + end.y) / 2 - 8} className="drawing-label">{pricePercent >= 0 ? '+' : ''}{pricePercent.toFixed(2)}%</text>{handleNodes}</g>;
     if (drawing.type === 'ruler') {
@@ -231,8 +243,8 @@ function Workspace() {
   </select><span className="chart-source">BINANCE · 1M</span><div className="chart-tools" aria-label="Herramientas del gráfico">
     {([['line', '╱', 'Línea'], ['ruler', '↔', 'Regla'], ['long', 'L', 'Long'], ['short', 'S', 'Short']] as const).map(([key, icon, label]) => <button key={key} className={tool === key ? 'tool-active' : ''} onClick={() => setTool(tool === key ? null : key)} aria-label={label} title={label}>{icon}</button>)}
     <button onClick={() => setDrawings([])} aria-label="Borrar dibujos" title="Borrar dibujos">×</button>
-  </div><button className="logout-button" onClick={() => void auth.logout()} aria-label="Cerrar sesión">Salir</button></div><div ref={chartStage} className={`chart-stage ${tool ? 'drawing-mode' : ''}`} onPointerDownCapture={startDrawing} onPointerUpCapture={finishDrawing} onPointerCancelCapture={() => setDrawingStart(null)}>
-    <div ref={chartContainer} className="candlestick-chart" /><svg className="drawing-overlay" viewBox={`0 0 ${stageSize.width} ${stageSize.height}`} preserveAspectRatio="none" aria-hidden="true">{drawings.map(renderDrawing)}</svg>
+  </div><button className="logout-button" onClick={() => void auth.logout()} aria-label="Cerrar sesión">Salir</button></div><div ref={chartStage} className={`chart-stage ${tool ? 'drawing-mode' : ''}`} onPointerDownCapture={startDrawing} onPointerMoveCapture={updateDrawing} onPointerUpCapture={finishDrawing} onPointerCancelCapture={() => { setDrawingStart(null); setDrawingEnd(null); }}>
+    <div ref={chartContainer} className="candlestick-chart" /><svg className="drawing-overlay" viewBox={`0 0 ${stageSize.width} ${stageSize.height}`} preserveAspectRatio="none" aria-hidden="true">{drawings.map(renderDrawing)}{tool && drawingStart && drawingEnd && renderDrawing({ type: tool, start: drawingStart, end: drawingEnd }, 'preview')}</svg>
   </div></main>;
 }
 
