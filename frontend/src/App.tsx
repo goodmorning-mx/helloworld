@@ -84,7 +84,8 @@ function Workspace() {
     if (!tool || !drawingStart) return;
     event.preventDefault();
     event.stopPropagation();
-    setDrawings(current => [...current, { type: tool, start: drawingStart, end: pointFromEvent(event) }]);
+    const end = pointFromEvent(event);
+    setDrawings(current => [...current, { type: tool, start: drawingStart, end }]);
     setDrawingStart(null);
   }
 
