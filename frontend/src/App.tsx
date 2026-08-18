@@ -143,15 +143,11 @@ function Workspace() {
     if (!stop) return [];
     const left = Math.min(start.x, end.x);
     const right = Math.max(start.x, end.x);
-    const profitTop = Math.min(start.y, end.y);
-    const profitBottom = Math.max(start.y, end.y);
-    const riskTop = Math.min(start.y, stop.y);
-    const riskBottom = Math.max(start.y, stop.y);
     return [
-      { x: left, y: profitTop, index, endpoint: 'end' as const },
-      { x: right, y: profitTop, index, endpoint: 'end' as const },
-      { x: left, y: riskBottom, index, endpoint: 'stop' as const },
-      { x: right, y: riskBottom, index, endpoint: 'stop' as const },
+      { x: left, y: end.y, index, endpoint: 'end' as const },
+      { x: right, y: end.y, index, endpoint: 'end' as const },
+      { x: left, y: stop.y, index, endpoint: 'stop' as const },
+      { x: right, y: stop.y, index, endpoint: 'stop' as const },
     ];
   }
 
