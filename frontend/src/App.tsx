@@ -42,11 +42,13 @@ function Workspace() {
   const [tool, setTool] = useState<'line' | 'ruler' | 'long' | 'short' | null>(null);
   const [viewportRevision, setViewportRevision] = useState(0);
   type ChartPoint = { time: UTCTimestamp; price: number };
-  type Drawing = { type: 'line' | 'ruler' | 'long' | 'short'; start: ChartPoint; end: ChartPoint };
+  type Drawing = { type: 'line' | 'ruler' | 'long' | 'short'; start: ChartPoint; end: ChartPoint; stop?: ChartPoint };
   const [drawings, setDrawings] = useState<Drawing[]>([]);
   const [drawingStart, setDrawingStart] = useState<ChartPoint | null>(null);
   const [drawingEnd, setDrawingEnd] = useState<ChartPoint | null>(null);
-  const [resizeStart, setResizeStart] = useState<{ index: number; endpoint: 'start' | 'end' } | null>(null);
+  const [resizeStart, setResizeStart] = useState<{ index: number; endpoint: 'start' | 'end' | 'stop' } | null>(null);
+  const [selectedDrawing, setSelectedDrawing] = useState<number | null>(null);
+  const [moveStart, setMoveStart] = useState<{ index: number; point: ChartPoint; drawing: Drawing } | null>(null);
 
   useEffect(() => {
     if (!chartStage.current) return;
@@ -136,15 +138,20 @@ function Workspace() {
       { ...start, index, endpoint: 'start' as const },
       { ...end, index, endpoint: 'end' as const },
     ];
+    const stopPrice = drawing.stop?.price ?? drawing.start.price - (drawing.end.price - drawing.start.price) / 4;
+    const stop = screenPoint(drawing.stop ?? { time: drawing.end.time, price: stopPrice });
+    if (!stop) return [];
     const left = Math.min(start.x, end.x);
     const right = Math.max(start.x, end.x);
-    const top = drawing.type === 'long' ? Math.min(start.y, end.y) : start.y;
-    const bottom = drawing.type === 'long' ? start.y : Math.max(start.y, end.y);
+    const profitTop = Math.min(start.y, end.y);
+    const profitBottom = Math.max(start.y, end.y);
+    const riskTop = Math.min(start.y, stop.y);
+    const riskBottom = Math.max(start.y, stop.y);
     return [
-      { x: left, y: top, index, endpoint: 'start' as const },
-      { x: right, y: top, index, endpoint: 'end' as const },
-      { x: left, y: bottom, index, endpoint: 'start' as const },
-      { x: right, y: bottom, index, endpoint: 'end' as const },
+      { x: left, y: profitTop, index, endpoint: 'end' as const },
+      { x: right, y: profitTop, index, endpoint: 'end' as const },
+      { x: left, y: riskBottom, index, endpoint: 'stop' as const },
+      { x: right, y: riskBottom, index, endpoint: 'stop' as const },
     ];
   }
 
@@ -152,6 +159,25 @@ function Workspace() {
     for (let index = drawings.length - 1; index >= 0; index -= 1) {
       const handle = drawingHandles(drawings[index], index).find(candidate => Math.hypot(candidate.x - point.x, candidate.y - point.y) <= 12);
       if (handle) return handle;
+    }
+    return null;
+  }
+
+  function drawingAt(point: { x: number; y: number }) {
+    for (let index = drawings.length - 1; index >= 0; index -= 1) {
+      const drawing = drawings[index];
+      const start = screenPoint(drawing.start);
+      const end = screenPoint(drawing.end);
+      if (!start || !end) continue;
+      if (drawing.type === 'line' || drawing.type === 'ruler') {
+        const length = Math.hypot(end.x - start.x, end.y - start.y) || 1;
+        const distance = Math.abs((end.y - start.y) * point.x - (end.x - start.x) * point.y + end.x * start.y - end.y * start.x) / length;
+        if (distance <= 10) return index;
+      } else {
+        const stopPrice = drawing.stop?.price ?? drawing.start.price - (drawing.end.price - drawing.start.price) / 4;
+        const stop = screenPoint(drawing.stop ?? { time: drawing.end.time, price: stopPrice });
+        if (stop && point.x >= Math.min(start.x, end.x) - 8 && point.x <= Math.max(start.x, end.x) + 8 && point.y >= Math.min(start.y, end.y, stop.y) - 8 && point.y <= Math.max(start.y, end.y, stop.y) + 8) return index;
+      }
     }
     return null;
   }
@@ -164,9 +190,23 @@ function Workspace() {
       event.stopPropagation();
       event.currentTarget.setPointerCapture(event.pointerId);
       setResizeStart({ index: handle.index, endpoint: handle.endpoint });
+      setSelectedDrawing(handle.index);
       return;
     }
-    if (!tool) return;
+    if (!tool) {
+      const hit = drawingAt(point);
+      setSelectedDrawing(hit);
+      if (hit !== null) {
+        const chartPoint = chartPointFromEvent(event);
+        if (chartPoint) {
+          event.preventDefault();
+          event.stopPropagation();
+          event.currentTarget.setPointerCapture(event.pointerId);
+          setMoveStart({ index: hit, point: chartPoint, drawing: drawings[hit] });
+        }
+      }
+      return;
+    }
     event.preventDefault();
     event.stopPropagation();
     event.currentTarget.setPointerCapture(event.pointerId);
@@ -178,16 +218,35 @@ function Workspace() {
   }
 
   function updateDrawing(event: PointerEvent<HTMLDivElement>) {
+    if (moveStart) {
+      const point = chartPointFromEvent(event);
+      if (!point) return;
+      const timeDelta = Number(point.time) - Number(moveStart.point.time);
+      const priceDelta = point.price - moveStart.point.price;
+      const shift = (value: ChartPoint): ChartPoint => ({ time: (Number(value.time) + timeDelta) as UTCTimestamp, price: value.price + priceDelta });
+      setDrawings(current => current.map((drawing, index) => index === moveStart.index ? { start: shift(moveStart.drawing.start), end: shift(moveStart.drawing.end), stop: moveStart.drawing.stop ? shift(moveStart.drawing.stop) : undefined, type: drawing.type } : drawing));
+      return;
+    }
     if (!tool || !drawingStart || resizeStart) return;
     const point = chartPointFromEvent(event);
     if (point) setDrawingEnd(point);
   }
 
   function finishDrawing(event: PointerEvent<HTMLDivElement>) {
+    if (moveStart) {
+      updateDrawing(event);
+      setMoveStart(null);
+      if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
+      return;
+    }
     if (resizeStart) {
       const end = chartPointFromEvent(event);
       const resize = resizeStart;
-      if (end) setDrawings(current => current.map((drawing, index) => index === resize.index ? { ...drawing, [resize.endpoint]: end } : drawing));
+      if (end) setDrawings(current => current.map((drawing, index) => {
+        if (index !== resize.index) return drawing;
+        if (resize.endpoint === 'end' && drawing.stop) return { ...drawing, end, stop: { ...drawing.stop, time: end.time } };
+        return { ...drawing, [resize.endpoint]: end };
+      }));
       setResizeStart(null);
       if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
       return;
@@ -197,7 +256,9 @@ function Workspace() {
     event.stopPropagation();
     const end = chartPointFromEvent(event);
     if (!end) return;
-    setDrawings(current => [...current, { type: tool, start: drawingStart, end }]);
+    const stopPrice = drawingStart.price - (end.price - drawingStart.price) / 4;
+    const stop = tool === 'long' || tool === 'short' ? { time: end.time, price: stopPrice } : undefined;
+    setDrawings(current => [...current, { type: tool, start: drawingStart, end, stop }]);
     setDrawingStart(null);
     setDrawingEnd(null);
     if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
@@ -219,13 +280,14 @@ function Workspace() {
     const handleClass = drawing.type === 'long' ? 'drawing-handle handle-long' : drawing.type === 'short' ? 'drawing-handle handle-short' : drawing.type === 'ruler' ? 'drawing-handle handle-ruler' : 'drawing-handle';
     const handleNodes = handles.map((handle, handleIndex) => <circle key={handleIndex} cx={handle.x} cy={handle.y} r="7" className={handleClass} />);
     const pricePercent = ((drawing.end.price - drawing.start.price) / drawing.start.price) * 100;
-    if (drawing.type === 'line') return <g key={index}><line x1={start.x} y1={start.y} x2={end.x} y2={end.y} className="drawing-line" /><text x={(start.x + end.x) / 2} y={(start.y + end.y) / 2 - 8} className="drawing-label">{pricePercent >= 0 ? '+' : ''}{pricePercent.toFixed(2)}%</text>{handleNodes}</g>;
+    const selectedClass = typeof index === 'number' && selectedDrawing === index ? 'drawing-selected' : undefined;
+    if (drawing.type === 'line') return <g key={index} className={selectedClass}><line x1={start.x} y1={start.y} x2={end.x} y2={end.y} className="drawing-line" /><text x={(start.x + end.x) / 2} y={(start.y + end.y) / 2 - 8} className="drawing-label">{pricePercent >= 0 ? '+' : ''}{pricePercent.toFixed(2)}%</text>{handleNodes}</g>;
     if (drawing.type === 'ruler') {
       const minutes = Math.round(Math.abs(Number(drawing.end.time) - Number(drawing.start.time)) / 60);
       const priceDelta = Math.abs(drawing.end.price - drawing.start.price);
       const left = Math.min(start.x, end.x);
       const top = Math.min(start.y, end.y);
-      return <g key={index}><rect x={left} y={top} width={Math.max(1, Math.abs(end.x - start.x))} height={Math.max(1, Math.abs(end.y - start.y))} className="measurement-box" /><text x={left + 8} y={top + 18} className="measurement-label">{minutes} min · {priceDelta.toFixed(2)} · {pricePercent >= 0 ? '+' : ''}{pricePercent.toFixed(2)}%</text>{handleNodes}</g>;
+      return <g key={index} className={selectedClass}><rect x={left} y={top} width={Math.max(1, Math.abs(end.x - start.x))} height={Math.max(1, Math.abs(end.y - start.y))} className="measurement-box" /><text x={left + 8} y={top + 18} className="measurement-label">{minutes} min · {priceDelta.toFixed(2)} · {pricePercent >= 0 ? '+' : ''}{pricePercent.toFixed(2)}%</text>{handleNodes}</g>;
     }
     const left = Math.min(start.x, end.x);
     const width = Math.max(1, Math.abs(end.x - start.x));
@@ -233,9 +295,18 @@ function Workspace() {
     const riskTop = drawing.type === 'long' ? start.y : Math.min(start.y, end.y);
     const profitHeight = Math.abs(start.y - end.y);
     const riskHeight = Math.abs(start.y - end.y);
+    const stopPrice = drawing.stop?.price ?? drawing.start.price - (drawing.end.price - drawing.start.price) / 4;
+    const stop = screenPoint(drawing.stop ?? { time: drawing.end.time, price: stopPrice });
+    if (!stop) return null;
     const targetPercent = pricePercent * (drawing.type === 'long' ? 1 : -1);
-    const percentLabel = `${targetPercent >= 0 ? '+' : ''}${targetPercent.toFixed(2)}%`;
-    return <g key={index}><rect x={left} y={profitTop} width={width} height={profitHeight} className={drawing.type === 'long' ? 'position-profit' : 'position-risk'} /><rect x={left} y={riskTop} width={width} height={riskHeight} className={drawing.type === 'long' ? 'position-risk' : 'position-profit'} /><line x1={left} y1={start.y} x2={left + width} y2={start.y} className="position-entry" /><text x={left + 8} y={profitTop + 18} className="position-label">{drawing.type === 'long' ? percentLabel : `-${Math.abs(targetPercent).toFixed(2)}%`}</text><text x={left + 8} y={riskTop + 18} className="position-label">{drawing.type === 'long' ? `-${Math.abs(targetPercent).toFixed(2)}%` : percentLabel}</text>{handleNodes}</g>;
+    const riskPercent = ((stopPrice - drawing.start.price) / drawing.start.price) * 100 * (drawing.type === 'long' ? 1 : -1);
+    const targetLabel = `${targetPercent >= 0 ? '+' : ''}${targetPercent.toFixed(2)}%`;
+    const riskLabel = `${riskPercent >= 0 ? '+' : ''}${riskPercent.toFixed(2)}%`;
+    const targetTop = Math.min(start.y, end.y);
+    const targetHeight = Math.abs(start.y - end.y);
+    const stopTop = Math.min(start.y, stop.y);
+    const stopHeight = Math.abs(start.y - stop.y);
+    return <g key={index} className={selectedClass}><rect x={left} y={targetTop} width={width} height={targetHeight} className={targetPercent >= 0 ? 'position-profit' : 'position-risk'} /><rect x={left} y={stopTop} width={width} height={stopHeight} className={riskPercent <= 0 ? 'position-risk' : 'position-profit'} /><line x1={left} y1={start.y} x2={left + width} y2={start.y} className="position-entry" /><text x={left + 8} y={targetTop + 18} className="position-label">TP {targetLabel}</text><text x={left + 8} y={stopTop + 18} className="position-label">SL {riskLabel}</text>{handleNodes}</g>;
   };
 
   return <main className="trading-shell"><div className="symbol-bar"><select className="symbol-select" value={symbol} onChange={event => setSymbol(event.target.value)} aria-label="Símbolo">
@@ -243,7 +314,7 @@ function Workspace() {
   </select><span className="chart-source">BINANCE · 1M</span><div className="chart-tools" aria-label="Herramientas del gráfico">
     {([['line', '╱', 'Línea'], ['ruler', '↔', 'Regla'], ['long', 'L', 'Long'], ['short', 'S', 'Short']] as const).map(([key, icon, label]) => <button key={key} className={tool === key ? 'tool-active' : ''} onClick={() => setTool(tool === key ? null : key)} aria-label={label} title={label}>{icon}</button>)}
     <button onClick={() => setDrawings([])} aria-label="Borrar dibujos" title="Borrar dibujos">×</button>
-  </div><button className="logout-button" onClick={() => void auth.logout()} aria-label="Cerrar sesión">Salir</button></div><div ref={chartStage} className={`chart-stage ${tool ? 'drawing-mode' : ''}`} onPointerDownCapture={startDrawing} onPointerMoveCapture={updateDrawing} onPointerUpCapture={finishDrawing} onPointerCancelCapture={() => { setDrawingStart(null); setDrawingEnd(null); }}>
+  </div><button className="logout-button" onClick={() => void auth.logout()} aria-label="Cerrar sesión">Salir</button></div><div ref={chartStage} className={`chart-stage ${tool ? 'drawing-mode' : ''}`} onPointerDownCapture={startDrawing} onPointerMoveCapture={updateDrawing} onPointerUpCapture={finishDrawing} onPointerCancelCapture={() => { setDrawingStart(null); setDrawingEnd(null); setMoveStart(null); setResizeStart(null); }}>
     <div ref={chartContainer} className="candlestick-chart" /><svg className="drawing-overlay" viewBox={`0 0 ${stageSize.width} ${stageSize.height}`} preserveAspectRatio="none" aria-hidden="true">{drawings.map(renderDrawing)}{tool && drawingStart && drawingEnd && renderDrawing({ type: tool, start: drawingStart, end: drawingEnd }, 'preview')}</svg>
   </div></main>;
 }
