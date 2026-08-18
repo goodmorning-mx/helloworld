@@ -12,6 +12,7 @@
   "dependencies": {
     "@goodmorning/gm-agent": "git+https://github.com/goodmorning-mx/gm-agent.git#dev",
     "@goodmorning/gm-auth": "git+https://github.com/goodmorning-mx/gm-auth.git#dev",
+    "@goodmorning/gm-billing": "git+https://github.com/goodmorning-mx/gm-billing.git#dev",
     "@goodmorning/gm-pwa": "git+https://github.com/goodmorning-mx/gm-pwa.git#dev",
     "@vitejs/plugin-react": "5.0.0",
     "lightweight-charts": "5.0.8",
