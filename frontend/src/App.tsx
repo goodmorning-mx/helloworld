@@ -100,6 +100,7 @@ function Workspace() {
     const end = pointFromEvent(event);
     setDrawings(current => [...current, { type: tool, start: drawingStart, end }]);
     setDrawingStart(null);
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
   }
 
   const renderDrawing = (drawing: { type: 'line' | 'ruler' | 'long' | 'short'; start: { x: number; y: number }; end: { x: number; y: number } }, index: number) => {
@@ -118,7 +119,7 @@ function Workspace() {
   </select><span className="chart-source">BINANCE · 1M</span><div className="chart-tools" aria-label="Herramientas del gráfico">
     {([['line', '╱', 'Línea'], ['ruler', '↔', 'Regla'], ['long', 'L', 'Long'], ['short', 'S', 'Short']] as const).map(([key, icon, label]) => <button key={key} className={tool === key ? 'tool-active' : ''} onClick={() => setTool(tool === key ? null : key)} aria-label={label} title={label}>{icon}</button>)}
     <button onClick={() => setDrawings([])} aria-label="Borrar dibujos" title="Borrar dibujos">×</button>
-  </div></div><div ref={chartStage} className={`chart-stage ${tool ? 'drawing-mode' : ''}`} onPointerDown={startDrawing} onPointerUp={finishDrawing} onPointerCancel={() => setDrawingStart(null)}>
+  </div></div><div ref={chartStage} className={`chart-stage ${tool ? 'drawing-mode' : ''}`} onPointerDownCapture={startDrawing} onPointerUpCapture={finishDrawing} onPointerCancelCapture={() => setDrawingStart(null)}>
     <div ref={chartContainer} className="candlestick-chart" /><svg className="drawing-overlay" viewBox={`0 0 ${stageSize.width} ${stageSize.height}`} preserveAspectRatio="none" aria-hidden="true">{drawings.map(renderDrawing)}</svg>
   </div></main>;
 }
