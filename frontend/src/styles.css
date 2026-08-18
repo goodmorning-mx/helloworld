@@ -26,6 +26,7 @@
 .chart-stage.drawing-mode { cursor: crosshair; }
 .candlestick-chart { width: 100%; height: 100%; }
 .drawing-overlay { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; overflow: visible; }
+.chart-stage.drawing-mode .drawing-overlay { pointer-events: all; }
 .drawing-line { stroke: #f5b84b; stroke-width: 2; }
 .drawing-ruler { stroke: #f5b84b; stroke-width: 2; stroke-dasharray: 6 4; }
 .drawing-label { fill: #f5b84b; font: 12px 'DM Mono', monospace; }
