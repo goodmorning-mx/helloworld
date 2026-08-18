@@ -4,7 +4,10 @@ import { AuthGuard, AuthProvider, createAuthClient, useAuth } from '@goodmorning
 import { PwaRuntime, PwaStatus } from '@goodmorning/gm-pwa';
 import './styles.css';
 
-const apiUrl = import.meta.env.VITE_API_URL ?? 'http://localhost:8000';
+const configuredApiUrl = import.meta.env.VITE_API_URL ?? 'http://localhost:8000';
+const apiUrl = configuredApiUrl === '/api' && window.location.hostname === 'dev.helloworld.goodmorning.mx'
+  ? 'https://api.dev.helloworld.goodmorning.mx'
+  : configuredApiUrl;
 
 function Access() {
   const auth = useAuth();
