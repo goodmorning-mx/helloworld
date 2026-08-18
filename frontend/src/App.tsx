@@ -1,7 +1,7 @@
-import { useMemo, useState, type FormEvent } from 'react';
-import { AgentChat, type AgentClient } from '@goodmorning/gm-agent';
+import { useEffect, useMemo, useRef, useState, type FormEvent } from 'react';
 import { AuthGuard, AuthProvider, createAuthClient, useAuth } from '@goodmorning/gm-auth';
-import { PwaRuntime, PwaStatus } from '@goodmorning/gm-pwa';
+import { PwaRuntime } from '@goodmorning/gm-pwa';
+import { CandlestickSeries, createChart, type UTCTimestamp } from 'lightweight-charts';
 import './styles.css';
 
 const configuredApiUrl = import.meta.env.VITE_API_URL ?? 'http://localhost:8000';
@@ -32,20 +32,40 @@ function Access() {
 }
 
 function Workspace() {
-  const auth = useAuth();
-  const [tab, setTab] = useState('terminal');
-  const agentClient = useMemo<AgentClient>(() => async (prompt, conversationId, confirmation) => {
-    const response = await fetch(`${apiUrl}/agent/chat`, { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${auth.accessToken}` }, body: JSON.stringify({ prompt, conversation_id: conversationId, confirm: Boolean(confirmation) }) });
-    if (!response.ok) throw new Error('El agente no está disponible.');
-    return response.json();
-  }, [auth.accessToken]);
-  return <main className="terminal-shell">
-    <header className="topbar"><div><span className="live-dot" /> HELLOWORLD <small>AI TERMINAL</small></div><div className="top-actions"><PwaStatus /><button className="avatar" onClick={() => void auth.logout()}>{(auth.identity?.name ?? 'U').slice(0, 1).toUpperCase()}</button></div></header>
-    <section className="welcome"><div><p className="eyebrow">BUENOS DÍAS, {auth.identity?.name?.split(' ')[0].toUpperCase()}</p><h1>¿Qué quieres analizar?</h1></div><span className="market-state">● MERCADO PAPER</span></section>
-    <section className="market-strip">{['BTCUSDT', 'ETHUSDT', 'XAUUSD'].map((symbol, index) => <button key={symbol} className={`quote ${index === 0 ? 'quote-active' : ''}`}><span>{symbol}</span><strong>{index === 0 ? '67,421.20' : index === 1 ? '3,482.90' : '2,386.40'}</strong><em className={index === 1 ? 'down' : ''}>{index === 1 ? '−1.24%' : '+2.18%'}</em></button>)}</section>
-    <section className="main-grid"><div className="chart-card"><div className="card-head"><div><span className="muted">BTCUSDT · BINANCE</span><h2>67,421.20 <em>+2.18%</em></h2></div><select defaultValue="1H"><option>15M</option><option>1H</option><option>4H</option><option>1D</option></select></div><div className="chart"><div className="chart-grid" /><svg viewBox="0 0 700 260" preserveAspectRatio="none" aria-label="BTCUSDT price chart"><polyline points="0,220 35,198 70,210 110,166 145,184 180,142 220,158 255,110 295,128 330,92 365,118 400,76 440,101 480,62 520,84 555,42 590,64 625,32 660,50 700,18" fill="none" stroke="#f5b84b" strokeWidth="3" vectorEffect="non-scaling-stroke" /></svg><div className="price-line" /></div><div className="chart-foot"><span>RSI 14 <b>61.8</b></span><span>EMA 20 <b>67,102</b></span><span>ATR <b>842.4</b></span></div></div><div className="agent-card"><div className="card-head"><div><span className="muted">ASISTENTE</span><h2>Habla con tu estrategia</h2></div><span className="ai-badge">✦ AI</span></div><AgentChat client={agentClient} title="" /></div></section>
-    <nav className="bottom-nav">{[['terminal', '⌁', 'Terminal'], ['watchlist', '☆', 'Lista'], ['orders', '⌁', 'Órdenes'], ['account', '◉', 'Cuenta']].map(([key, icon, label]) => <button key={key} className={tab === key ? 'nav-active' : ''} onClick={() => setTab(key)}><span>{icon}</span>{label}</button>)}</nav>
-  </main>;
+  const chartContainer = useRef<HTMLDivElement>(null);
+  const [symbol, setSymbol] = useState('BTCUSDT');
+
+  useEffect(() => {
+    if (!chartContainer.current) return;
+    const chart = createChart(chartContainer.current, {
+      autoSize: true,
+      layout: { background: { color: '#080a0d' }, textColor: '#89909b' },
+      grid: { vertLines: { color: '#151a20' }, horzLines: { color: '#151a20' } },
+      rightPriceScale: { borderColor: '#252a31' },
+      timeScale: { borderColor: '#252a31', timeVisible: true, secondsVisible: false },
+    });
+    const candles = chart.addSeries(CandlestickSeries, { upColor: '#64d39a', downColor: '#f27e7e', borderVisible: false, wickUpColor: '#64d39a', wickDownColor: '#f27e7e' });
+    let active = true;
+    const stream = new WebSocket(`wss://stream.binance.com:9443/ws/${symbol.toLowerCase()}@kline_1m`);
+    fetch(`https://api.binance.com/api/v3/klines?symbol=${symbol}&interval=1m&limit=500`)
+      .then(response => response.json())
+      .then(rows => {
+        if (!active || !Array.isArray(rows)) return;
+        candles.setData(rows.map(row => ({ time: Math.floor(Number(row[0]) / 1000) as UTCTimestamp, open: Number(row[1]), high: Number(row[2]), low: Number(row[3]), close: Number(row[4]) })));
+        chart.timeScale().fitContent();
+      })
+      .catch(() => undefined);
+    stream.onmessage = event => {
+      if (!active) return;
+      const candle = JSON.parse(event.data).k;
+      candles.update({ time: Math.floor(candle.t / 1000) as UTCTimestamp, open: Number(candle.o), high: Number(candle.h), low: Number(candle.l), close: Number(candle.c) });
+    };
+    return () => { active = false; stream.close(); chart.remove(); };
+  }, [symbol]);
+
+  return <main className="trading-shell"><div className="symbol-bar"><select className="symbol-select" value={symbol} onChange={event => setSymbol(event.target.value)} aria-label="Símbolo">
+    {['BTCUSDT', 'ETHUSDT', 'BNBUSDT', 'SOLUSDT', 'XRPUSDT', 'DOGEUSDT'].map(option => <option key={option}>{option}</option>)}
+  </select><span className="chart-source">BINANCE · 1M</span></div><div ref={chartContainer} className="candlestick-chart" /></main>;
 }
 
 function App() {
