@@ -37,7 +37,6 @@ function Workspace() {
   const [tool, setTool] = useState<'line' | 'ruler' | 'long' | 'short' | null>(null);
   const [drawings, setDrawings] = useState<Array<{ type: 'line' | 'ruler' | 'long' | 'short'; start: { x: number; y: number }; end: { x: number; y: number } }>>([]);
   const [drawingStart, setDrawingStart] = useState<{ x: number; y: number } | null>(null);
-  const [draft, setDraft] = useState<{ x: number; y: number } | null>(null);
 
   useEffect(() => {
     if (!chartContainer.current) return;
@@ -79,19 +78,16 @@ function Workspace() {
     event.currentTarget.setPointerCapture(event.pointerId);
     const point = pointFromEvent(event);
     setDrawingStart(point);
-    setDraft(point);
   }
 
   function finishDrawing(event: PointerEvent<HTMLDivElement>) {
-    if (!tool || !drawingStart || !draft) return;
+    if (!tool || !drawingStart) return;
     event.preventDefault();
     event.stopPropagation();
     setDrawings(current => [...current, { type: tool, start: drawingStart, end: pointFromEvent(event) }]);
     setDrawingStart(null);
-    setDraft(null);
   }
 
-  const activeDrawing = draft && drawingStart && tool ? { type: tool, start: drawingStart, end: draft } : null;
   const renderDrawing = (drawing: { type: 'line' | 'ruler' | 'long' | 'short'; start: { x: number; y: number }; end: { x: number; y: number } }, index: number) => {
     const { start, end } = drawing;
     if (drawing.type === 'line') return <line key={index} x1={start.x} y1={start.y} x2={end.x} y2={end.y} className="drawing-line" />;
@@ -108,8 +104,8 @@ function Workspace() {
   </select><span className="chart-source">BINANCE · 1M</span><div className="chart-tools" aria-label="Herramientas del gráfico">
     {([['line', '╱', 'Línea'], ['ruler', '↔', 'Regla'], ['long', 'L', 'Long'], ['short', 'S', 'Short']] as const).map(([key, icon, label]) => <button key={key} className={tool === key ? 'tool-active' : ''} onClick={() => setTool(tool === key ? null : key)} aria-label={label} title={label}>{icon}</button>)}
     <button onClick={() => setDrawings([])} aria-label="Borrar dibujos" title="Borrar dibujos">×</button>
-  </div></div><div className={`chart-stage ${tool ? 'drawing-mode' : ''}`} onPointerDown={startDrawing} onPointerMove={event => { if (tool && draft) { event.preventDefault(); event.stopPropagation(); setDraft(pointFromEvent(event)); } }} onPointerUp={finishDrawing}>
-    <div ref={chartContainer} className="candlestick-chart" /><svg className="drawing-overlay" aria-hidden="true">{drawings.map(renderDrawing)}{activeDrawing && renderDrawing(activeDrawing, drawings.length)}</svg>
+  </div></div><div className={`chart-stage ${tool ? 'drawing-mode' : ''}`} onPointerDown={startDrawing} onPointerUp={finishDrawing} onPointerCancel={() => setDrawingStart(null)}>
+    <div ref={chartContainer} className="candlestick-chart" /><svg className="drawing-overlay" aria-hidden="true">{drawings.map(renderDrawing)}</svg>
   </div></main>;
 }
 
