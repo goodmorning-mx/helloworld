@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type FormEvent } from 'react';
+import { useEffect, useMemo, useRef, useState, type FormEvent, type PointerEvent } from 'react';
 import { AuthGuard, AuthProvider, createAuthClient, useAuth } from '@goodmorning/gm-auth';
 import { PwaRuntime } from '@goodmorning/gm-pwa';
 import { CandlestickSeries, createChart, type UTCTimestamp } from 'lightweight-charts';
@@ -34,6 +34,10 @@ function Access() {
 function Workspace() {
   const chartContainer = useRef<HTMLDivElement>(null);
   const [symbol, setSymbol] = useState('BTCUSDT');
+  const [tool, setTool] = useState<'line' | 'ruler' | 'long' | 'short' | null>(null);
+  const [drawings, setDrawings] = useState<Array<{ type: 'line' | 'ruler' | 'long' | 'short'; start: { x: number; y: number }; end: { x: number; y: number } }>>([]);
+  const [drawingStart, setDrawingStart] = useState<{ x: number; y: number } | null>(null);
+  const [draft, setDraft] = useState<{ x: number; y: number } | null>(null);
 
   useEffect(() => {
     if (!chartContainer.current) return;
@@ -63,9 +67,48 @@ function Workspace() {
     return () => { active = false; stream.close(); chart.remove(); };
   }, [symbol]);
 
+  function pointFromEvent(event: PointerEvent<HTMLDivElement>) {
+    const bounds = event.currentTarget.getBoundingClientRect();
+    return { x: event.clientX - bounds.left, y: event.clientY - bounds.top };
+  }
+
+  function startDrawing(event: PointerEvent<HTMLDivElement>) {
+    if (!tool) return;
+    event.preventDefault();
+    event.currentTarget.setPointerCapture(event.pointerId);
+    const point = pointFromEvent(event);
+    setDrawingStart(point);
+    setDraft(point);
+  }
+
+  function finishDrawing(event: PointerEvent<HTMLDivElement>) {
+    if (!tool || !drawingStart || !draft) return;
+    event.preventDefault();
+    setDrawings(current => [...current, { type: tool, start: drawingStart, end: pointFromEvent(event) }]);
+    setDrawingStart(null);
+    setDraft(null);
+  }
+
+  const activeDrawing = draft && drawingStart && tool ? { type: tool, start: drawingStart, end: draft } : null;
+  const renderDrawing = (drawing: { type: 'line' | 'ruler' | 'long' | 'short'; start: { x: number; y: number }; end: { x: number; y: number } }, index: number) => {
+    const { start, end } = drawing;
+    if (drawing.type === 'line') return <line key={index} x1={start.x} y1={start.y} x2={end.x} y2={end.y} className="drawing-line" />;
+    if (drawing.type === 'ruler') return <g key={index}><line x1={start.x} y1={start.y} x2={end.x} y2={end.y} className="drawing-ruler" /><text x={(start.x + end.x) / 2} y={(start.y + end.y) / 2 - 8} className="drawing-label">{Math.round(Math.hypot(end.x - start.x, end.y - start.y))} px</text></g>;
+    const profitTop = drawing.type === 'long' ? Math.min(start.y, end.y) : start.y;
+    const riskTop = drawing.type === 'long' ? start.y : Math.min(start.y, end.y);
+    const profitHeight = Math.abs(start.y - end.y);
+    const riskHeight = Math.abs(start.y - end.y);
+    return <g key={index}><rect x={start.x} y={profitTop} width={Math.max(80, Math.abs(end.x - start.x))} height={profitHeight} className={drawing.type === 'long' ? 'position-profit' : 'position-risk'} /><rect x={start.x} y={riskTop} width={Math.max(80, Math.abs(end.x - start.x))} height={riskHeight} className={drawing.type === 'long' ? 'position-risk' : 'position-profit'} /><line x1={start.x} y1={start.y} x2={end.x} y2={start.y} className="position-entry" /></g>;
+  };
+
   return <main className="trading-shell"><div className="symbol-bar"><select className="symbol-select" value={symbol} onChange={event => setSymbol(event.target.value)} aria-label="Símbolo">
     {['BTCUSDT', 'ETHUSDT', 'BNBUSDT', 'SOLUSDT', 'XRPUSDT', 'DOGEUSDT'].map(option => <option key={option}>{option}</option>)}
-  </select><span className="chart-source">BINANCE · 1M</span></div><div ref={chartContainer} className="candlestick-chart" /></main>;
+  </select><span className="chart-source">BINANCE · 1M</span><div className="chart-tools" aria-label="Herramientas del gráfico">
+    {([['line', '╱', 'Línea'], ['ruler', '↔', 'Regla'], ['long', 'L', 'Long'], ['short', 'S', 'Short']] as const).map(([key, icon, label]) => <button key={key} className={tool === key ? 'tool-active' : ''} onClick={() => setTool(tool === key ? null : key)} aria-label={label} title={label}>{icon}</button>)}
+    <button onClick={() => setDrawings([])} aria-label="Borrar dibujos" title="Borrar dibujos">×</button>
+  </div></div><div className={`chart-stage ${tool ? 'drawing-mode' : ''}`} onPointerDown={startDrawing} onPointerMove={event => { if (tool && draft) setDraft(pointFromEvent(event)); }} onPointerUp={finishDrawing}>
+    <div ref={chartContainer} className="candlestick-chart" /><svg className="drawing-overlay" aria-hidden="true">{drawings.map(renderDrawing)}{activeDrawing && renderDrawing(activeDrawing, drawings.length)}</svg>
+  </div></main>;
 }
 
 function App() {
