@@ -1,70 +1,52 @@
-import { useEffect, useState } from 'react';
-
-type HealthResponse = {
-  service: string;
-  status: string;
-  environment: string;
-};
-
-type ApiState =
-  | { status: 'loading' }
-  | { status: 'success'; data: HealthResponse }
-  | { status: 'error'; message: string };
+import { useMemo, useState, type FormEvent } from 'react';
+import { AgentChat, type AgentClient } from '@goodmorning/gm-agent';
+import { AuthGuard, AuthProvider, Login, createAuthClient, useAuth } from '@goodmorning/gm-auth';
+import { PwaRuntime, PwaStatus } from '@goodmorning/gm-pwa';
+import './styles.css';
 
 const apiUrl = import.meta.env.VITE_API_URL ?? 'http://localhost:8000';
 
+function RegisterCard() {
+  const [form, setForm] = useState({ name: '', email: '', password: '' });
+  const [message, setMessage] = useState('');
+  async function register(event: FormEvent) {
+    event.preventDefault();
+    const response = await fetch(`${apiUrl}/auth/register`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(form) });
+    setMessage(response.ok ? 'Cuenta creada. Ya puedes iniciar sesión.' : 'No se pudo crear la cuenta.');
+  }
+  return <form className="register-card" onSubmit={register}>
+    <p className="muted">¿Primera vez?</p><h2>Crear cuenta</h2>
+    <input placeholder="Nombre" value={form.name} onChange={e => setForm({ ...form, name: e.target.value })} required />
+    <input type="email" placeholder="Email" value={form.email} onChange={e => setForm({ ...form, email: e.target.value })} required />
+    <input type="password" placeholder="Contraseña (8+ caracteres)" minLength={8} value={form.password} onChange={e => setForm({ ...form, password: e.target.value })} required />
+    <button type="submit">Crear usuario</button>{message && <small>{message}</small>}
+  </form>;
+}
+
+function Access() {
+  return <main className="access-shell"><div className="brand-mark">H</div><p className="eyebrow">HELLOWORLD · AI TRADING</p><h1>Tu terminal.<br /><span>Tu conversación.</span></h1><p className="lede">Analiza estrategias, ejecuta backtests y prepara operaciones desde una PWA ligera.</p><section className="access-grid"><div className="login-card"><h2>Iniciar sesión</h2><Login /></div><RegisterCard /></section></main>;
+}
+
+function Workspace() {
+  const auth = useAuth();
+  const [tab, setTab] = useState('terminal');
+  const agentClient = useMemo<AgentClient>(() => async (prompt, conversationId, confirmation) => {
+    const response = await fetch(`${apiUrl}/agent/chat`, { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${auth.accessToken}` }, body: JSON.stringify({ prompt, conversation_id: conversationId, confirm: Boolean(confirmation) }) });
+    if (!response.ok) throw new Error('El agente no está disponible.');
+    return response.json();
+  }, [auth.accessToken]);
+  return <main className="terminal-shell">
+    <header className="topbar"><div><span className="live-dot" /> HELLOWORLD <small>AI TERMINAL</small></div><div className="top-actions"><PwaStatus /><button className="avatar" onClick={() => void auth.logout()}>{(auth.identity?.name ?? 'U').slice(0, 1).toUpperCase()}</button></div></header>
+    <section className="welcome"><div><p className="eyebrow">BUENOS DÍAS, {auth.identity?.name?.split(' ')[0].toUpperCase()}</p><h1>¿Qué quieres analizar?</h1></div><span className="market-state">● MERCADO PAPER</span></section>
+    <section className="market-strip">{['BTCUSDT', 'ETHUSDT', 'XAUUSD'].map((symbol, index) => <button key={symbol} className={`quote ${index === 0 ? 'quote-active' : ''}`}><span>{symbol}</span><strong>{index === 0 ? '67,421.20' : index === 1 ? '3,482.90' : '2,386.40'}</strong><em className={index === 1 ? 'down' : ''}>{index === 1 ? '−1.24%' : '+2.18%'}</em></button>)}</section>
+    <section className="main-grid"><div className="chart-card"><div className="card-head"><div><span className="muted">BTCUSDT · BINANCE</span><h2>67,421.20 <em>+2.18%</em></h2></div><select defaultValue="1H"><option>15M</option><option>1H</option><option>4H</option><option>1D</option></select></div><div className="chart"><div className="chart-grid" /><svg viewBox="0 0 700 260" preserveAspectRatio="none" aria-label="BTCUSDT price chart"><polyline points="0,220 35,198 70,210 110,166 145,184 180,142 220,158 255,110 295,128 330,92 365,118 400,76 440,101 480,62 520,84 555,42 590,64 625,32 660,50 700,18" fill="none" stroke="#f5b84b" strokeWidth="3" vectorEffect="non-scaling-stroke" /></svg><div className="price-line" /></div><div className="chart-foot"><span>RSI 14 <b>61.8</b></span><span>EMA 20 <b>67,102</b></span><span>ATR <b>842.4</b></span></div></div><div className="agent-card"><div className="card-head"><div><span className="muted">ASISTENTE</span><h2>Habla con tu estrategia</h2></div><span className="ai-badge">✦ AI</span></div><AgentChat client={agentClient} title="" /></div></section>
+    <nav className="bottom-nav">{[['terminal', '⌁', 'Terminal'], ['watchlist', '☆', 'Lista'], ['orders', '⌁', 'Órdenes'], ['account', '◉', 'Cuenta']].map(([key, icon, label]) => <button key={key} className={tab === key ? 'nav-active' : ''} onClick={() => setTab(key)}><span>{icon}</span>{label}</button>)}</nav>
+  </main>;
+}
+
 function App() {
-  const [apiState, setApiState] = useState<ApiState>({ status: 'loading' });
-
-  useEffect(() => {
-    const controller = new AbortController();
-
-    async function loadHealth() {
-      try {
-        const response = await fetch(`${apiUrl}/health`, { signal: controller.signal });
-        if (!response.ok) {
-          throw new Error(`API returned ${response.status}`);
-        }
-        const data = (await response.json()) as HealthResponse;
-        setApiState({ status: 'success', data });
-      } catch (error) {
-        if (error instanceof DOMException && error.name === 'AbortError') {
-          return;
-        }
-        setApiState({
-          status: 'error',
-          message: error instanceof Error ? error.message : 'Unable to reach the API',
-        });
-      }
-    }
-
-    loadHealth();
-    return () => controller.abort();
-  }, []);
-
-  return (
-    <main className="page-shell">
-      <section className="hero" aria-labelledby="page-title">
-        <p className="eyebrow">GoodMorning Software Factory</p>
-        <h1 id="page-title">Standard MVP starter</h1>
-        <p className="lede">
-          A minimal full-stack foundation for new GoodMorning products using React,
-          FastAPI, PostgreSQL, Docker, and CI checks.
-        </p>
-        <div className="status-card" role="status" aria-live="polite">
-          <span className={`status-dot status-dot--${apiState.status}`} aria-hidden="true" />
-          {apiState.status === 'loading' && <p>Checking API connection…</p>}
-          {apiState.status === 'success' && (
-            <p>
-              Connected to <strong>{apiState.data.service}</strong> ({apiState.data.environment}) with status{' '}
-              <strong>{apiState.data.status}</strong>.
-            </p>
-          )}
-          {apiState.status === 'error' && <p>API connection failed: {apiState.message}</p>}
-        </div>
-      </section>
-    </main>
-  );
+  const client = useMemo(() => createAuthClient(apiUrl), []);
+  return <PwaRuntime config={{ appName: 'helloworld', version: '0.1.0', updateIntervalMs: 60 * 60 * 1000 }}><AuthProvider client={client}><AuthGuard fallback={<Access />}><Workspace /></AuthGuard></AuthProvider></PwaRuntime>;
 }
 
 export default App;

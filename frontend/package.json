@@ -1,5 +1,5 @@
 {
-  "name": "goodmorning-mvp-template-frontend",
+  "name": "helloworld-frontend",
   "version": "0.1.0",
   "private": true,
   "type": "module",
@@ -10,7 +10,11 @@
     "preview": "vite preview --host 0.0.0.0"
   },
   "dependencies": {
+    "@goodmorning/gm-agent": "git+https://github.com/goodmorning-mx/gm-agent.git#dev",
+    "@goodmorning/gm-auth": "git+https://github.com/goodmorning-mx/gm-auth.git#dev",
+    "@goodmorning/gm-pwa": "git+https://github.com/goodmorning-mx/gm-pwa.git#dev",
     "@vitejs/plugin-react": "5.0.0",
+    "lightweight-charts": "5.0.8",
     "react": "19.1.0",
     "react-dom": "19.1.0",
     "typescript": "5.8.3",
