@@ -22,7 +22,7 @@
 .chart-tools { display: flex; gap: .25rem; margin-left: auto; }
 .chart-tools button { width: 30px; height: 30px; padding: 0; border: 1px solid #252a31; border-radius: 7px; background: #11151a; color: #9ca2ae; font-weight: 700; }
 .chart-tools button:hover, .chart-tools .tool-active { border-color: #f5b84b; color: #f5b84b; }
-.chart-stage { position: relative; width: 100%; height: calc(100vh - 74px); min-height: 420px; }
+.chart-stage { position: relative; width: 100%; height: calc(100vh - 74px); min-height: 420px; overflow: hidden; }
 .chart-stage.drawing-mode { cursor: crosshair; }
 .candlestick-chart { width: 100%; height: 100%; }
 .drawing-overlay { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; overflow: visible; }
