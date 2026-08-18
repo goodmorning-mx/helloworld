@@ -6,6 +6,8 @@
 .login-card h1 { margin: 0 0 .5rem; color: #f5b84b; font-size: 1.5rem; letter-spacing: -.05em; text-align: center; }
 .login-card input { width: 100%; box-sizing: border-box; padding: .85rem 1rem; border: 1px solid #303640; border-radius: 10px; outline: none; background: #0b0e12; color: #fff; font: inherit; }
 .login-card input:focus { border-color: #f5b84b; }
+.remember-me { display: flex; align-items: center; gap: .5rem; color: #9ca2ae; font-size: .78rem; cursor: pointer; }
+.remember-me input { width: auto; accent-color: #f5b84b; }
 .login-card button { padding: .85rem 1rem; border: 0; border-radius: 10px; background: #f5b84b; color: #15110a; font-weight: 800; cursor: pointer; }
 .login-card button:disabled { cursor: wait; opacity: .65; }
 .login-error { margin: -.25rem 0 0; color: #f27e7e; font-size: .82rem; }
