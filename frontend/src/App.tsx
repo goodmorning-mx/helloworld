@@ -1,30 +1,28 @@
 import { useMemo, useState, type FormEvent } from 'react';
 import { AgentChat, type AgentClient } from '@goodmorning/gm-agent';
-import { AuthGuard, AuthProvider, Login, createAuthClient, useAuth } from '@goodmorning/gm-auth';
+import { AuthGuard, AuthProvider, createAuthClient, useAuth } from '@goodmorning/gm-auth';
 import { PwaRuntime, PwaStatus } from '@goodmorning/gm-pwa';
 import './styles.css';
 
 const apiUrl = import.meta.env.VITE_API_URL ?? 'http://localhost:8000';
 
-function RegisterCard() {
-  const [form, setForm] = useState({ name: '', email: '', password: '' });
-  const [message, setMessage] = useState('');
-  async function register(event: FormEvent) {
-    event.preventDefault();
-    const response = await fetch(`${apiUrl}/auth/register`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(form) });
-    setMessage(response.ok ? 'Cuenta creada. Ya puedes iniciar sesión.' : 'No se pudo crear la cuenta.');
-  }
-  return <form className="register-card" onSubmit={register}>
-    <p className="muted">¿Primera vez?</p><h2>Crear cuenta</h2>
-    <input placeholder="Nombre" value={form.name} onChange={e => setForm({ ...form, name: e.target.value })} required />
-    <input type="email" placeholder="Email" value={form.email} onChange={e => setForm({ ...form, email: e.target.value })} required />
-    <input type="password" placeholder="Contraseña (8+ caracteres)" minLength={8} value={form.password} onChange={e => setForm({ ...form, password: e.target.value })} required />
-    <button type="submit">Crear usuario</button>{message && <small>{message}</small>}
-  </form>;
-}
-
 function Access() {
-  return <main className="access-shell"><div className="brand-mark">H</div><p className="eyebrow">HELLOWORLD · AI TRADING</p><h1>Tu terminal.<br /><span>Tu conversación.</span></h1><p className="lede">Analiza estrategias, ejecuta backtests y prepara operaciones desde una PWA ligera.</p><section className="access-grid"><div className="login-card"><h2>Iniciar sesión</h2><Login /></div><RegisterCard /></section></main>;
+  const auth = useAuth();
+  const [username, setUsername] = useState('');
+  const [password, setPassword] = useState('');
+
+  async function login(event: FormEvent) {
+    event.preventDefault();
+    await auth.login(username, password);
+  }
+
+  return <main className="access-shell"><form className="login-card" onSubmit={login} aria-label="Iniciar sesión">
+    <h1>helloworld</h1>
+    <input type="text" autoComplete="username" placeholder="Usuario" value={username} onChange={e => setUsername(e.target.value)} required />
+    <input type="password" autoComplete="current-password" placeholder="Contraseña" value={password} onChange={e => setPassword(e.target.value)} required minLength={8} />
+    {auth.error && <p className="login-error" role="alert">{auth.error}</p>}
+    <button type="submit" disabled={auth.loading}>{auth.loading ? 'Entrando…' : 'Entrar'}</button>
+  </form></main>;
 }
 
 function Workspace() {
