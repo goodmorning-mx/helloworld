@@ -14,6 +14,9 @@ class Settings(BaseSettings):
         default="postgresql+psycopg://goodmorning:goodmorning_local_password@localhost:5432/goodmorning_mvp",
         alias="DATABASE_URL",
     )
+    jwt_secret: str = Field(default="local-only-change-this-secret-helloworld-32", alias="JWT_SECRET")
+    openai_api_key: str = Field(default="", alias="OPENAI_API_KEY")
+    product_id: str = Field(default="helloworld", alias="PRODUCT_ID")
 
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 

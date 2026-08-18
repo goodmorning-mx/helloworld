@@ -1,12 +1,13 @@
-# GoodMorning MVP Template
+# helloworld
 
-A minimal, production-oriented full-stack template for new products created by the GoodMorning Software Factory.
+AI-assisted mobile trading terminal built on GoodMorning Factory standards. Users can talk to the agent about strategies, run paper backtests, and prepare paper orders with explicit confirmation.
 
 ## Stack
 - React, TypeScript, and Vite frontend.
 - FastAPI backend on Python 3.12.
 - PostgreSQL database.
 - Alembic migration infrastructure for the backend.
+- GoodMorning modules: `gm-pwa`, `gm-auth`, `gm-agent`, `gm-mcp`, and `gm-billing`.
 - Docker Compose for local integrated development only.
 - Coolify deployment as three independent remote resources.
 - GitHub Actions for quality checks.
@@ -93,8 +94,22 @@ docker compose down --volumes
 - Open release pull requests from `dev` to `main`.
 - Do not push directly to `main`.
 
-## Creating a new product from this template
-After copying the template, replace template metadata and names in:
+## Product scope
+
+The first vertical slice provides:
+- user registration and login;
+- installable and updateable mobile PWA;
+- MetaTrader-inspired terminal shell;
+- conversational agent endpoint;
+- paper backtesting and paper order confirmation.
+
+Live broker execution, real-time market feeds, and advanced strategies remain behind a later reviewed change. AI-generated order actions must remain explicitly confirmed and audited.
+
+## GoodMorning Factory
+
+This repository is provisioned through Resources V3 with separate frontend, API, and private PostgreSQL resources. Product infrastructure is declared in the Factory catalog; Compose remains local-only.
+
+When adapting the template, replace metadata and names in:
 - `README.md`
 - `frontend/package.json`
 - `frontend/index.html`

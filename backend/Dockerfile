@@ -7,7 +7,7 @@ WORKDIR /app
 
 # Coolify's generated container healthcheck uses curl (or wget).
 RUN apt-get update \
-    && apt-get install --no-install-recommends -y curl \
+    && apt-get install --no-install-recommends -y curl git \
     && rm -rf /var/lib/apt/lists/*
 
 RUN addgroup --system app && adduser --system --ingroup app app
