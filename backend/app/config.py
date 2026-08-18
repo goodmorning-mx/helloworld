@@ -22,7 +22,10 @@ class Settings(BaseSettings):
 
     @property
     def allowed_origins(self) -> list[str]:
-        return [origin.strip() for origin in self.cors_origins.split(",") if origin.strip()]
+        origins = [origin.strip() for origin in self.cors_origins.split(",") if origin.strip()]
+        if self.app_env in {"local", "dev", "development"}:
+            origins.append("https://dev.helloworld.goodmorning.mx")
+        return list(dict.fromkeys(origins))
 
 
 @lru_cache
