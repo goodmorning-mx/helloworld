@@ -148,10 +148,27 @@ function Workspace() {
   const [drawingEnd, setDrawingEnd] = useState<ChartPoint | null>(null);
   const [resizeStart, setResizeStart] = useState<{ index: number; endpoint: 'start' | 'end' | 'stop' | 'target' } | null>(null);
   const [selectedDrawing, setSelectedDrawing] = useState<number | null>(null);
+  const [selectedDrawings, setSelectedDrawings] = useState<number[]>([]);
+  const [lassoStart, setLassoStart] = useState<{ x: number; y: number } | null>(null);
+  const [lassoEnd, setLassoEnd] = useState<{ x: number; y: number } | null>(null);
   const [moveStart, setMoveStart] = useState<{ index: number; point: ChartPoint; drawing: Drawing } | null>(null);
   const [mobileSheet, setMobileSheet] = useState<'indicators' | 'tools' | null>(null);
   const [, setActivePositionIndex] = useState<number | null>(null);
   const activePositionIndexRef = useRef<number | null>(null);
+
+  useEffect(() => {
+    const removeSelected = (event: KeyboardEvent) => {
+      if ((event.key !== 'Delete' && event.key !== 'Backspace') || selectedDrawings.length === 0) return;
+      event.preventDefault();
+      setDrawings(current => current.filter((_, index) => !selectedDrawings.includes(index)));
+      setSelectedDrawings([]);
+      setSelectedDrawing(null);
+      activePositionIndexRef.current = null;
+      setActivePositionIndex(null);
+    };
+    window.addEventListener('keydown', removeSelected);
+    return () => window.removeEventListener('keydown', removeSelected);
+  }, [selectedDrawings]);
 
   useEffect(() => {
     if (!chartStage.current) return;
@@ -481,7 +498,13 @@ function Workspace() {
       const start = screenPoint(drawing.start);
       const end = screenPoint(drawing.end);
       if (!start || !end) continue;
-      if (drawing.type === 'line' || drawing.type === 'ruler') {
+      if (drawing.type === 'ruler') {
+        const left = Math.min(start.x, end.x) - 8;
+        const right = Math.max(start.x, end.x) + 8;
+        const top = Math.min(start.y, end.y) - 8;
+        const bottom = Math.max(start.y, end.y) + 8;
+        if (point.x >= left && point.x <= right && point.y >= top && point.y <= bottom) return index;
+      } else if (drawing.type === 'line') {
         const length = Math.hypot(end.x - start.x, end.y - start.y) || 1;
         const distance = Math.abs((end.y - start.y) * point.x - (end.x - start.x) * point.y + end.x * start.y - end.y * start.x) / length;
         if (distance <= 10) return index;
@@ -508,6 +531,7 @@ function Workspace() {
     if (!tool) {
       const hit = drawingAt(point);
       setSelectedDrawing(hit);
+      setSelectedDrawings(hit === null ? [] : [hit]);
       if (hit !== null) {
         const chartPoint = chartPointFromEvent(event);
         if (chartPoint) {
@@ -516,6 +540,11 @@ function Workspace() {
           event.currentTarget.setPointerCapture(event.pointerId);
           setMoveStart({ index: hit, point: chartPoint, drawing: drawings[hit] });
         }
+      } else {
+        event.preventDefault();
+        event.currentTarget.setPointerCapture(event.pointerId);
+        setLassoStart(point);
+        setLassoEnd(point);
       }
       return;
     }
@@ -530,6 +559,10 @@ function Workspace() {
   }
 
   function updateDrawing(event: PointerEvent<HTMLDivElement>) {
+    if (lassoStart) {
+      setLassoEnd(pointFromEvent(event));
+      return;
+    }
     if (moveStart) {
       const point = chartPointFromEvent(event);
       if (!point) return;
@@ -545,6 +578,24 @@ function Workspace() {
   }
 
   function finishDrawing(event: PointerEvent<HTMLDivElement>) {
+    if (lassoStart) {
+      const end = pointFromEvent(event);
+      const left = Math.min(lassoStart.x, end.x);
+      const right = Math.max(lassoStart.x, end.x);
+      const top = Math.min(lassoStart.y, end.y);
+      const bottom = Math.max(lassoStart.y, end.y);
+      const matches = drawings.map((drawing, index) => ({ drawing, index })).filter(({ drawing }) => {
+        if (drawing.paper) return false;
+        const points = [drawing.start, drawing.end, ...(drawing.stop ? [drawing.stop] : []), ...(drawing.target ? [drawing.target] : [])].map(screenPoint);
+        return points.some(point => point !== null && point.x >= left && point.x <= right && point.y >= top && point.y <= bottom);
+      }).map(({ index }) => index);
+      setSelectedDrawings(matches);
+      setSelectedDrawing(matches[0] ?? null);
+      setLassoStart(null);
+      setLassoEnd(null);
+      if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
+      return;
+    }
     if (moveStart) {
       updateDrawing(event);
       setMoveStart(null);
@@ -659,7 +710,7 @@ function Workspace() {
     const handles = drawingHandles(drawing, typeof index === 'number' ? index : -1);
     const handleNodes = handles.filter(handle => !drawing.paper || handle.endpoint === 'target' || handle.endpoint === 'stop').map((handle, handleIndex) => <circle key={handleIndex} cx={handle.x} cy={handle.y} r="7" className={`drawing-handle ${handle.role === 'stop' ? 'handle-stop' : handle.role === 'target' ? 'handle-target' : drawing.type === 'ruler' ? 'handle-ruler' : ''}`} />);
     const pricePercent = ((drawing.end.price - drawing.start.price) / drawing.start.price) * 100;
-    const selectedClass = typeof index === 'number' && selectedDrawing === index ? 'drawing-selected' : undefined;
+    const selectedClass = typeof index === 'number' && (selectedDrawing === index || selectedDrawings.includes(index)) ? 'drawing-selected' : undefined;
     if (drawing.type === 'line') return <g key={index} className={selectedClass}><line x1={start.x} y1={start.y} x2={end.x} y2={end.y} className="drawing-line" /><text x={(start.x + end.x) / 2} y={(start.y + end.y) / 2 - 8} className="drawing-label">{pricePercent >= 0 ? '+' : ''}{pricePercent.toFixed(2)}%</text>{handleNodes}</g>;
     if (drawing.type === 'ruler') {
       const minutes = Math.round(Math.abs(Number(drawing.end.time) - Number(drawing.start.time)) / 60);
@@ -700,7 +751,7 @@ function Workspace() {
   };
 
   const chartStageView = <div ref={chartStage} className={`chart-stage ${tool ? 'drawing-mode' : ''}`} onPointerDownCapture={startDrawing} onPointerMoveCapture={updateDrawing} onPointerUpCapture={finishDrawing} onPointerCancelCapture={() => { setDrawingStart(null); setDrawingEnd(null); setMoveStart(null); setResizeStart(null); }}>
-    <div ref={chartContainer} className="candlestick-chart" /><svg className="drawing-overlay" viewBox={`0 0 ${stageSize.width} ${stageSize.height}`} preserveAspectRatio="none" aria-hidden="true">{renderSessionIndicator()}{renderInterestMarkers()}{drawings.map(renderDrawing)}{tool && drawingStart && drawingEnd && renderDrawing({ type: tool, start: drawingStart, end: drawingEnd }, 'preview')}</svg><div className="chart-bottom-controls"><span className="timezone-icon" aria-hidden="true">◷</span><select className="timezone-select" value={timezone} onChange={event => setTimezone(event.target.value)} aria-label="Zona horaria">{TIMEZONES.map(([label, value]) => <option key={value} value={value}>{label}</option>)}</select></div>
+    <div ref={chartContainer} className="candlestick-chart" /><svg className="drawing-overlay" viewBox={`0 0 ${stageSize.width} ${stageSize.height}`} preserveAspectRatio="none" aria-hidden="true">{renderSessionIndicator()}{renderInterestMarkers()}{drawings.map(renderDrawing)}{tool && drawingStart && drawingEnd && renderDrawing({ type: tool, start: drawingStart, end: drawingEnd }, 'preview')}{lassoStart && lassoEnd && <rect x={Math.min(lassoStart.x, lassoEnd.x)} y={Math.min(lassoStart.y, lassoEnd.y)} width={Math.abs(lassoEnd.x - lassoStart.x)} height={Math.abs(lassoEnd.y - lassoStart.y)} className="selection-lasso" />}</svg><div className="chart-bottom-controls"><span className="timezone-icon" aria-hidden="true">◷</span><select className="timezone-select" value={timezone} onChange={event => setTimezone(event.target.value)} aria-label="Zona horaria">{TIMEZONES.map(([label, value]) => <option key={value} value={value}>{label}</option>)}</select></div>
     <div className="floating-order-buttons" aria-label="Abrir operación simulada"><button className="open-long-button" onClick={() => openSimulatedPosition('long')}>▲ <span>Abrir Long</span></button><button className="open-short-button" onClick={() => openSimulatedPosition('short')}>▼ <span>Abrir Short</span></button></div>
   </div>;
 
@@ -708,11 +759,11 @@ function Workspace() {
     {['BTCUSDT', 'ETHUSDT', 'BNBUSDT', 'SOLUSDT', 'XRPUSDT', 'DOGEUSDT'].map(option => <option key={option}>{option}</option>)}
   </select><select className="interval-select" value={interval} onChange={event => setInterval(event.target.value as typeof interval)} aria-label="Intervalo de contexto">{(['1s', '1m', '3m', '5m', '15m'] as const).map(value => <option key={value} value={value}>{value}</option>)}</select><span className="chart-source">BINANCE · {entryInterval.toUpperCase()} ENTRADA · {interval.toUpperCase()} CONTEXTO</span><button className={`session-toggle ${showSessions ? 'session-active' : ''}`} onClick={() => setShowSessions(value => !value)} aria-label="Mostrar sesiones" title="Mostrar sesiones">Sesiones</button><div className="chart-tools" aria-label="Herramientas del gráfico">
     <button className={!tool ? 'tool-active' : ''} onClick={() => setTool(null)} aria-label="Seleccionar y navegar" title="Seleccionar y navegar">↖</button>
-    {([['line', '╱', 'Línea'], ['ruler', '↔', 'Regla'], ['long', 'L', 'Long'], ['short', 'S', 'Short']] as const).map(([key, icon, label]) => <button key={key} className={tool === key ? 'tool-active' : ''} onClick={() => chooseTool(key)} aria-label={label} title={label}>{icon}</button>)}
+    {([['line', '╱', 'Línea'], ['ruler', '📏', 'Regla'], ['long', 'L', 'Long'], ['short', 'S', 'Short']] as const).map(([key, icon, label]) => <button key={key} className={tool === key ? 'tool-active' : ''} onClick={() => chooseTool(key)} aria-label={label} title={label}>{icon}</button>)}
     <button onClick={() => setDrawings([])} aria-label="Borrar dibujos" title="Borrar dibujos">×</button>
   </div><button className="logout-button" onClick={() => void auth.logout()} aria-label="Cerrar sesión">Salir</button></div>;
 
-  const toolOptions = [['line', '╱', 'Línea'], ['ruler', '↔', 'Medir'], ['long', 'L', 'Long'], ['short', 'S', 'Short']] as const;
+  const toolOptions = [['line', '╱', 'Línea'], ['ruler', '📏', 'Medir'], ['long', 'L', 'Long'], ['short', 'S', 'Short']] as const;
   const chartsRow = <div className="charts-row"><section ref={overviewStage} className="secondary-chart"><div className="chart-panel-label">5M · CONTEXTO · BTCUSDT</div><div ref={overviewChartContainer} className="overview-chart" /><svg className="overview-overlay" viewBox={`0 0 ${overviewSize.width} ${overviewSize.height}`} preserveAspectRatio="none" aria-hidden="true">{renderOverviewSessions()}{renderOverviewInterestMarkers()}</svg></section><section className="primary-chart"><div className="chart-panel-label">1M · AJUSTE DE ENTRADA</div>{chartStageView}</section></div>;
 
   return mobilePwa ? <main className="trading-shell pwa-shell">

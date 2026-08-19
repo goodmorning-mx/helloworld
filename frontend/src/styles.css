@@ -61,7 +61,7 @@
 .session-label { font: 20px 'DM Mono', monospace; opacity: .95; }
 .ny-interest-marker { fill: #22d3ee; stroke: #e0f2fe; stroke-width: 2; }
 .drawing-selected .drawing-line { stroke-width: 3; filter: drop-shadow(0 0 4px #f5b84b); }
-.drawing-selected .measurement-box { stroke-width: 3; filter: drop-shadow(0 0 4px #3b82f6); }
+.drawing-selected .measurement-box { stroke-width: 3; filter: drop-shadow(0 0 7px #60a5fa) drop-shadow(0 0 3px #fff); }.selection-lasso { fill: #60a5fa22; stroke: #60a5fa; stroke-width: 1.5; stroke-dasharray: 6 4; pointer-events: none; }
 .drawing-selected .position-profit, .drawing-selected .position-risk { stroke-width: 2; }
 .pwa-shell { display: none; }
 .mobile-modal-backdrop { position: fixed; z-index: 20; inset: 0; display: flex; align-items: end; background: #0009; }
