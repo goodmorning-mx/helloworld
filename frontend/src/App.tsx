@@ -50,27 +50,6 @@ function timestampInTimezone(year: number, month: number, day: number, hour: num
   return Math.round(guess / 1000);
 }
 
-type Candle = { time: UTCTimestamp; open: number; high: number; low: number; close: number };
-
-function candleFromRow(row: unknown[]): Candle {
-  return { time: Math.floor(Number(row[0]) / 1000) as UTCTimestamp, open: Number(row[1]), high: Number(row[2]), low: Number(row[3]), close: Number(row[4]) };
-}
-
-function aggregateCandles(rows: Candle[], minutes: number) {
-  const buckets = new Map<number, Candle>();
-  rows.forEach(candle => {
-    const bucket = Math.floor(Number(candle.time) / (minutes * 60)) * minutes * 60;
-    const current = buckets.get(bucket);
-    if (!current) buckets.set(bucket, { ...candle, time: bucket as UTCTimestamp });
-    else {
-      current.high = Math.max(current.high, candle.high);
-      current.low = Math.min(current.low, candle.low);
-      current.close = candle.close;
-    }
-  });
-  return [...buckets.values()].sort((left, right) => Number(left.time) - Number(right.time));
-}
-
 function Access() {
   const auth = useAuth();
   const [username, setUsername] = useState('');
@@ -100,7 +79,7 @@ function Workspace() {
   const chartRef = useRef<ReturnType<typeof createChart> | null>(null);
   const candlesRef = useRef<ReturnType<ReturnType<typeof createChart>['addSeries']> | null>(null);
   const [symbol, setSymbol] = useState('BTCUSDT');
-  const [interval, setInterval] = useState<'1m' | '5m' | '10m' | '15m'>('1m');
+  const [interval, setInterval] = useState<'1s' | '1m' | '3m' | '5m' | '15m'>('1m');
   const [timezone, setTimezone] = useState('America/Mexico_City');
   const [showSessions, setShowSessions] = useState(true);
   const [stageSize, setStageSize] = useState({ width: 1, height: 1 });
@@ -145,31 +124,19 @@ function Workspace() {
     chart.timeScale().subscribeVisibleTimeRangeChange(refreshDrawings);
     chart.timeScale().subscribeVisibleLogicalRangeChange(refreshDrawings);
     let active = true;
-    const sourceInterval = interval === '10m' ? '1m' : interval;
-    const rawCandles = new Map<number, Candle>();
-    const stream = new WebSocket(`wss://stream.binance.com:9443/ws/${symbol.toLowerCase()}@kline_${sourceInterval}`);
-    fetch(`https://api.binance.com/api/v3/klines?symbol=${symbol}&interval=${sourceInterval}&limit=${interval === '10m' ? 1000 : 500}`)
+    const stream = new WebSocket(`wss://stream.binance.com:9443/ws/${symbol.toLowerCase()}@kline_${interval}`);
+    fetch(`https://api.binance.com/api/v3/klines?symbol=${symbol}&interval=${interval}&limit=500`)
       .then(response => response.json())
       .then(rows => {
         if (!active || !Array.isArray(rows)) return;
-        const parsed = rows.map(row => candleFromRow(row));
-        if (interval === '10m') {
-          parsed.forEach(candle => rawCandles.set(Number(candle.time), candle));
-          candles.setData(aggregateCandles(parsed, 10));
-        } else candles.setData(parsed);
+        candles.setData(rows.map(row => ({ time: Math.floor(Number(row[0]) / 1000) as UTCTimestamp, open: Number(row[1]), high: Number(row[2]), low: Number(row[3]), close: Number(row[4]) })));
         chart.timeScale().fitContent();
       })
       .catch(() => undefined);
     stream.onmessage = event => {
       if (!active) return;
       const candle = JSON.parse(event.data).k;
-      const next = { time: Math.floor(candle.t / 1000) as UTCTimestamp, open: Number(candle.o), high: Number(candle.h), low: Number(candle.l), close: Number(candle.c) };
-      if (interval === '10m') {
-        rawCandles.set(Number(next.time), next);
-        const bucketStart = Math.floor(Number(next.time) / 600) * 600;
-        const bucket = aggregateCandles([...rawCandles.values()].filter(value => Math.floor(Number(value.time) / 600) * 600 === bucketStart), 10)[0];
-        if (bucket) candles.update(bucket);
-      } else candles.update(next);
+      candles.update({ time: Math.floor(candle.t / 1000) as UTCTimestamp, open: Number(candle.o), high: Number(candle.h), low: Number(candle.l), close: Number(candle.c) });
     };
     return () => {
       active = false;
@@ -448,7 +415,7 @@ function Workspace() {
 
   return <main className="trading-shell"><div className="symbol-bar"><select className="symbol-select" value={symbol} onChange={event => setSymbol(event.target.value)} aria-label="Símbolo">
     {['BTCUSDT', 'ETHUSDT', 'BNBUSDT', 'SOLUSDT', 'XRPUSDT', 'DOGEUSDT'].map(option => <option key={option}>{option}</option>)}
-  </select><select className="interval-select" value={interval} onChange={event => setInterval(event.target.value as typeof interval)} aria-label="Intervalo">{(['1m', '5m', '10m', '15m'] as const).map(value => <option key={value} value={value}>{value}</option>)}</select><span className="chart-source">BINANCE · {interval.toUpperCase()}</span><button className={`session-toggle ${showSessions ? 'session-active' : ''}`} onClick={() => setShowSessions(value => !value)} aria-label="Mostrar sesiones" title="Mostrar sesiones">Sesiones</button><div className="chart-tools" aria-label="Herramientas del gráfico">
+  </select><select className="interval-select" value={interval} onChange={event => setInterval(event.target.value as typeof interval)} aria-label="Intervalo">{(['1s', '1m', '3m', '5m', '15m'] as const).map(value => <option key={value} value={value}>{value}</option>)}</select><span className="chart-source">BINANCE · {interval.toUpperCase()}</span><button className={`session-toggle ${showSessions ? 'session-active' : ''}`} onClick={() => setShowSessions(value => !value)} aria-label="Mostrar sesiones" title="Mostrar sesiones">Sesiones</button><div className="chart-tools" aria-label="Herramientas del gráfico">
     <button className={!tool ? 'tool-active' : ''} onClick={() => setTool(null)} aria-label="Seleccionar y navegar" title="Seleccionar y navegar">↖</button>
     {([['line', '╱', 'Línea'], ['ruler', '↔', 'Regla'], ['long', 'L', 'Long'], ['short', 'S', 'Short']] as const).map(([key, icon, label]) => <button key={key} className={tool === key ? 'tool-active' : ''} onClick={() => setTool(tool === key ? null : key)} aria-label={label} title={label}>{icon}</button>)}
     <button onClick={() => setDrawings([])} aria-label="Borrar dibujos" title="Borrar dibujos">×</button>
