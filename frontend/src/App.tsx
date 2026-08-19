@@ -480,7 +480,7 @@ function Workspace() {
       const priceChange = ((position.end.price - position.start.price) / position.start.price) * direction;
       const pnl = priceChange * margin * leverage;
       const roe = (pnl / margin) * 100;
-      return <tr key={`${position.start.time}-${index}`}><td>{symbol}</td><td><span className={`position-side ${position.type}`}>{position.type.toUpperCase()}</span></td><td>{position.start.price.toFixed(2)}</td><td>{position.end.price.toFixed(2)}</td><td>{margin.toFixed(2)} USDT</td><td className={pnl >= 0 ? 'value-positive' : 'value-negative'}>{pnl >= 0 ? '+' : ''}{pnl.toFixed(2)} USDT</td><td className={roe >= 0 ? 'value-positive' : 'value-negative'}>{roe >= 0 ? '+' : ''}{roe.toFixed(2)}%</td><td><span className="position-live"><i />Abierta</span></td></tr>;
+      return <tr key={`${position.start.time}-${index}`}><td>{symbol}</td><td><span className={`position-side ${position.type}`}>{position.type.toUpperCase()}</span></td><td>{position.start.price.toFixed(8)}</td><td>{position.end.price.toFixed(8)}</td><td>{margin.toFixed(2)} USDT</td><td className={pnl >= 0 ? 'value-positive' : 'value-negative'}>{pnl >= 0 ? '+' : ''}{pnl.toFixed(8)} USDT</td><td className={roe >= 0 ? 'value-positive' : 'value-negative'}>{roe >= 0 ? '+' : ''}{roe.toFixed(8)}%</td><td><span className="position-live"><i />Abierta</span></td></tr>;
     })}</tbody></table></div>}
   </section>;
 
@@ -519,8 +519,8 @@ function Workspace() {
     if (!stop) return null;
     const targetPercent = pricePercent * (drawing.type === 'long' ? 1 : -1);
     const riskPercent = ((stopPrice - drawing.start.price) / drawing.start.price) * 100 * (drawing.type === 'long' ? 1 : -1);
-    const targetLabel = `${targetPercent >= 0 ? '+' : ''}${targetPercent.toFixed(2)}%`;
-    const riskLabel = `${riskPercent >= 0 ? '+' : ''}${riskPercent.toFixed(2)}%`;
+    const targetLabel = `${targetPercent >= 0 ? '+' : ''}${targetPercent.toFixed(8)}%`;
+    const riskLabel = `${riskPercent >= 0 ? '+' : ''}${riskPercent.toFixed(8)}%`;
     const targetTop = Math.min(start.y, end.y);
     const targetHeight = Math.abs(start.y - end.y);
     const stopTop = Math.min(start.y, stop.y);
