@@ -143,7 +143,8 @@ function Workspace() {
   const [selectedDrawing, setSelectedDrawing] = useState<number | null>(null);
   const [moveStart, setMoveStart] = useState<{ index: number; point: ChartPoint; drawing: Drawing } | null>(null);
   const [mobileSheet, setMobileSheet] = useState<'indicators' | 'tools' | null>(null);
-  const [activePositionIndex, setActivePositionIndex] = useState<number | null>(null);
+  const [, setActivePositionIndex] = useState<number | null>(null);
+  const activePositionIndexRef = useRef<number | null>(null);
 
   useEffect(() => {
     if (!chartStage.current) return;
@@ -161,6 +162,8 @@ function Workspace() {
 
   useEffect(() => {
     if (!chartContainer.current) return;
+    activePositionIndexRef.current = null;
+    setActivePositionIndex(null);
     const chart = createChart(chartContainer.current, {
       autoSize: true,
       layout: { background: { color: '#080a0d' }, textColor: '#89909b' },
@@ -222,8 +225,9 @@ function Workspace() {
       candleDataRef.current = candleBarsRef.current.map(({ time, close }) => ({ time, close }));
       candles.update(next);
       setDrawings(current => {
-        if (activePositionIndex === null) return current;
-        const activeDrawing = current[activePositionIndex];
+        const currentPositionIndex = activePositionIndexRef.current;
+        if (currentPositionIndex === null) return current;
+        const activeDrawing = current[currentPositionIndex];
         if (!activeDrawing || activeDrawing.closed || !activeDrawing.paper || (activeDrawing.type !== 'long' && activeDrawing.type !== 'short')) return current;
         const direction = activeDrawing.type === 'long' ? 1 : -1;
         const targetPrice = activeDrawing.target?.price ?? activeDrawing.end.price;
@@ -231,8 +235,11 @@ function Workspace() {
         const hitTarget = direction === 1 ? next.close >= targetPrice : next.close <= targetPrice;
         const hitStop = direction === 1 ? next.close <= stopPrice : next.close >= stopPrice;
         const closeReason = hitTarget ? 'TP' : hitStop ? 'SL' : undefined;
-        if (closeReason) setActivePositionIndex(null);
-        return current.map((drawing, index) => index === activePositionIndex ? {
+        if (closeReason) {
+          activePositionIndexRef.current = null;
+          setActivePositionIndex(null);
+        }
+        return current.map((drawing, index) => index === currentPositionIndex ? {
           ...drawing,
           end: { time: next.time, price: next.close },
           target: drawing.target ? { ...drawing.target, time: next.time } : undefined,
@@ -255,7 +262,7 @@ function Workspace() {
       loadingOlderRef.current = false;
       chart.remove();
     };
-  }, [symbol, interval, activePositionIndex]);
+  }, [symbol, interval]);
 
   useEffect(() => {
     if (mobilePwa || !overviewChartContainer.current) return;
@@ -537,6 +544,7 @@ function Workspace() {
     };
     setDrawings(current => {
       const next = [...current, position];
+      activePositionIndexRef.current = next.length - 1;
       setActivePositionIndex(next.length - 1);
       setSelectedDrawing(null);
       return next;
@@ -634,7 +642,7 @@ function Workspace() {
     <section className="pwa-chart-wrap">{chartStageView}</section>{positionsTable}
     <nav className="pwa-bottom-nav" aria-label="Controles PWA"><button onClick={() => setTool(null)} className={!tool ? 'pwa-nav-active' : ''}>↖<span>Seleccionar</span></button><button onClick={() => setMobileSheet('indicators')} className={showSessions ? 'pwa-nav-active' : ''}>◉<span>Indicadores</span></button><button onClick={() => setMobileSheet('tools')} className={tool ? 'pwa-nav-active' : ''}>⌁<span>Herramientas</span></button><button onClick={() => void auth.logout()}>⇥<span>Salir</span></button></nav>
     {mobileSheet === 'indicators' && <MobileSheet title="Indicadores" onClose={() => setMobileSheet(null)}><button className={`mobile-option ${showSessions ? 'option-active' : ''}`} onClick={() => setShowSessions(value => !value)}><span><b>Sesiones de mercado</b><small>Tokyo, Londres, Nueva York y Sydney</small></span><i>{showSessions ? '✓' : ''}</i></button><label className="mobile-field">Intervalo<select value={interval} onChange={event => setInterval(event.target.value as typeof interval)}>{(['1s', '1m', '3m', '5m', '15m'] as const).map(value => <option key={value}>{value}</option>)}</select></label><label className="mobile-field">Zona horaria<select value={timezone} onChange={event => setTimezone(event.target.value)}>{TIMEZONES.map(([label, value]) => <option key={value} value={value}>{label}</option>)}</select></label></MobileSheet>}
-    {mobileSheet === 'tools' && <MobileSheet title="Herramientas" onClose={() => setMobileSheet(null)}><div className="mobile-tool-grid"><button className={!tool ? 'option-active' : ''} onClick={() => { setTool(null); setMobileSheet(null); }}>↖<span>Seleccionar</span></button>{toolOptions.map(([key, icon, label]) => <button key={key} className={tool === key ? 'option-active' : ''} onClick={() => { chooseTool(key); setMobileSheet(null); }}>{icon}<span>{label}</span></button>)}<button onClick={() => { setDrawings([]); setActivePositionIndex(null); }}>×<span>Borrar todo</span></button></div></MobileSheet>}
+    {mobileSheet === 'tools' && <MobileSheet title="Herramientas" onClose={() => setMobileSheet(null)}><div className="mobile-tool-grid"><button className={!tool ? 'option-active' : ''} onClick={() => { setTool(null); setMobileSheet(null); }}>↖<span>Seleccionar</span></button>{toolOptions.map(([key, icon, label]) => <button key={key} className={tool === key ? 'option-active' : ''} onClick={() => { chooseTool(key); setMobileSheet(null); }}>{icon}<span>{label}</span></button>)}<button onClick={() => { setDrawings([]); activePositionIndexRef.current = null; setActivePositionIndex(null); }}>×<span>Borrar todo</span></button></div></MobileSheet>}
   </main> : <main className="trading-shell">{desktopHeader}{chartsRow}{positionsTable}</main>;
 }
 
