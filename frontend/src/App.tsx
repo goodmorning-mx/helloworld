@@ -468,6 +468,20 @@ function Workspace() {
     setTool(tool === key ? null : key);
   }
 
+  const paperPositions = drawings.filter(drawing => drawing.paper && (drawing.type === 'long' || drawing.type === 'short'));
+  const positionsTable = <section className="positions-panel" aria-label="Posiciones abiertas">
+    <div className="positions-panel-head"><div><span className="positions-kicker">TRADING</span><h2>Posiciones abiertas</h2></div><span className="paper-badge">PAPER</span></div>
+    {paperPositions.length === 0 ? <p className="positions-empty">No hay operaciones abiertas.</p> : <div className="positions-table-scroll"><table className="positions-table"><thead><tr><th>Instrumento</th><th>Lado</th><th>Entrada</th><th>Actual</th><th>Margen</th><th>PNL</th><th>ROE</th><th>Estado</th></tr></thead><tbody>{paperPositions.map((position, index) => {
+      const direction = position.type === 'long' ? 1 : -1;
+      const margin = 100;
+      const leverage = 10;
+      const priceChange = ((position.end.price - position.start.price) / position.start.price) * direction;
+      const pnl = priceChange * margin * leverage;
+      const roe = (pnl / margin) * 100;
+      return <tr key={`${position.start.time}-${index}`}><td>{symbol}</td><td><span className={`position-side ${position.type}`}>{position.type.toUpperCase()}</span></td><td>{position.start.price.toFixed(2)}</td><td>{position.end.price.toFixed(2)}</td><td>{margin.toFixed(2)} USDT</td><td className={pnl >= 0 ? 'value-positive' : 'value-negative'}>{pnl >= 0 ? '+' : ''}{pnl.toFixed(2)} USDT</td><td className={roe >= 0 ? 'value-positive' : 'value-negative'}>{roe >= 0 ? '+' : ''}{roe.toFixed(2)}%</td><td><span className="position-live"><i />Abierta</span></td></tr>;
+    })}</tbody></table></div>}
+  </section>;
+
   const renderDrawing = (drawing: Drawing, index: number | string) => {
     void viewportRevision;
     const chart = chartRef.current;
@@ -530,11 +544,11 @@ function Workspace() {
   const toolOptions = [['line', '╱', 'Línea'], ['ruler', '↔', 'Medir'], ['long', 'L', 'Long'], ['short', 'S', 'Short']] as const;
   return mobilePwa ? <main className="trading-shell pwa-shell">
     <header className="pwa-mobile-header"><div><span className="pwa-brand">helloworld</span><span className="pwa-market">BINANCE · {interval.toUpperCase()}</span></div><select className="pwa-symbol-select" value={symbol} onChange={event => setSymbol(event.target.value)} aria-label="Símbolo">{['BTCUSDT', 'ETHUSDT', 'BNBUSDT', 'SOLUSDT', 'XRPUSDT', 'DOGEUSDT'].map(option => <option key={option}>{option}</option>)}</select></header>
-    <section className="pwa-chart-wrap">{chartStageView}</section>
+    <section className="pwa-chart-wrap">{chartStageView}</section>{positionsTable}
     <nav className="pwa-bottom-nav" aria-label="Controles PWA"><button onClick={() => setTool(null)} className={!tool ? 'pwa-nav-active' : ''}>↖<span>Seleccionar</span></button><button onClick={() => setMobileSheet('indicators')} className={showSessions ? 'pwa-nav-active' : ''}>◉<span>Indicadores</span></button><button onClick={() => setMobileSheet('tools')} className={tool ? 'pwa-nav-active' : ''}>⌁<span>Herramientas</span></button><button onClick={() => void auth.logout()}>⇥<span>Salir</span></button></nav>
     {mobileSheet === 'indicators' && <MobileSheet title="Indicadores" onClose={() => setMobileSheet(null)}><button className={`mobile-option ${showSessions ? 'option-active' : ''}`} onClick={() => setShowSessions(value => !value)}><span><b>Sesiones de mercado</b><small>Tokyo, Londres, Nueva York y Sydney</small></span><i>{showSessions ? '✓' : ''}</i></button><label className="mobile-field">Intervalo<select value={interval} onChange={event => setInterval(event.target.value as typeof interval)}>{(['1s', '1m', '3m', '5m', '15m'] as const).map(value => <option key={value}>{value}</option>)}</select></label><label className="mobile-field">Zona horaria<select value={timezone} onChange={event => setTimezone(event.target.value)}>{TIMEZONES.map(([label, value]) => <option key={value} value={value}>{label}</option>)}</select></label></MobileSheet>}
     {mobileSheet === 'tools' && <MobileSheet title="Herramientas" onClose={() => setMobileSheet(null)}><div className="mobile-tool-grid"><button className={!tool ? 'option-active' : ''} onClick={() => { setTool(null); setMobileSheet(null); }}>↖<span>Seleccionar</span></button>{toolOptions.map(([key, icon, label]) => <button key={key} className={tool === key ? 'option-active' : ''} onClick={() => { chooseTool(key); setMobileSheet(null); }}>{icon}<span>{label}</span></button>)}<button onClick={() => { setDrawings([]); setActivePositionIndex(null); }}>×<span>Borrar todo</span></button></div></MobileSheet>}
-  </main> : <main className="trading-shell">{desktopHeader}{chartStageView}</main>;
+  </main> : <main className="trading-shell">{desktopHeader}{chartStageView}{positionsTable}</main>;
 }
 
 function App() {
