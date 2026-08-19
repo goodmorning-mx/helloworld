@@ -120,6 +120,7 @@ function Workspace() {
   const auth = useAuth();
   const mobilePwa = useMobilePwa();
   const chartContainer = useRef<HTMLDivElement>(null);
+  const overviewChartContainer = useRef<HTMLDivElement>(null);
   const chartStage = useRef<HTMLDivElement>(null);
   const chartRef = useRef<ReturnType<typeof createChart> | null>(null);
   const candlesRef = useRef<ReturnType<ReturnType<typeof createChart>['addSeries']> | null>(null);
@@ -208,6 +209,34 @@ function Workspace() {
       chart.remove();
     };
   }, [symbol, interval, activePositionIndex]);
+
+  useEffect(() => {
+    if (mobilePwa || !overviewChartContainer.current) return;
+    const chart = createChart(overviewChartContainer.current, {
+      autoSize: true,
+      layout: { background: { color: '#080a0d' }, textColor: '#89909b' },
+      grid: { vertLines: { color: '#151a20' }, horzLines: { color: '#151a20' } },
+      rightPriceScale: { borderColor: '#252a31' },
+      localization: { locale: 'es-MX', timeFormatter: (time: Time) => chartTimeLabel(time, timezone, true) },
+      timeScale: { borderColor: '#252a31', timeVisible: true, secondsVisible: false, tickMarkFormatter: (time: Time) => chartTimeLabel(time, timezone, false) },
+    });
+    const candles = chart.addSeries(CandlestickSeries, { upColor: '#64d39a', downColor: '#f27e7e', borderVisible: false, wickUpColor: '#64d39a', wickDownColor: '#f27e7e' });
+    let active = true;
+    const stream = new WebSocket(`wss://stream.binance.com:9443/ws/${symbol.toLowerCase()}@kline_5m`);
+    fetch(`https://api.binance.com/api/v3/klines?symbol=${symbol}&interval=5m&limit=300`)
+      .then(response => response.json())
+      .then(rows => {
+        if (!active || !Array.isArray(rows)) return;
+        candles.setData(rows.map(row => ({ time: Math.floor(Number(row[0]) / 1000) as UTCTimestamp, open: Number(row[1]), high: Number(row[2]), low: Number(row[3]), close: Number(row[4]) })));
+        chart.timeScale().fitContent();
+      }).catch(() => undefined);
+    stream.onmessage = event => {
+      if (!active) return;
+      const candle = JSON.parse(event.data).k;
+      candles.update({ time: Math.floor(candle.t / 1000) as UTCTimestamp, open: Number(candle.o), high: Number(candle.h), low: Number(candle.l), close: Number(candle.c) });
+    };
+    return () => { active = false; stream.close(); chart.remove(); };
+  }, [symbol, timezone, mobilePwa]);
 
   useEffect(() => {
     const chart = chartRef.current;
@@ -544,13 +573,15 @@ function Workspace() {
   </div><button className="logout-button" onClick={() => void auth.logout()} aria-label="Cerrar sesión">Salir</button></div>;
 
   const toolOptions = [['line', '╱', 'Línea'], ['ruler', '↔', 'Medir'], ['long', 'L', 'Long'], ['short', 'S', 'Short']] as const;
+  const chartsRow = <div className="charts-row"><section className="primary-chart"><div className="chart-panel-label">1M · AJUSTE DE ENTRADA</div>{chartStageView}</section><section className="secondary-chart"><div className="chart-panel-label">5M · CONTEXTO</div><div ref={overviewChartContainer} className="overview-chart" /></section></div>;
+
   return mobilePwa ? <main className="trading-shell pwa-shell">
     <header className="pwa-mobile-header"><div><span className="pwa-brand">helloworld</span><span className="pwa-market">BINANCE · {interval.toUpperCase()}</span></div><select className="pwa-symbol-select" value={symbol} onChange={event => setSymbol(event.target.value)} aria-label="Símbolo">{['BTCUSDT', 'ETHUSDT', 'BNBUSDT', 'SOLUSDT', 'XRPUSDT', 'DOGEUSDT'].map(option => <option key={option}>{option}</option>)}</select></header>
     <section className="pwa-chart-wrap">{chartStageView}</section>{positionsTable}
     <nav className="pwa-bottom-nav" aria-label="Controles PWA"><button onClick={() => setTool(null)} className={!tool ? 'pwa-nav-active' : ''}>↖<span>Seleccionar</span></button><button onClick={() => setMobileSheet('indicators')} className={showSessions ? 'pwa-nav-active' : ''}>◉<span>Indicadores</span></button><button onClick={() => setMobileSheet('tools')} className={tool ? 'pwa-nav-active' : ''}>⌁<span>Herramientas</span></button><button onClick={() => void auth.logout()}>⇥<span>Salir</span></button></nav>
     {mobileSheet === 'indicators' && <MobileSheet title="Indicadores" onClose={() => setMobileSheet(null)}><button className={`mobile-option ${showSessions ? 'option-active' : ''}`} onClick={() => setShowSessions(value => !value)}><span><b>Sesiones de mercado</b><small>Tokyo, Londres, Nueva York y Sydney</small></span><i>{showSessions ? '✓' : ''}</i></button><label className="mobile-field">Intervalo<select value={interval} onChange={event => setInterval(event.target.value as typeof interval)}>{(['1s', '1m', '3m', '5m', '15m'] as const).map(value => <option key={value}>{value}</option>)}</select></label><label className="mobile-field">Zona horaria<select value={timezone} onChange={event => setTimezone(event.target.value)}>{TIMEZONES.map(([label, value]) => <option key={value} value={value}>{label}</option>)}</select></label></MobileSheet>}
     {mobileSheet === 'tools' && <MobileSheet title="Herramientas" onClose={() => setMobileSheet(null)}><div className="mobile-tool-grid"><button className={!tool ? 'option-active' : ''} onClick={() => { setTool(null); setMobileSheet(null); }}>↖<span>Seleccionar</span></button>{toolOptions.map(([key, icon, label]) => <button key={key} className={tool === key ? 'option-active' : ''} onClick={() => { chooseTool(key); setMobileSheet(null); }}>{icon}<span>{label}</span></button>)}<button onClick={() => { setDrawings([]); setActivePositionIndex(null); }}>×<span>Borrar todo</span></button></div></MobileSheet>}
-  </main> : <main className="trading-shell">{desktopHeader}{chartStageView}{positionsTable}</main>;
+  </main> : <main className="trading-shell">{desktopHeader}{chartsRow}{positionsTable}</main>;
 }
 
 function App() {
