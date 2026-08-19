@@ -122,6 +122,8 @@ function Workspace() {
   const chartContainer = useRef<HTMLDivElement>(null);
   const overviewChartContainer = useRef<HTMLDivElement>(null);
   const overviewChartRef = useRef<ReturnType<typeof createChart> | null>(null);
+  const overviewCandlesRef = useRef<ReturnType<ReturnType<typeof createChart>['addSeries']> | null>(null);
+  const overviewCandleDataRef = useRef<Array<{ time: UTCTimestamp; close: number }>>([]);
   const overviewStage = useRef<HTMLDivElement>(null);
   const chartStage = useRef<HTMLDivElement>(null);
   const chartRef = useRef<ReturnType<typeof createChart> | null>(null);
@@ -130,7 +132,7 @@ function Workspace() {
   const loadingOlderRef = useRef(false);
   const candleDataRef = useRef<Array<{ time: UTCTimestamp; close: number }>>([]);
   const [symbol, setSymbol] = useState('BTCUSDT');
-  const [interval, setInterval] = useState<'1s' | '1m' | '3m' | '5m' | '15m'>('1m');
+  const [interval, setInterval] = useState<'1s' | '1m' | '3m' | '5m' | '15m'>('5m');
   const [timezone, setTimezone] = useState('America/Mexico_City');
   const [showSessions, setShowSessions] = useState(true);
   const [stageSize, setStageSize] = useState({ width: 1, height: 1 });
@@ -143,7 +145,7 @@ function Workspace() {
   const [drawings, setDrawings] = useState<Drawing[]>([]);
   const [drawingStart, setDrawingStart] = useState<ChartPoint | null>(null);
   const [drawingEnd, setDrawingEnd] = useState<ChartPoint | null>(null);
-  const [resizeStart, setResizeStart] = useState<{ index: number; endpoint: 'start' | 'end' | 'stop' } | null>(null);
+  const [resizeStart, setResizeStart] = useState<{ index: number; endpoint: 'start' | 'end' | 'stop' | 'target' } | null>(null);
   const [selectedDrawing, setSelectedDrawing] = useState<number | null>(null);
   const [moveStart, setMoveStart] = useState<{ index: number; point: ChartPoint; drawing: Drawing } | null>(null);
   const [mobileSheet, setMobileSheet] = useState<'indicators' | 'tools' | null>(null);
@@ -289,6 +291,7 @@ function Workspace() {
     });
     const candles = chart.addSeries(CandlestickSeries, { upColor: '#64d39a', downColor: '#f27e7e', borderVisible: false, wickUpColor: '#64d39a', wickDownColor: '#f27e7e' });
     overviewChartRef.current = chart;
+    overviewCandlesRef.current = candles;
     const refreshOverview = () => setOverviewRevision(value => value + 1);
     chart.timeScale().subscribeVisibleTimeRangeChange(refreshOverview);
     chart.timeScale().subscribeVisibleLogicalRangeChange(refreshOverview);
@@ -298,15 +301,19 @@ function Workspace() {
       .then(response => response.json())
       .then(rows => {
         if (!active || !Array.isArray(rows)) return;
-        candles.setData(rows.map(row => ({ time: Math.floor(Number(row[0]) / 1000) as UTCTimestamp, open: Number(row[1]), high: Number(row[2]), low: Number(row[3]), close: Number(row[4]) })));
+        const parsed = rows.map(row => ({ time: Math.floor(Number(row[0]) / 1000) as UTCTimestamp, open: Number(row[1]), high: Number(row[2]), low: Number(row[3]), close: Number(row[4]) }));
+        overviewCandleDataRef.current = parsed.map(({ time, close }) => ({ time, close }));
+        candles.setData(parsed);
         chart.timeScale().fitContent();
       }).catch(() => undefined);
     stream.onmessage = event => {
       if (!active) return;
       const candle = JSON.parse(event.data).k;
-      candles.update({ time: Math.floor(candle.t / 1000) as UTCTimestamp, open: Number(candle.o), high: Number(candle.h), low: Number(candle.l), close: Number(candle.c) });
+      const next = { time: Math.floor(candle.t / 1000) as UTCTimestamp, open: Number(candle.o), high: Number(candle.h), low: Number(candle.l), close: Number(candle.c) };
+      overviewCandleDataRef.current = [...overviewCandleDataRef.current.filter(value => value.time !== next.time), { time: next.time, close: next.close }];
+      candles.update(next);
     };
-    return () => { active = false; stream.close(); chart.timeScale().unsubscribeVisibleTimeRangeChange(refreshOverview); chart.timeScale().unsubscribeVisibleLogicalRangeChange(refreshOverview); overviewChartRef.current = null; chart.remove(); };
+    return () => { active = false; stream.close(); chart.timeScale().unsubscribeVisibleTimeRangeChange(refreshOverview); chart.timeScale().unsubscribeVisibleLogicalRangeChange(refreshOverview); overviewChartRef.current = null; overviewCandlesRef.current = null; overviewCandleDataRef.current = []; chart.remove(); };
   }, [symbol, timezone, mobilePwa]);
 
   useEffect(() => {
@@ -369,6 +376,16 @@ function Workspace() {
     if (!stop) return [];
     const left = Math.min(start.x, end.x);
     const right = Math.max(start.x, end.x);
+    if (drawing.paper && drawing.target) {
+      const target = screenPoint(drawing.target);
+      if (!target) return [];
+      return [
+        { x: left, y: target.y, index, endpoint: 'target' as const, role: 'target' as const },
+        { x: right, y: target.y, index, endpoint: 'target' as const, role: 'target' as const },
+        { x: left, y: stop.y, index, endpoint: 'stop' as const, role: 'stop' as const },
+        { x: right, y: stop.y, index, endpoint: 'stop' as const, role: 'stop' as const },
+      ];
+    }
     return [
       { x: left, y: end.y, index, endpoint: 'end' as const, role: 'target' as const },
       { x: right, y: end.y, index, endpoint: 'end' as const, role: 'target' as const },
@@ -379,8 +396,8 @@ function Workspace() {
 
   function handleAt(point: { x: number; y: number }) {
     for (let index = drawings.length - 1; index >= 0; index -= 1) {
-      if (drawings[index].paper) continue;
-      const handle = drawingHandles(drawings[index], index).find(candidate => Math.hypot(candidate.x - point.x, candidate.y - point.y) <= 12);
+      const candidates = drawingHandles(drawings[index], index).filter(candidate => !drawings[index].paper || candidate.endpoint === 'target' || candidate.endpoint === 'stop');
+      const handle = candidates.find(candidate => Math.hypot(candidate.x - point.x, candidate.y - point.y) <= 12);
       if (handle) return handle;
     }
     return null;
@@ -444,6 +461,18 @@ function Workspace() {
     return <g className="session-indicator">{events.map((event, index) => <g key={`${event.label}-${event.x}-${index}`}><line x1={event.x} y1="0" x2={event.x} y2={overviewSize.height} stroke={event.color} className="session-line" /><text x={event.x + 4} y="18" fill={event.color} className="session-label"><tspan x={event.x + 4} dy="0">{event.label}</tspan><tspan x={event.x + 4} dy="26">{event.date}</tspan></text></g>)}</g>;
   }
 
+  function renderOverviewInterestMarkers() {
+    if (!overviewChartRef.current || !overviewCandlesRef.current) return null;
+    const markers = overviewCandleDataRef.current.flatMap(candle => {
+      const local = timezoneParts(Number(candle.time), SESSION_TIMEZONE);
+      if (Number(local.hour) !== 7 || Number(local.minute) < 20 || Number(local.minute) >= 35) return [];
+      const x = overviewChartRef.current?.timeScale().timeToCoordinate(candle.time);
+      const y = overviewCandlesRef.current?.priceToCoordinate(candle.close);
+      return x === null || x === undefined || y === null || y === undefined ? [] : [{ x, y }];
+    });
+    return <g className="ny-interest-markers">{markers.map((marker, index) => <circle key={`${marker.x}-${index}`} cx={marker.x} cy={marker.y} r="6" className="ny-interest-marker" />)}</g>;
+  }
+
   function drawingAt(point: { x: number; y: number }) {
     for (let index = drawings.length - 1; index >= 0; index -= 1) {
       const drawing = drawings[index];
@@ -472,7 +501,7 @@ function Workspace() {
       event.stopPropagation();
       event.currentTarget.setPointerCapture(event.pointerId);
       setResizeStart({ index: handle.index, endpoint: handle.endpoint });
-      setSelectedDrawing(handle.index);
+      if (!drawings[handle.index].paper) setSelectedDrawing(handle.index);
       return;
     }
     if (!tool) {
@@ -526,13 +555,18 @@ function Workspace() {
       const resize = resizeStart;
       if (end) setDrawings(current => current.map((drawing, index) => {
         if (index !== resize.index) return drawing;
+        if (resize.endpoint === 'target' && drawing.paper && drawing.target && drawing.stop) {
+          const price = drawing.type === 'long' ? Math.max(end.price, drawing.stop.price) : Math.min(end.price, drawing.stop.price);
+          return { ...drawing, target: { ...drawing.target, price, time: end.time } };
+        }
         if (resize.endpoint === 'end' && drawing.type !== 'line' && drawing.type !== 'ruler') {
           const price = drawing.type === 'long' ? Math.max(end.price, drawing.start.price) : Math.min(end.price, drawing.start.price);
           const target = { ...end, price };
           return { ...drawing, end: target, stop: drawing.stop ? { ...drawing.stop, time: target.time } : undefined };
         }
         if (resize.endpoint === 'stop' && drawing.stop) {
-          const price = drawing.type === 'long' ? Math.min(end.price, drawing.start.price) : Math.max(end.price, drawing.start.price);
+          const boundary = drawing.paper && drawing.target ? drawing.target.price : drawing.start.price;
+          const price = drawing.type === 'long' ? Math.min(end.price, boundary) : Math.max(end.price, boundary);
           return { ...drawing, stop: { ...end, price } };
         }
         return { ...drawing, [resize.endpoint]: end };
@@ -622,7 +656,7 @@ function Workspace() {
     const start = { x: startX, y: startY };
     const end = { x: endX, y: endY };
     const handles = drawingHandles(drawing, typeof index === 'number' ? index : -1);
-    const handleNodes = handles.map((handle, handleIndex) => <circle key={handleIndex} cx={handle.x} cy={handle.y} r="7" className={`drawing-handle ${handle.role === 'stop' ? 'handle-stop' : handle.role === 'target' ? 'handle-target' : drawing.type === 'ruler' ? 'handle-ruler' : ''}`} />);
+    const handleNodes = handles.filter(handle => !drawing.paper || handle.endpoint === 'target' || handle.endpoint === 'stop').map((handle, handleIndex) => <circle key={handleIndex} cx={handle.x} cy={handle.y} r="7" className={`drawing-handle ${handle.role === 'stop' ? 'handle-stop' : handle.role === 'target' ? 'handle-target' : drawing.type === 'ruler' ? 'handle-ruler' : ''}`} />);
     const pricePercent = ((drawing.end.price - drawing.start.price) / drawing.start.price) * 100;
     const selectedClass = typeof index === 'number' && selectedDrawing === index ? 'drawing-selected' : undefined;
     if (drawing.type === 'line') return <g key={index} className={selectedClass}><line x1={start.x} y1={start.y} x2={end.x} y2={end.y} className="drawing-line" /><text x={(start.x + end.x) / 2} y={(start.y + end.y) / 2 - 8} className="drawing-label">{pricePercent >= 0 ? '+' : ''}{pricePercent.toFixed(2)}%</text>{handleNodes}</g>;
@@ -661,7 +695,7 @@ function Workspace() {
     const paperLabel = drawing.paper ? <text x={left + 8} y={Math.max(18, Math.min(targetTop, stopTop) - 10)} className="paper-operation-label">Paper Operation · {drawing.type.toUpperCase()}</text> : null;
     const targetPoint = drawing.paper ? screenPoint(drawing.target ?? drawing.end) : null;
     const pnlLabel = drawing.paper ? <text x={left + 8} y={end.y - 9} className="paper-pnl-label">PNL {currentPnlPercent >= 0 ? '+' : ''}{currentPnlPercent.toFixed(8)}%</text> : null;
-    return <g key={index} className={`${selectedClass ?? ''} ${paperClass}`}><rect x={left} y={targetTop} width={width} height={targetHeight} className={targetPercent >= 0 ? 'position-profit' : 'position-risk'} /><rect x={left} y={stopTop} width={width} height={stopHeight} className={riskPercent <= 0 ? 'position-risk' : 'position-profit'} /><line x1={left} y1={start.y} x2={left + width} y2={start.y} className="position-entry" />{targetPoint && <line x1={left} y1={targetPoint.y} x2={left + width} y2={targetPoint.y} className="paper-target-line" />}<line x1={left} y1={end.y} x2={left + width} y2={end.y} className="paper-current-price" /><text x={left + 8} y={targetTop + 18} className="position-label">{drawing.paper ? targetLabel : `TP ${targetLabel}`}</text><text x={left + 8} y={stopTop + 18} className="position-label">SL {riskLabel}</text><text x={left + 8} y={Math.max(targetTop, stopTop) + 34} className="position-label">R:R {rr.toFixed(2)}:1</text>{paperLabel}{pnlLabel}{drawing.paper ? null : handleNodes}</g>;
+    return <g key={index} className={`${selectedClass ?? ''} ${paperClass}`}><rect x={left} y={targetTop} width={width} height={targetHeight} className={targetPercent >= 0 ? 'position-profit' : 'position-risk'} /><rect x={left} y={stopTop} width={width} height={stopHeight} className={riskPercent <= 0 ? 'position-risk' : 'position-profit'} /><line x1={left} y1={start.y} x2={left + width} y2={start.y} className="position-entry" />{targetPoint && <line x1={left} y1={targetPoint.y} x2={left + width} y2={targetPoint.y} className="paper-target-line" />}<line x1={left} y1={stop.y} x2={left + width} y2={stop.y} className="paper-stop-line" /><line x1={left} y1={end.y} x2={left + width} y2={end.y} className="paper-current-price" /><text x={left + 8} y={targetTop + 18} className="position-label">{drawing.paper ? targetLabel : `TP ${targetLabel}`}</text><text x={left + 8} y={stopTop + 18} className="position-label">SL {riskLabel}</text><text x={left + 8} y={Math.max(targetTop, stopTop) + 34} className="position-label">R:R {rr.toFixed(2)}:1</text>{paperLabel}{pnlLabel}{drawing.paper ? handleNodes : null}{drawing.paper ? null : handleNodes}</g>;
   };
 
   const chartStageView = <div ref={chartStage} className={`chart-stage ${tool ? 'drawing-mode' : ''}`} onPointerDownCapture={startDrawing} onPointerMoveCapture={updateDrawing} onPointerUpCapture={finishDrawing} onPointerCancelCapture={() => { setDrawingStart(null); setDrawingEnd(null); setMoveStart(null); setResizeStart(null); }}>
@@ -678,7 +712,7 @@ function Workspace() {
   </div><button className="logout-button" onClick={() => void auth.logout()} aria-label="Cerrar sesión">Salir</button></div>;
 
   const toolOptions = [['line', '╱', 'Línea'], ['ruler', '↔', 'Medir'], ['long', 'L', 'Long'], ['short', 'S', 'Short']] as const;
-  const chartsRow = <div className="charts-row"><section ref={overviewStage} className="secondary-chart"><div className="chart-panel-label">5M · CONTEXTO · BTCUSDT</div><div ref={overviewChartContainer} className="overview-chart" /><svg className="overview-overlay" viewBox={`0 0 ${overviewSize.width} ${overviewSize.height}`} preserveAspectRatio="none" aria-hidden="true">{renderOverviewSessions()}</svg></section><section className="primary-chart"><div className="chart-panel-label">1M · AJUSTE DE ENTRADA</div>{chartStageView}</section></div>;
+  const chartsRow = <div className="charts-row"><section ref={overviewStage} className="secondary-chart"><div className="chart-panel-label">5M · CONTEXTO · BTCUSDT</div><div ref={overviewChartContainer} className="overview-chart" /><svg className="overview-overlay" viewBox={`0 0 ${overviewSize.width} ${overviewSize.height}`} preserveAspectRatio="none" aria-hidden="true">{renderOverviewSessions()}{renderOverviewInterestMarkers()}</svg></section><section className="primary-chart"><div className="chart-panel-label">1M · AJUSTE DE ENTRADA</div>{chartStageView}</section></div>;
 
   return mobilePwa ? <main className="trading-shell pwa-shell">
     <header className="pwa-mobile-header"><div><span className="pwa-brand">helloworld</span><span className="pwa-market">BINANCE · {interval.toUpperCase()}</span></div><select className="pwa-symbol-select" value={symbol} onChange={event => setSymbol(event.target.value)} aria-label="Símbolo">{['BTCUSDT', 'ETHUSDT', 'BNBUSDT', 'SOLUSDT', 'XRPUSDT', 'DOGEUSDT'].map(option => <option key={option}>{option}</option>)}</select></header>
