@@ -121,6 +121,8 @@ function Workspace() {
   const mobilePwa = useMobilePwa();
   const chartContainer = useRef<HTMLDivElement>(null);
   const overviewChartContainer = useRef<HTMLDivElement>(null);
+  const overviewChartRef = useRef<ReturnType<typeof createChart> | null>(null);
+  const overviewStage = useRef<HTMLDivElement>(null);
   const chartStage = useRef<HTMLDivElement>(null);
   const chartRef = useRef<ReturnType<typeof createChart> | null>(null);
   const candlesRef = useRef<ReturnType<ReturnType<typeof createChart>['addSeries']> | null>(null);
@@ -132,8 +134,10 @@ function Workspace() {
   const [timezone, setTimezone] = useState('America/Mexico_City');
   const [showSessions, setShowSessions] = useState(true);
   const [stageSize, setStageSize] = useState({ width: 1, height: 1 });
+  const [overviewSize, setOverviewSize] = useState({ width: 1, height: 1 });
   const [tool, setTool] = useState<'line' | 'ruler' | 'long' | 'short' | null>(null);
   const [viewportRevision, setViewportRevision] = useState(0);
+  const [overviewRevision, setOverviewRevision] = useState(0);
   type ChartPoint = { time: UTCTimestamp; price: number };
   type Drawing = { type: 'line' | 'ruler' | 'long' | 'short'; start: ChartPoint; end: ChartPoint; stop?: ChartPoint; target?: ChartPoint; paper?: boolean; closed?: boolean; closeReason?: 'TP' | 'SL' };
   const [drawings, setDrawings] = useState<Drawing[]>([]);
@@ -159,6 +163,15 @@ function Workspace() {
     observer.observe(chartStage.current);
     return () => observer.disconnect();
   }, []);
+
+  useEffect(() => {
+    if (mobilePwa || !overviewStage.current) return;
+    const updateSize = () => overviewStage.current && setOverviewSize({ width: overviewStage.current.clientWidth, height: overviewStage.current.clientHeight });
+    updateSize();
+    const observer = new ResizeObserver(updateSize);
+    observer.observe(overviewStage.current);
+    return () => observer.disconnect();
+  }, [mobilePwa]);
 
   useEffect(() => {
     if (!chartContainer.current) return;
@@ -275,6 +288,10 @@ function Workspace() {
       timeScale: { borderColor: '#252a31', timeVisible: true, secondsVisible: false, tickMarkFormatter: (time: Time) => chartTimeLabel(time, timezone, false) },
     });
     const candles = chart.addSeries(CandlestickSeries, { upColor: '#64d39a', downColor: '#f27e7e', borderVisible: false, wickUpColor: '#64d39a', wickDownColor: '#f27e7e' });
+    overviewChartRef.current = chart;
+    const refreshOverview = () => setOverviewRevision(value => value + 1);
+    chart.timeScale().subscribeVisibleTimeRangeChange(refreshOverview);
+    chart.timeScale().subscribeVisibleLogicalRangeChange(refreshOverview);
     let active = true;
     const stream = new WebSocket(`wss://stream.binance.com:9443/ws/${symbol.toLowerCase()}@kline_5m`);
     fetch(`https://api.binance.com/api/v3/klines?symbol=${symbol}&interval=5m&limit=300`)
@@ -289,7 +306,7 @@ function Workspace() {
       const candle = JSON.parse(event.data).k;
       candles.update({ time: Math.floor(candle.t / 1000) as UTCTimestamp, open: Number(candle.o), high: Number(candle.h), low: Number(candle.l), close: Number(candle.c) });
     };
-    return () => { active = false; stream.close(); chart.remove(); };
+    return () => { active = false; stream.close(); chart.timeScale().unsubscribeVisibleTimeRangeChange(refreshOverview); chart.timeScale().unsubscribeVisibleLogicalRangeChange(refreshOverview); overviewChartRef.current = null; chart.remove(); };
   }, [symbol, timezone, mobilePwa]);
 
   useEffect(() => {
@@ -406,6 +423,25 @@ function Workspace() {
       return x === null || x === undefined || y === null || y === undefined ? [] : [{ x, y }];
     });
     return <g className="ny-interest-markers">{markers.map((marker, index) => <circle key={`${marker.x}-${index}`} cx={marker.x} cy={marker.y} r="6" className="ny-interest-marker" />)}</g>;
+  }
+
+  function renderOverviewSessions() {
+    void overviewRevision;
+    if (!showSessions || !overviewChartRef.current) return null;
+    const range = overviewChartRef.current.timeScale().getVisibleRange();
+    if (!range) return null;
+    const from = timeNumber(range.from) - 2 * 86400;
+    const to = timeNumber(range.to) + 2 * 86400;
+    const events: Array<{ x: number; color: string; label: string; date: string }> = [];
+    for (let day = new Date(from * 1000); day.getTime() / 1000 <= to; day.setUTCDate(day.getUTCDate() + 1)) {
+      MARKET_SESSIONS.forEach(session => [[session.open, 'Open'], [session.close, 'Close']].forEach(([hour, type]) => {
+        if (session.name === 'New York' && type === 'Close') return;
+        const eventTime = timestampInTimezone(day.getUTCFullYear(), day.getUTCMonth() + 1, day.getUTCDate(), Number(hour), SESSION_TIMEZONE);
+        const x = overviewChartRef.current?.timeScale().timeToCoordinate(eventTime as UTCTimestamp);
+        if (x !== null && x !== undefined) events.push({ x, color: session.color, label: `${session.name} ${type}`, date: sessionDateLabel(eventTime, timezone) });
+      }));
+    }
+    return <g className="session-indicator">{events.map((event, index) => <g key={`${event.label}-${event.x}-${index}`}><line x1={event.x} y1="0" x2={event.x} y2={overviewSize.height} stroke={event.color} className="session-line" /><text x={event.x + 4} y="18" fill={event.color} className="session-label"><tspan x={event.x + 4} dy="0">{event.label}</tspan><tspan x={event.x + 4} dy="26">{event.date}</tspan></text></g>)}</g>;
   }
 
   function drawingAt(point: { x: number; y: number }) {
@@ -635,7 +671,7 @@ function Workspace() {
   </div><button className="logout-button" onClick={() => void auth.logout()} aria-label="Cerrar sesión">Salir</button></div>;
 
   const toolOptions = [['line', '╱', 'Línea'], ['ruler', '↔', 'Medir'], ['long', 'L', 'Long'], ['short', 'S', 'Short']] as const;
-  const chartsRow = <div className="charts-row"><section className="primary-chart"><div className="chart-panel-label">1M · AJUSTE DE ENTRADA</div>{chartStageView}</section><section className="secondary-chart"><div className="chart-panel-label">5M · CONTEXTO</div><div ref={overviewChartContainer} className="overview-chart" /></section></div>;
+  const chartsRow = <div className="charts-row"><section className="primary-chart"><div className="chart-panel-label">1M · AJUSTE DE ENTRADA</div>{chartStageView}</section><section ref={overviewStage} className="secondary-chart"><div className="chart-panel-label">5M · CONTEXTO</div><div ref={overviewChartContainer} className="overview-chart" /><svg className="overview-overlay" viewBox={`0 0 ${overviewSize.width} ${overviewSize.height}`} preserveAspectRatio="none" aria-hidden="true">{renderOverviewSessions()}</svg></section></div>;
 
   return mobilePwa ? <main className="trading-shell pwa-shell">
     <header className="pwa-mobile-header"><div><span className="pwa-brand">helloworld</span><span className="pwa-market">BINANCE · {interval.toUpperCase()}</span></div><select className="pwa-symbol-select" value={symbol} onChange={event => setSymbol(event.target.value)} aria-label="Símbolo">{['BTCUSDT', 'ETHUSDT', 'BNBUSDT', 'SOLUSDT', 'XRPUSDT', 'DOGEUSDT'].map(option => <option key={option}>{option}</option>)}</select></header>
