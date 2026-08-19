@@ -124,6 +124,8 @@ function Workspace() {
   const chartStage = useRef<HTMLDivElement>(null);
   const chartRef = useRef<ReturnType<typeof createChart> | null>(null);
   const candlesRef = useRef<ReturnType<ReturnType<typeof createChart>['addSeries']> | null>(null);
+  const candleBarsRef = useRef<Array<{ time: UTCTimestamp; open: number; high: number; low: number; close: number }>>([]);
+  const loadingOlderRef = useRef(false);
   const candleDataRef = useRef<Array<{ time: UTCTimestamp; close: number }>>([]);
   const [symbol, setSymbol] = useState('BTCUSDT');
   const [interval, setInterval] = useState<'1s' | '1m' | '3m' | '5m' | '15m'>('1m');
@@ -170,17 +172,42 @@ function Workspace() {
     const candles = chart.addSeries(CandlestickSeries, { upColor: '#64d39a', downColor: '#f27e7e', borderVisible: false, wickUpColor: '#64d39a', wickDownColor: '#f27e7e' });
     chartRef.current = chart;
     candlesRef.current = candles;
-    const refreshDrawings = () => setViewportRevision(value => value + 1);
+    let active = true;
+    const refreshDrawings = () => {
+      const logicalRange = chart.timeScale().getVisibleLogicalRange();
+      if (logicalRange && logicalRange.from < 80 && !loadingOlderRef.current && candleBarsRef.current.length > 0) {
+        const oldest = Number(candleBarsRef.current[0].time);
+        const sevenDaysAgo = Math.floor(Date.now() / 1000) - 7 * 86400;
+        if (oldest > sevenDaysAgo) {
+          loadingOlderRef.current = true;
+          fetch(`https://api.binance.com/api/v3/klines?symbol=${symbol}&interval=${interval}&limit=1000&endTime=${Math.max(sevenDaysAgo * 1000, oldest * 1000 - 1)}`)
+            .then(response => response.json())
+            .then(rows => {
+              if (!active || !Array.isArray(rows) || rows.length === 0) return;
+              const older = rows.map(row => ({ time: Math.floor(Number(row[0]) / 1000) as UTCTimestamp, open: Number(row[1]), high: Number(row[2]), low: Number(row[3]), close: Number(row[4]) }));
+              candleBarsRef.current = [...older, ...candleBarsRef.current].filter((bar, index, all) => index === 0 || bar.time !== all[index - 1].time);
+              candleBarsRef.current = candleBarsRef.current.filter(bar => Number(bar.time) >= sevenDaysAgo);
+              candleDataRef.current = candleBarsRef.current.map(({ time, close }) => ({ time, close }));
+              candles.setData(candleBarsRef.current);
+              setViewportRevision(value => value + 1);
+            })
+            .catch(() => undefined)
+            .finally(() => { loadingOlderRef.current = false; });
+        }
+      }
+      setViewportRevision(value => value + 1);
+    };
     chart.timeScale().subscribeVisibleTimeRangeChange(refreshDrawings);
     chart.timeScale().subscribeVisibleLogicalRangeChange(refreshDrawings);
-    let active = true;
     candleDataRef.current = [];
+    candleBarsRef.current = [];
     const stream = new WebSocket(`wss://stream.binance.com:9443/ws/${symbol.toLowerCase()}@kline_${interval}`);
     fetch(`https://api.binance.com/api/v3/klines?symbol=${symbol}&interval=${interval}&limit=500`)
       .then(response => response.json())
       .then(rows => {
         if (!active || !Array.isArray(rows)) return;
         const parsed = rows.map(row => ({ time: Math.floor(Number(row[0]) / 1000) as UTCTimestamp, open: Number(row[1]), high: Number(row[2]), low: Number(row[3]), close: Number(row[4]) }));
+        candleBarsRef.current = parsed;
         candleDataRef.current = parsed.map(({ time, close }) => ({ time, close }));
         candles.setData(parsed);
         chart.timeScale().fitContent();
@@ -191,7 +218,8 @@ function Workspace() {
       if (!active) return;
       const candle = JSON.parse(event.data).k;
       const next = { time: Math.floor(candle.t / 1000) as UTCTimestamp, open: Number(candle.o), high: Number(candle.h), low: Number(candle.l), close: Number(candle.c) };
-      candleDataRef.current = [...candleDataRef.current.filter(value => value.time !== next.time), { time: next.time, close: next.close }].slice(-1200);
+      candleBarsRef.current = [...candleBarsRef.current.filter(value => value.time !== next.time), next].sort((left, right) => Number(left.time) - Number(right.time));
+      candleDataRef.current = candleBarsRef.current.map(({ time, close }) => ({ time, close }));
       candles.update(next);
       setDrawings(current => activePositionIndex === null ? current : current.map((drawing, index) => index === activePositionIndex && (drawing.type === 'long' || drawing.type === 'short')
         ? { ...drawing, end: { time: next.time, price: next.close }, stop: drawing.stop ? { ...drawing.stop, time: next.time } : undefined }
@@ -206,6 +234,8 @@ function Workspace() {
       chartRef.current = null;
       candlesRef.current = null;
       candleDataRef.current = [];
+      candleBarsRef.current = [];
+      loadingOlderRef.current = false;
       chart.remove();
     };
   }, [symbol, interval, activePositionIndex]);
