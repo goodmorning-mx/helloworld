@@ -265,6 +265,8 @@ function Workspace() {
   const paperReadyRef = useRef(false);
   const [paperReady, setPaperReady] = useState(false);
   const [paperSyncError, setPaperSyncError] = useState('');
+  const [visibleClosedId, setVisibleClosedId] = useState<string | null>(null);
+  const [paperTab, setPaperTab] = useState<'open' | 'closed'>('open');
 
   useEffect(() => {
     const removeSelected = (event: KeyboardEvent) => {
@@ -294,7 +296,7 @@ function Workspace() {
         id: string; symbol: string; side: 'long' | 'short'; chart: ChartCanvas;
         entry_time: number; entry_price: number; current_time: number; current_price: number;
         stop_time: number; stop_price: number; target_time: number; target_price: number;
-        status: 'OPEN' | 'CLOSED - WIN' | 'CLOSED - FAILED'; close_reason?: 'TP' | 'SL' | null;
+        status: 'OPEN' | 'CLOSED - WIN' | 'CLOSED - FAILED'; close_reason?: 'TP' | 'SL' | null; updated_at?: string;
       }>>;
     }).then(operations => {
       if (!active) return;
@@ -314,6 +316,8 @@ function Workspace() {
       } satisfies Drawing));
       setDrawings(current => [...current.filter(drawing => !drawing.paper), ...restored]);
       const activeIndex = restored.findIndex(operation => !operation.closed);
+      const lastClosed = [...operations].filter(operation => operation.status !== 'OPEN').sort((left, right) => Date.parse(right.updated_at ?? '') - Date.parse(left.updated_at ?? ''))[0];
+      setVisibleClosedId(lastClosed?.id ?? null);
       activePositionIndexRef.current = activeIndex >= 0 ? activeIndex : null;
       setActivePositionIndex(activePositionIndexRef.current);
       paperReadyRef.current = true;
@@ -360,6 +364,7 @@ function Workspace() {
       if (!series) return;
       drawings.forEach((drawing, index) => {
         if (!drawing.paper || (drawing.type !== 'long' && drawing.type !== 'short')) return;
+        if (drawing.closed && drawing.id !== visibleClosedId) return;
         if (canvas === 'context' ? drawing.chart !== 'context' : drawing.chart === 'context') return;
         const targetPrice = drawing.target?.price ?? drawing.end.price;
         const stopPrice = drawing.stop?.price;
@@ -397,7 +402,7 @@ function Workspace() {
       nativePriceLinesRef.current.forEach(({ series, line }) => series.removePriceLine(line));
       nativePriceLinesRef.current = [];
     };
-  }, [drawings, symbol, interval, mobilePwa]);
+  }, [drawings, symbol, interval, mobilePwa, visibleClosedId]);
 
   useEffect(() => {
     if (!chartStage.current) return;
@@ -510,6 +515,7 @@ function Workspace() {
           const hitStop = bothTouched ? !hitTarget : stopTouched;
           const closeReason: 'TP' | 'SL' | undefined = hitTarget ? 'TP' : hitStop ? 'SL' : undefined;
           const status: Drawing['status'] = closeReason === 'TP' ? 'CLOSED - WIN' : closeReason === 'SL' ? 'CLOSED - FAILED' : 'OPEN';
+          if (closeReason && drawing.id) setVisibleClosedId(drawing.id);
           return {
             ...drawing,
             end: { time: next.time, price: next.close },
@@ -994,6 +1000,7 @@ function Workspace() {
     };
     setDrawings(current => {
       const next = [...current, position];
+      setVisibleClosedId(null);
       activePositionIndexRef.current = next.length - 1;
       setActivePositionIndex(next.length - 1);
       setSelectedDrawing(null);
@@ -1007,9 +1014,10 @@ function Workspace() {
   }
 
   const paperPositions = drawings.filter(drawing => drawing.paper && (drawing.type === 'long' || drawing.type === 'short'));
+  const displayedPaperPositions = paperPositions.filter(position => paperTab === 'open' ? !position.closed : position.closed);
   const positionsTable = <section className="positions-panel" aria-label="Posiciones abiertas">
-    <div className="positions-panel-head"><div><span className="positions-kicker">TRADING</span><h2>Posiciones abiertas</h2></div><span className="paper-badge">PAPER</span></div>{paperSyncError && <p className="paper-sync-error" role="status">{paperSyncError}</p>}
-    {paperPositions.length === 0 ? <p className="positions-empty">No hay operaciones abiertas.</p> : <div className="positions-table-scroll"><table className="positions-table"><thead><tr><th>Instrumento</th><th>Lado</th><th>Entrada</th><th>Actual</th><th>Margen</th><th>R:R</th><th>PNL</th><th>ROE</th><th>Estado</th></tr></thead><tbody>{paperPositions.map((position, index) => {
+    <div className="positions-panel-head"><div><span className="positions-kicker">TRADING</span><h2>Paper operations</h2></div><span className="paper-badge">PAPER</span></div>{paperSyncError && <p className="paper-sync-error" role="status">{paperSyncError}</p>}<div className="paper-tabs" role="tablist" aria-label="Paper operations"><button role="tab" aria-selected={paperTab === 'open'} className={paperTab === 'open' ? 'paper-tab-active' : ''} onClick={() => setPaperTab('open')}>Abiertas <b>{paperPositions.filter(position => !position.closed).length}</b></button><button role="tab" aria-selected={paperTab === 'closed'} className={paperTab === 'closed' ? 'paper-tab-active' : ''} onClick={() => setPaperTab('closed')}>Cerradas <b>{paperPositions.filter(position => position.closed).length}</b></button></div>
+    {displayedPaperPositions.length === 0 ? <p className="positions-empty">{paperTab === 'open' ? 'No hay operaciones abiertas.' : 'No hay operaciones cerradas.'}</p> : <div className="positions-table-scroll"><table className="positions-table"><thead><tr><th>Instrumento</th><th>Lado</th><th>Entrada</th><th>Actual</th><th>Margen</th><th>R:R</th><th>PNL</th><th>ROE</th><th>Estado</th></tr></thead><tbody>{displayedPaperPositions.map((position, index) => {
       const direction = position.type === 'long' ? 1 : -1;
       const margin = 100;
       const leverage = 10;
@@ -1079,7 +1087,7 @@ function Workspace() {
   };
 
   const chartStageView = <div ref={chartStage} className={`chart-stage ${tool ? 'drawing-mode' : ''}`} onPointerDownCapture={startDrawing} onPointerMoveCapture={updateDrawing} onPointerUpCapture={finishDrawing} onPointerCancelCapture={() => { setDrawingStart(null); setDrawingEnd(null); setMoveStart(null); setResizeStart(null); }}>
-    <div ref={chartContainer} className="candlestick-chart" /><svg className="drawing-overlay" viewBox={`0 0 ${stageSize.width} ${stageSize.height}`} preserveAspectRatio="none" aria-hidden="true">{renderSessionIndicator()}{renderInterestMarkers()}{drawings.map((drawing, index) => drawing.chart !== 'context' ? renderDrawing(drawing, index, 'entry') : null)}{tool && drawingStart && drawingEnd && drawingCanvas === 'entry' && renderDrawing({ type: tool, chart: 'entry', start: drawingStart, end: drawingEnd }, 'preview', 'entry')}{lassoStart && lassoEnd && drawingCanvas === 'entry' && <rect x={Math.min(lassoStart.x, lassoEnd.x)} y={Math.min(lassoStart.y, lassoEnd.y)} width={Math.abs(lassoEnd.x - lassoStart.x)} height={Math.abs(lassoEnd.y - lassoStart.y)} className="selection-lasso" />}</svg><div className="chart-bottom-controls"><span className="timezone-icon" aria-hidden="true">◷</span><select className="timezone-select" value={timezone} onChange={event => setTimezone(event.target.value)} aria-label="Zona horaria">{TIMEZONES.map(([label, value]) => <option key={value} value={value}>{label}</option>)}</select></div>
+    <div ref={chartContainer} className="candlestick-chart" /><svg className="drawing-overlay" viewBox={`0 0 ${stageSize.width} ${stageSize.height}`} preserveAspectRatio="none" aria-hidden="true">{renderSessionIndicator()}{renderInterestMarkers()}{drawings.map((drawing, index) => (!drawing.paper || !drawing.closed || drawing.id === visibleClosedId) && drawing.chart !== 'context' ? renderDrawing(drawing, index, 'entry') : null)}{tool && drawingStart && drawingEnd && drawingCanvas === 'entry' && renderDrawing({ type: tool, chart: 'entry', start: drawingStart, end: drawingEnd }, 'preview', 'entry')}{lassoStart && lassoEnd && drawingCanvas === 'entry' && <rect x={Math.min(lassoStart.x, lassoEnd.x)} y={Math.min(lassoStart.y, lassoEnd.y)} width={Math.abs(lassoEnd.x - lassoStart.x)} height={Math.abs(lassoEnd.y - lassoStart.y)} className="selection-lasso" />}</svg><div className="chart-bottom-controls"><span className="timezone-icon" aria-hidden="true">◷</span><select className="timezone-select" value={timezone} onChange={event => setTimezone(event.target.value)} aria-label="Zona horaria">{TIMEZONES.map(([label, value]) => <option key={value} value={value}>{label}</option>)}</select></div>
     <div className="floating-order-buttons" aria-label="Abrir operación simulada"><button className="open-long-button" disabled={!paperReady} onClick={() => void openSimulatedPosition('long')}>▲ <span>Abrir Long</span></button><button className="open-short-button" disabled={!paperReady} onClick={() => void openSimulatedPosition('short')}>▼ <span>Abrir Short</span></button></div>
   </div>;
 
@@ -1094,7 +1102,7 @@ function Workspace() {
   </div>{profileButton}<button className="logout-button" onClick={() => void auth.logout()} aria-label="Cerrar sesión">Salir</button></div>;
 
   const toolOptions = [['line', '╱', 'Línea'], ['ruler', '▥', 'Medir'], ['long', 'L', 'Long'], ['short', 'S', 'Short']] as const;
-  const chartsRow = <div className="charts-row"><section ref={overviewStage} className={`secondary-chart ${tool ? 'drawing-mode' : ''}`} onPointerDownCapture={event => startDrawing(event, 'context')} onPointerMoveCapture={updateDrawing} onPointerUpCapture={finishDrawing} onPointerCancelCapture={() => { setDrawingStart(null); setDrawingEnd(null); setMoveStart(null); setResizeStart(null); setLassoStart(null); setLassoEnd(null); }}><div className="chart-panel-label">5M · CONTEXTO · BTCUSDT</div><div ref={overviewChartContainer} className="overview-chart" /><svg className="overview-overlay" viewBox={`0 0 ${overviewSize.width} ${overviewSize.height}`} preserveAspectRatio="none" aria-hidden="true">{renderOverviewSessions()}{renderOverviewInterestMarkers()}{drawings.map((drawing, index) => drawing.chart === 'context' ? renderDrawing(drawing, index, 'context') : null)}{tool && drawingStart && drawingEnd && drawingCanvas === 'context' && renderDrawing({ type: tool, chart: 'context', start: drawingStart, end: drawingEnd }, 'preview', 'context')}{lassoStart && lassoEnd && drawingCanvas === 'context' && <rect x={Math.min(lassoStart.x, lassoEnd.x)} y={Math.min(lassoStart.y, lassoEnd.y)} width={Math.abs(lassoEnd.x - lassoStart.x)} height={Math.abs(lassoEnd.y - lassoStart.y)} className="selection-lasso" />}</svg></section><section className="primary-chart"><div className="chart-panel-label">1M · AJUSTE DE ENTRADA</div>{chartStageView}</section></div>;
+  const chartsRow = <div className="charts-row"><section ref={overviewStage} className={`secondary-chart ${tool ? 'drawing-mode' : ''}`} onPointerDownCapture={event => startDrawing(event, 'context')} onPointerMoveCapture={updateDrawing} onPointerUpCapture={finishDrawing} onPointerCancelCapture={() => { setDrawingStart(null); setDrawingEnd(null); setMoveStart(null); setResizeStart(null); setLassoStart(null); setLassoEnd(null); }}><div className="chart-panel-label">5M · CONTEXTO · BTCUSDT</div><div ref={overviewChartContainer} className="overview-chart" /><svg className="overview-overlay" viewBox={`0 0 ${overviewSize.width} ${overviewSize.height}`} preserveAspectRatio="none" aria-hidden="true">{renderOverviewSessions()}{renderOverviewInterestMarkers()}{drawings.map((drawing, index) => (!drawing.paper || !drawing.closed || drawing.id === visibleClosedId) && drawing.chart === 'context' ? renderDrawing(drawing, index, 'context') : null)}{tool && drawingStart && drawingEnd && drawingCanvas === 'context' && renderDrawing({ type: tool, chart: 'context', start: drawingStart, end: drawingEnd }, 'preview', 'context')}{lassoStart && lassoEnd && drawingCanvas === 'context' && <rect x={Math.min(lassoStart.x, lassoEnd.x)} y={Math.min(lassoStart.y, lassoEnd.y)} width={Math.abs(lassoEnd.x - lassoStart.x)} height={Math.abs(lassoEnd.y - lassoStart.y)} className="selection-lasso" />}</svg></section><section className="primary-chart"><div className="chart-panel-label">1M · AJUSTE DE ENTRADA</div>{chartStageView}</section></div>;
 
   return mobilePwa ? <main className="trading-shell pwa-shell">
     <header className="pwa-mobile-header"><div><span className="pwa-brand">helloworld</span><span className="pwa-market">BINANCE · {entryInterval.toUpperCase()} ENTRADA · {interval.toUpperCase()} CONTEXTO</span></div><select className="pwa-symbol-select" value={symbol} onChange={event => setSymbol(event.target.value)} aria-label="Símbolo">{['BTCUSDT', 'ETHUSDT', 'BNBUSDT', 'SOLUSDT', 'XRPUSDT', 'DOGEUSDT'].map(option => <option key={option}>{option}</option>)}</select>{profileButton}</header>
