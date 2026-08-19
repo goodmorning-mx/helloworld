@@ -107,14 +107,68 @@ type BinanceAccount = {
   events?: Array<{ time?: string; type?: string; symbol?: string; status?: string }>;
 };
 
-function BinanceAccountPanel() {
+function ProfileModal({ onClose, onSaved }: { onClose: () => void; onSaved: () => void }) {
+  const auth = useAuth();
+  const [apiKey, setApiKey] = useState('');
+  const [apiSecret, setApiSecret] = useState('');
+  const [status, setStatus] = useState<{ configured: boolean; masked_api_key?: string | null; updated_at?: string | null } | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [removing, setRemoving] = useState(false);
+  const [message, setMessage] = useState('');
+  const [error, setError] = useState('');
+  const headers: Record<string, string> = auth.accessToken ? { Authorization: `Bearer ${auth.accessToken}` } : {};
+
+  useEffect(() => {
+    let active = true;
+    fetch(`${apiUrl}/trading/binance/credentials`, { headers, credentials: 'include' })
+      .then(async response => { if (!response.ok) throw new Error('No se pudo consultar tu perfil.'); return response.json() as Promise<{ configured: boolean; masked_api_key?: string | null; updated_at?: string | null }>; })
+      .then(payload => { if (active) setStatus(payload); })
+      .catch(reason => { if (active) setError(reason instanceof Error ? reason.message : 'No se pudo consultar tu perfil.'); })
+      .finally(() => { if (active) setLoading(false); });
+    return () => { active = false; };
+  }, [auth.accessToken]);
+
+  async function save(event: FormEvent) {
+    event.preventDefault(); setSaving(true); setError(''); setMessage('');
+    try {
+      const response = await fetch(`${apiUrl}/trading/binance/credentials`, { method: 'PUT', headers: { ...headers, 'Content-Type': 'application/json' }, credentials: 'include', body: JSON.stringify({ api_key: apiKey, api_secret: apiSecret }) });
+      const payload = await response.json() as { detail?: string; message?: string; configured?: boolean; masked_api_key?: string };
+      if (!response.ok) throw new Error(payload.detail ?? 'No se pudieron guardar las credenciales.');
+      setStatus(payload as typeof status); setApiKey(''); setApiSecret(''); setMessage('Credenciales guardadas. El monitor comenzará a validar la conexión.'); onSaved();
+    } catch (reason) { setError(reason instanceof Error ? reason.message : 'No se pudieron guardar las credenciales.'); }
+    finally { setSaving(false); }
+  }
+
+  async function remove() {
+    setRemoving(true); setError(''); setMessage('');
+    try {
+      const response = await fetch(`${apiUrl}/trading/binance/credentials`, { method: 'DELETE', headers, credentials: 'include' });
+      if (!response.ok) throw new Error('No se pudieron eliminar las credenciales.');
+      setStatus({ configured: false }); setMessage('Credenciales eliminadas.'); onSaved();
+    } catch (reason) { setError(reason instanceof Error ? reason.message : 'No se pudieron eliminar las credenciales.'); }
+    finally { setRemoving(false); }
+  }
+
+  return <div className="profile-modal-backdrop" role="presentation" onClick={onClose}>
+    <section className="profile-modal" role="dialog" aria-modal="true" aria-labelledby="profile-title" onClick={event => event.stopPropagation()}>
+      <div className="profile-modal-head"><div><span className="positions-kicker">CUENTA</span><h2 id="profile-title">Perfil</h2></div><button onClick={onClose} aria-label="Cerrar">×</button></div>
+      <div className="profile-identity"><span className="profile-avatar profile-avatar-large">{(auth.identity?.name ?? auth.identity?.email ?? 'U').slice(0, 1).toUpperCase()}</span><div><strong>{auth.identity?.name ?? 'Usuario'}</strong><small>{auth.identity?.email ?? ''}</small></div></div>
+      <div className="profile-section"><span className="positions-kicker">BINANCE · FUTURES</span><p className="profile-note">Tus claves son por usuario, se cifran en el backend y nunca se muestran de nuevo. Usa una key sin permisos de retiro y limita su IP.</p>{loading ? <p className="profile-muted">Consultando configuración…</p> : status?.configured ? <p className="profile-configured">Configurada · {status.masked_api_key}</p> : <p className="profile-muted">Aún no hay credenciales configuradas.</p>}</div>
+      <form className="profile-form" onSubmit={save}><label className="profile-field"><span>API key</span><input type="text" value={apiKey} onChange={event => setApiKey(event.target.value)} autoComplete="off" placeholder={status?.configured ? 'Reemplazar API key' : 'Pega tu API key'} required /></label><label className="profile-field"><span>API secret</span><input type="password" value={apiSecret} onChange={event => setApiSecret(event.target.value)} autoComplete="new-password" placeholder="Pega tu API secret" required /></label>{error && <p className="profile-error" role="alert">{error}</p>}{message && <p className="profile-success" role="status">{message}</p>}<div className="profile-actions"><button className="profile-save" type="submit" disabled={saving || removing}>{saving ? 'Guardando…' : 'Guardar credenciales'}</button>{status?.configured && <button className="profile-remove" type="button" onClick={() => void remove()} disabled={saving || removing}>{removing ? 'Eliminando…' : 'Eliminar claves'}</button>}</div></form>
+    </section>
+  </div>;
+}
+
+function BinanceAccountPanel({ revision = 0 }: { revision?: number }) {
+  const auth = useAuth();
   const [account, setAccount] = useState<BinanceAccount | null>(null);
   const [loading, setLoading] = useState(true);
   useEffect(() => {
     let active = true;
     const load = async () => {
       try {
-        const response = await fetch(`${apiUrl}/trading/binance`, { credentials: 'include' });
+        const response = await fetch(`${apiUrl}/trading/binance`, { headers: auth.accessToken ? { Authorization: `Bearer ${auth.accessToken}` } : {}, credentials: 'include' });
         if (!response.ok) throw new Error(`Binance ${response.status}`);
         const payload = await response.json() as BinanceAccount;
         if (active) setAccount(payload);
@@ -127,7 +181,7 @@ function BinanceAccountPanel() {
     void load();
     const timer = window.setInterval(() => void load(), 10_000);
     return () => { active = false; window.clearInterval(timer); };
-  }, []);
+  }, [auth.accessToken, revision]);
   const online = Boolean(account?.healthy && account?.stream_connected);
   return <section className="binance-account-panel" aria-label="Estado de Binance">
     <div className="binance-panel-head"><div><span className="positions-kicker">BINANCE · CUENTA</span><h2>Estado de Binance</h2></div><span className={`stream-badge ${online ? 'stream-good' : 'stream-bad'}`}>{loading ? 'Consultando…' : online ? 'Saludable · User Stream' : 'Sin conexión'}</span></div>
@@ -165,6 +219,8 @@ function Access() {
 function Workspace() {
   const auth = useAuth();
   const mobilePwa = useMobilePwa();
+  const [showProfile, setShowProfile] = useState(false);
+  const [profileRevision, setProfileRevision] = useState(0);
   const chartContainer = useRef<HTMLDivElement>(null);
   const overviewChartContainer = useRef<HTMLDivElement>(null);
   const overviewChartRef = useRef<ReturnType<typeof createChart> | null>(null);
@@ -853,24 +909,27 @@ function Workspace() {
     <div className="floating-order-buttons" aria-label="Abrir operación simulada"><button className="open-long-button" onClick={() => openSimulatedPosition('long')}>▲ <span>Abrir Long</span></button><button className="open-short-button" onClick={() => openSimulatedPosition('short')}>▼ <span>Abrir Short</span></button></div>
   </div>;
 
+  const avatarLabel = (auth.identity?.name ?? auth.identity?.email ?? 'U').slice(0, 1).toUpperCase();
+  const profileButton = <button className="profile-avatar" onClick={() => setShowProfile(true)} aria-label="Abrir perfil" title="Perfil">{avatarLabel}</button>;
   const desktopHeader = <div className="symbol-bar"><select className="symbol-select" value={symbol} onChange={event => setSymbol(event.target.value)} aria-label="Símbolo">
     {['BTCUSDT', 'ETHUSDT', 'BNBUSDT', 'SOLUSDT', 'XRPUSDT', 'DOGEUSDT'].map(option => <option key={option}>{option}</option>)}
   </select><select className="interval-select" value={interval} onChange={event => setInterval(event.target.value as typeof interval)} aria-label="Intervalo de contexto">{(['1s', '1m', '3m', '5m', '15m'] as const).map(value => <option key={value} value={value}>{value}</option>)}</select><span className="chart-source">BINANCE · {entryInterval.toUpperCase()} ENTRADA · {interval.toUpperCase()} CONTEXTO</span><button className={`session-toggle ${showSessions ? 'session-active' : ''}`} onClick={() => setShowSessions(value => !value)} aria-label="Mostrar sesiones" title="Mostrar sesiones">Sesiones</button><div className="chart-tools" aria-label="Herramientas del gráfico">
     <button className={!tool ? 'tool-active' : ''} onClick={() => setTool(null)} aria-label="Seleccionar y navegar" title="Seleccionar y navegar">↖</button>
     {([['line', '╱', 'Línea'], ['ruler', '▥', 'Regla'], ['long', 'L', 'Long'], ['short', 'S', 'Short']] as const).map(([key, icon, label]) => <button key={key} className={tool === key ? 'tool-active' : ''} onClick={() => chooseTool(key)} aria-label={label} title={label}>{icon}</button>)}
     <button onClick={() => setDrawings([])} aria-label="Borrar dibujos" title="Borrar dibujos">×</button>
-  </div><button className="logout-button" onClick={() => void auth.logout()} aria-label="Cerrar sesión">Salir</button></div>;
+  </div>{profileButton}<button className="logout-button" onClick={() => void auth.logout()} aria-label="Cerrar sesión">Salir</button></div>;
 
   const toolOptions = [['line', '╱', 'Línea'], ['ruler', '▥', 'Medir'], ['long', 'L', 'Long'], ['short', 'S', 'Short']] as const;
   const chartsRow = <div className="charts-row"><section ref={overviewStage} className={`secondary-chart ${tool ? 'drawing-mode' : ''}`} onPointerDownCapture={event => startDrawing(event, 'context')} onPointerMoveCapture={updateDrawing} onPointerUpCapture={finishDrawing} onPointerCancelCapture={() => { setDrawingStart(null); setDrawingEnd(null); setMoveStart(null); setResizeStart(null); setLassoStart(null); setLassoEnd(null); }}><div className="chart-panel-label">5M · CONTEXTO · BTCUSDT</div><div ref={overviewChartContainer} className="overview-chart" /><svg className="overview-overlay" viewBox={`0 0 ${overviewSize.width} ${overviewSize.height}`} preserveAspectRatio="none" aria-hidden="true">{renderOverviewSessions()}{renderOverviewInterestMarkers()}{drawings.map((drawing, index) => drawing.chart === 'context' ? renderDrawing(drawing, index, 'context') : null)}{tool && drawingStart && drawingEnd && drawingCanvas === 'context' && renderDrawing({ type: tool, chart: 'context', start: drawingStart, end: drawingEnd }, 'preview', 'context')}{lassoStart && lassoEnd && drawingCanvas === 'context' && <rect x={Math.min(lassoStart.x, lassoEnd.x)} y={Math.min(lassoStart.y, lassoEnd.y)} width={Math.abs(lassoEnd.x - lassoStart.x)} height={Math.abs(lassoEnd.y - lassoStart.y)} className="selection-lasso" />}</svg></section><section className="primary-chart"><div className="chart-panel-label">1M · AJUSTE DE ENTRADA</div>{chartStageView}</section></div>;
 
   return mobilePwa ? <main className="trading-shell pwa-shell">
-    <header className="pwa-mobile-header"><div><span className="pwa-brand">helloworld</span><span className="pwa-market">BINANCE · {entryInterval.toUpperCase()} ENTRADA · {interval.toUpperCase()} CONTEXTO</span></div><select className="pwa-symbol-select" value={symbol} onChange={event => setSymbol(event.target.value)} aria-label="Símbolo">{['BTCUSDT', 'ETHUSDT', 'BNBUSDT', 'SOLUSDT', 'XRPUSDT', 'DOGEUSDT'].map(option => <option key={option}>{option}</option>)}</select></header>
-    <section className="pwa-chart-wrap">{chartStageView}</section><BinanceAccountPanel />{positionsTable}
+    <header className="pwa-mobile-header"><div><span className="pwa-brand">helloworld</span><span className="pwa-market">BINANCE · {entryInterval.toUpperCase()} ENTRADA · {interval.toUpperCase()} CONTEXTO</span></div><select className="pwa-symbol-select" value={symbol} onChange={event => setSymbol(event.target.value)} aria-label="Símbolo">{['BTCUSDT', 'ETHUSDT', 'BNBUSDT', 'SOLUSDT', 'XRPUSDT', 'DOGEUSDT'].map(option => <option key={option}>{option}</option>)}</select>{profileButton}</header>
+    <section className="pwa-chart-wrap">{chartStageView}</section><BinanceAccountPanel revision={profileRevision} />{positionsTable}
     <nav className="pwa-bottom-nav" aria-label="Controles PWA"><button onClick={() => setTool(null)} className={!tool ? 'pwa-nav-active' : ''}>↖<span>Seleccionar</span></button><button onClick={() => setMobileSheet('indicators')} className={showSessions ? 'pwa-nav-active' : ''}>◉<span>Indicadores</span></button><button onClick={() => setMobileSheet('tools')} className={tool ? 'pwa-nav-active' : ''}>⌁<span>Herramientas</span></button><button onClick={() => void auth.logout()}>⇥<span>Salir</span></button></nav>
     {mobileSheet === 'indicators' && <MobileSheet title="Indicadores" onClose={() => setMobileSheet(null)}><button className={`mobile-option ${showSessions ? 'option-active' : ''}`} onClick={() => setShowSessions(value => !value)}><span><b>Sesiones de mercado</b><small>Tokyo, Londres, Nueva York y Sydney</small></span><i>{showSessions ? '✓' : ''}</i></button><label className="mobile-field">Intervalo<select value={interval} onChange={event => setInterval(event.target.value as typeof interval)}>{(['1s', '1m', '3m', '5m', '15m'] as const).map(value => <option key={value}>{value}</option>)}</select></label><label className="mobile-field">Zona horaria<select value={timezone} onChange={event => setTimezone(event.target.value)}>{TIMEZONES.map(([label, value]) => <option key={value} value={value}>{label}</option>)}</select></label></MobileSheet>}
     {mobileSheet === 'tools' && <MobileSheet title="Herramientas" onClose={() => setMobileSheet(null)}><div className="mobile-tool-grid"><button className={!tool ? 'option-active' : ''} onClick={() => { setTool(null); setMobileSheet(null); }}>↖<span>Seleccionar</span></button>{toolOptions.map(([key, icon, label]) => <button key={key} className={tool === key ? 'option-active' : ''} onClick={() => { chooseTool(key); setMobileSheet(null); }}>{icon}<span>{label}</span></button>)}<button onClick={() => { setDrawings([]); activePositionIndexRef.current = null; setActivePositionIndex(null); }}>×<span>Borrar todo</span></button></div></MobileSheet>}
-  </main> : <main className="trading-shell">{desktopHeader}{chartsRow}<BinanceAccountPanel />{positionsTable}</main>;
+    {showProfile && <ProfileModal onClose={() => setShowProfile(false)} onSaved={() => setProfileRevision(value => value + 1)} />}
+  </main> : <main className="trading-shell">{desktopHeader}{chartsRow}<BinanceAccountPanel revision={profileRevision} />{positionsTable}{showProfile && <ProfileModal onClose={() => setShowProfile(false)} onSaved={() => setProfileRevision(value => value + 1)} />}</main>;
 }
 
 function App() {

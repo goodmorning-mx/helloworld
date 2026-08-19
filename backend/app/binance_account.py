@@ -25,11 +25,17 @@ logger = logging.getLogger(__name__)
 
 
 class BinanceAccountMonitor:
-    def __init__(self, settings: Settings):
-        self._settings = settings
-        self._key = settings.binance_api_key
-        self._secret = settings.binance_api_secret
-        self._base = settings.binance_base_url.rstrip("/")
+    def __init__(self, settings_or_key: Settings | str, api_secret: str | None = None, base_url: str | None = None):
+        # Settings is retained for backwards-compatible unit tests. Runtime
+        # monitors receive credentials belonging to exactly one authenticated user.
+        if isinstance(settings_or_key, Settings):
+            self._key = settings_or_key.binance_api_key
+            self._secret = settings_or_key.binance_api_secret
+            self._base = settings_or_key.binance_base_url.rstrip("/")
+        else:
+            self._key = settings_or_key.strip()
+            self._secret = (api_secret or "").strip()
+            self._base = (base_url or "https://fapi.binance.com").rstrip("/")
         self._ws_base = "wss://fstream.binance.com/ws"
         if "testnet" in self._base:
             self._ws_base = "wss://stream.binancefuture.com/ws"

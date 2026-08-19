@@ -16,7 +16,7 @@ from gm_mcp import Permission, RequestContext, ToolRegistry, tool
 
 from app.config import get_settings
 from app.database import create_database_engine
-from app.binance_account import BinanceAccountMonitor
+from app.binance_credentials import BinanceCredentialStore, BinanceMonitorManager
 
 settings = get_settings()
 engine = create_database_engine()
@@ -27,7 +27,8 @@ auth_service = AuthService(
 tool_registry = ToolRegistry()
 conversations: dict[str, Conversation] = {}
 paper_orders: list[dict[str, object]] = []
-binance_monitor = BinanceAccountMonitor(settings) if settings.binance_account_monitor_enabled and settings.binance_api_key and settings.binance_api_secret else None
+binance_credentials = BinanceCredentialStore(engine, settings)
+binance_manager = BinanceMonitorManager(binance_credentials, settings)
 
 
 class FallbackProvider:
@@ -124,17 +125,19 @@ class ChatInput(BaseModel):
     confirm: bool = False
 
 
+class BinanceCredentialsInput(BaseModel):
+    api_key: str = Field(min_length=10, max_length=256)
+    api_secret: str = Field(min_length=10, max_length=256)
+
+
 @app.on_event("startup")
 def initialize_auth_schema() -> None:
     auth_service.create_schema()
-    if binance_monitor is not None:
-        binance_monitor.start()
 
 
 @app.on_event("shutdown")
 def stop_binance_monitor() -> None:
-    if binance_monitor is not None:
-        binance_monitor.stop()
+    binance_manager.stop_all()
 
 
 @app.post("/auth/register")
@@ -171,9 +174,28 @@ def summary(identity: AuthIdentity = Depends(identity_dependency(auth_service)))
 
 @app.get("/trading/binance")
 def binance_account(identity: AuthIdentity = Depends(identity_dependency(auth_service))) -> dict[str, object]:
-    if binance_monitor is None:
-        return {"enabled": False, "healthy": False, "error": "Monitor Binance deshabilitado"}
-    return binance_monitor.snapshot()
+    if not settings.binance_account_monitor_enabled:
+        return {"enabled": False, "configured": False, "healthy": False, "error": "Monitor Binance deshabilitado"}
+    return binance_manager.snapshot(identity.user_id)
+
+
+@app.get("/trading/binance/credentials")
+def binance_credentials_status(identity: AuthIdentity = Depends(identity_dependency(auth_service))) -> dict[str, object]:
+    return binance_credentials.status(identity.user_id)
+
+
+@app.put("/trading/binance/credentials")
+def save_binance_credentials(payload: BinanceCredentialsInput, identity: AuthIdentity = Depends(identity_dependency(auth_service))) -> dict[str, object]:
+    try:
+        return {**binance_manager.save(identity.user_id, payload.api_key, payload.api_secret), "message": "Credenciales guardadas de forma segura."}
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@app.delete("/trading/binance/credentials")
+def delete_binance_credentials(identity: AuthIdentity = Depends(identity_dependency(auth_service))) -> dict[str, object]:
+    binance_manager.delete(identity.user_id)
+    return {"configured": False, "message": "Credenciales de Binance eliminadas."}
 
 
 @app.post("/agent/chat")

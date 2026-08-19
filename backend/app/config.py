@@ -21,6 +21,7 @@ class Settings(BaseSettings):
     binance_api_secret: str = Field(default="", alias="APISECRET")
     binance_base_url: str = Field(default="https://fapi.binance.com", alias="BINANCE_BASE_URL")
     binance_account_monitor_enabled: bool = Field(default=True, alias="BINANCE_ACCOUNT_MONITOR_ENABLED")
+    binance_credentials_encryption_key: str = Field(default="", alias="BINANCE_CREDENTIALS_ENCRYPTION_KEY")
 
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
