@@ -634,10 +634,11 @@ function Workspace() {
       const drawing = drawings[index];
       if (!drawing.paper || (drawing.type !== 'long' && drawing.type !== 'short')) continue;
       if ((canvas === 'context' && drawing.chart !== 'context') || (canvas === 'entry' && drawing.chart === 'context')) continue;
-      const target = drawing.target && screenPoint(drawing.target, canvas);
-      const stop = drawing.stop && screenPoint(drawing.stop, canvas);
-      if (target && Math.abs(point.y - target.y) <= 10) return { index, endpoint: 'target' as const };
-      if (stop && Math.abs(point.y - stop.y) <= 10) return { index, endpoint: 'stop' as const };
+      const { candles } = chartContext(canvas);
+      const targetY = drawing.target && candles ? candles.priceToCoordinate(drawing.target.price) : null;
+      const stopY = drawing.stop && candles ? candles.priceToCoordinate(drawing.stop.price) : null;
+      if (targetY !== null && targetY !== undefined && Math.abs(point.y - targetY) <= 12) return { index, endpoint: 'target' as const };
+      if (stopY !== null && stopY !== undefined && Math.abs(point.y - stopY) <= 12) return { index, endpoint: 'stop' as const };
     }
     return null;
   }
