@@ -133,6 +133,7 @@ function Workspace() {
   const candleDataRef = useRef<Array<{ time: UTCTimestamp; close: number }>>([]);
   const [symbol, setSymbol] = useState('BTCUSDT');
   const [interval, setInterval] = useState<'1s' | '1m' | '3m' | '5m' | '15m'>('5m');
+  const entryInterval = '1m' as const;
   const [timezone, setTimezone] = useState('America/Mexico_City');
   const [showSessions, setShowSessions] = useState(true);
   const [stageSize, setStageSize] = useState({ width: 1, height: 1 });
@@ -198,7 +199,7 @@ function Workspace() {
         const sevenDaysAgo = Math.floor(Date.now() / 1000) - 7 * 86400;
         if (oldest > sevenDaysAgo) {
           loadingOlderRef.current = true;
-          fetch(`https://api.binance.com/api/v3/klines?symbol=${symbol}&interval=${interval}&limit=1000&endTime=${Math.max(sevenDaysAgo * 1000, oldest * 1000 - 1)}`)
+          fetch(`https://api.binance.com/api/v3/klines?symbol=${symbol}&interval=${entryInterval}&limit=1000&endTime=${Math.max(sevenDaysAgo * 1000, oldest * 1000 - 1)}`)
             .then(response => response.json())
             .then(rows => {
               if (!active || !Array.isArray(rows) || rows.length === 0) return;
@@ -219,8 +220,8 @@ function Workspace() {
     chart.timeScale().subscribeVisibleLogicalRangeChange(refreshDrawings);
     candleDataRef.current = [];
     candleBarsRef.current = [];
-    const stream = new WebSocket(`wss://stream.binance.com:9443/ws/${symbol.toLowerCase()}@kline_${interval}`);
-    fetch(`https://api.binance.com/api/v3/klines?symbol=${symbol}&interval=${interval}&limit=500`)
+    const stream = new WebSocket(`wss://stream.binance.com:9443/ws/${symbol.toLowerCase()}@kline_${entryInterval}`);
+    fetch(`https://api.binance.com/api/v3/klines?symbol=${symbol}&interval=${entryInterval}&limit=500`)
       .then(response => response.json())
       .then(rows => {
         if (!active || !Array.isArray(rows)) return;
@@ -277,7 +278,7 @@ function Workspace() {
       loadingOlderRef.current = false;
       chart.remove();
     };
-  }, [symbol, interval]);
+  }, [symbol]);
 
   useEffect(() => {
     if (mobilePwa || !overviewChartContainer.current) return;
@@ -296,8 +297,8 @@ function Workspace() {
     chart.timeScale().subscribeVisibleTimeRangeChange(refreshOverview);
     chart.timeScale().subscribeVisibleLogicalRangeChange(refreshOverview);
     let active = true;
-    const stream = new WebSocket(`wss://stream.binance.com:9443/ws/${symbol.toLowerCase()}@kline_5m`);
-    fetch(`https://api.binance.com/api/v3/klines?symbol=${symbol}&interval=5m&limit=300`)
+    const stream = new WebSocket(`wss://stream.binance.com:9443/ws/${symbol.toLowerCase()}@kline_${interval}`);
+    fetch(`https://api.binance.com/api/v3/klines?symbol=${symbol}&interval=${interval}&limit=300`)
       .then(response => response.json())
       .then(rows => {
         if (!active || !Array.isArray(rows)) return;
@@ -314,7 +315,7 @@ function Workspace() {
       candles.update(next);
     };
     return () => { active = false; stream.close(); chart.timeScale().unsubscribeVisibleTimeRangeChange(refreshOverview); chart.timeScale().unsubscribeVisibleLogicalRangeChange(refreshOverview); overviewChartRef.current = null; overviewCandlesRef.current = null; overviewCandleDataRef.current = []; chart.remove(); };
-  }, [symbol, timezone, mobilePwa]);
+  }, [symbol, interval, timezone, mobilePwa]);
 
   useEffect(() => {
     const chart = chartRef.current;
@@ -603,7 +604,7 @@ function Workspace() {
     const targetDistance = stopDistance * 4;
     const target = entry * (1 + direction * targetDistance);
     const stop = entry * (1 - direction * stopDistance);
-    const intervalSeconds = interval === '1s' ? 1 : interval === '1m' ? 60 : interval === '3m' ? 180 : interval === '5m' ? 300 : 900;
+    const intervalSeconds = 60;
     const position: Drawing = {
       type,
       paper: true,
@@ -705,7 +706,7 @@ function Workspace() {
 
   const desktopHeader = <div className="symbol-bar"><select className="symbol-select" value={symbol} onChange={event => setSymbol(event.target.value)} aria-label="Símbolo">
     {['BTCUSDT', 'ETHUSDT', 'BNBUSDT', 'SOLUSDT', 'XRPUSDT', 'DOGEUSDT'].map(option => <option key={option}>{option}</option>)}
-  </select><select className="interval-select" value={interval} onChange={event => setInterval(event.target.value as typeof interval)} aria-label="Intervalo">{(['1s', '1m', '3m', '5m', '15m'] as const).map(value => <option key={value} value={value}>{value}</option>)}</select><span className="chart-source">BINANCE · {interval.toUpperCase()}</span><button className={`session-toggle ${showSessions ? 'session-active' : ''}`} onClick={() => setShowSessions(value => !value)} aria-label="Mostrar sesiones" title="Mostrar sesiones">Sesiones</button><div className="chart-tools" aria-label="Herramientas del gráfico">
+  </select><select className="interval-select" value={interval} onChange={event => setInterval(event.target.value as typeof interval)} aria-label="Intervalo de contexto">{(['1s', '1m', '3m', '5m', '15m'] as const).map(value => <option key={value} value={value}>{value}</option>)}</select><span className="chart-source">BINANCE · {entryInterval.toUpperCase()} ENTRADA · {interval.toUpperCase()} CONTEXTO</span><button className={`session-toggle ${showSessions ? 'session-active' : ''}`} onClick={() => setShowSessions(value => !value)} aria-label="Mostrar sesiones" title="Mostrar sesiones">Sesiones</button><div className="chart-tools" aria-label="Herramientas del gráfico">
     <button className={!tool ? 'tool-active' : ''} onClick={() => setTool(null)} aria-label="Seleccionar y navegar" title="Seleccionar y navegar">↖</button>
     {([['line', '╱', 'Línea'], ['ruler', '↔', 'Regla'], ['long', 'L', 'Long'], ['short', 'S', 'Short']] as const).map(([key, icon, label]) => <button key={key} className={tool === key ? 'tool-active' : ''} onClick={() => chooseTool(key)} aria-label={label} title={label}>{icon}</button>)}
     <button onClick={() => setDrawings([])} aria-label="Borrar dibujos" title="Borrar dibujos">×</button>
@@ -715,7 +716,7 @@ function Workspace() {
   const chartsRow = <div className="charts-row"><section ref={overviewStage} className="secondary-chart"><div className="chart-panel-label">5M · CONTEXTO · BTCUSDT</div><div ref={overviewChartContainer} className="overview-chart" /><svg className="overview-overlay" viewBox={`0 0 ${overviewSize.width} ${overviewSize.height}`} preserveAspectRatio="none" aria-hidden="true">{renderOverviewSessions()}{renderOverviewInterestMarkers()}</svg></section><section className="primary-chart"><div className="chart-panel-label">1M · AJUSTE DE ENTRADA</div>{chartStageView}</section></div>;
 
   return mobilePwa ? <main className="trading-shell pwa-shell">
-    <header className="pwa-mobile-header"><div><span className="pwa-brand">helloworld</span><span className="pwa-market">BINANCE · {interval.toUpperCase()}</span></div><select className="pwa-symbol-select" value={symbol} onChange={event => setSymbol(event.target.value)} aria-label="Símbolo">{['BTCUSDT', 'ETHUSDT', 'BNBUSDT', 'SOLUSDT', 'XRPUSDT', 'DOGEUSDT'].map(option => <option key={option}>{option}</option>)}</select></header>
+    <header className="pwa-mobile-header"><div><span className="pwa-brand">helloworld</span><span className="pwa-market">BINANCE · {entryInterval.toUpperCase()} ENTRADA · {interval.toUpperCase()} CONTEXTO</span></div><select className="pwa-symbol-select" value={symbol} onChange={event => setSymbol(event.target.value)} aria-label="Símbolo">{['BTCUSDT', 'ETHUSDT', 'BNBUSDT', 'SOLUSDT', 'XRPUSDT', 'DOGEUSDT'].map(option => <option key={option}>{option}</option>)}</select></header>
     <section className="pwa-chart-wrap">{chartStageView}</section>{positionsTable}
     <nav className="pwa-bottom-nav" aria-label="Controles PWA"><button onClick={() => setTool(null)} className={!tool ? 'pwa-nav-active' : ''}>↖<span>Seleccionar</span></button><button onClick={() => setMobileSheet('indicators')} className={showSessions ? 'pwa-nav-active' : ''}>◉<span>Indicadores</span></button><button onClick={() => setMobileSheet('tools')} className={tool ? 'pwa-nav-active' : ''}>⌁<span>Herramientas</span></button><button onClick={() => void auth.logout()}>⇥<span>Salir</span></button></nav>
     {mobileSheet === 'indicators' && <MobileSheet title="Indicadores" onClose={() => setMobileSheet(null)}><button className={`mobile-option ${showSessions ? 'option-active' : ''}`} onClick={() => setShowSessions(value => !value)}><span><b>Sesiones de mercado</b><small>Tokyo, Londres, Nueva York y Sydney</small></span><i>{showSessions ? '✓' : ''}</i></button><label className="mobile-field">Intervalo<select value={interval} onChange={event => setInterval(event.target.value as typeof interval)}>{(['1s', '1m', '3m', '5m', '15m'] as const).map(value => <option key={value}>{value}</option>)}</select></label><label className="mobile-field">Zona horaria<select value={timezone} onChange={event => setTimezone(event.target.value)}>{TIMEZONES.map(([label, value]) => <option key={value} value={value}>{label}</option>)}</select></label></MobileSheet>}
