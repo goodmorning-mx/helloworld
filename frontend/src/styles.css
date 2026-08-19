@@ -50,7 +50,7 @@
 .position-entry { stroke: #f5b84b; stroke-width: 3; stroke-dasharray: 6 4; }
 .position-label { fill: #d7dde8; font: 12px 'DM Mono', monospace; }
 .session-line { stroke-width: 2.5; stroke-dasharray: 5 4; opacity: .7; }
-.session-label { font: 10px 'DM Mono', monospace; opacity: .9; }
+.session-label { font: 20px 'DM Mono', monospace; opacity: .95; }
 .drawing-selected .drawing-line { stroke-width: 3; filter: drop-shadow(0 0 4px #f5b84b); }
 .drawing-selected .measurement-box { stroke-width: 3; filter: drop-shadow(0 0 4px #3b82f6); }
 .drawing-selected .position-profit, .drawing-selected .position-risk { stroke-width: 2; }
