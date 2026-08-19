@@ -101,6 +101,7 @@ type BinancePosition = {
 type BinanceAccount = {
   enabled?: boolean; healthy?: boolean; stream_connected?: boolean;
   last_update?: string; last_event?: string; error?: string | null;
+  error_kind?: string | null; error_title?: string | null; error_message?: string | null; error_action?: string | null;
   wallet_balance?: string | null; available_balance?: string | null;
   total_unrealized_pnl?: string | null; positions?: BinancePosition[];
   events?: Array<{ time?: string; type?: string; symbol?: string; status?: string }>;
@@ -130,7 +131,7 @@ function BinanceAccountPanel() {
   const online = Boolean(account?.healthy && account?.stream_connected);
   return <section className="binance-account-panel" aria-label="Estado de Binance">
     <div className="binance-panel-head"><div><span className="positions-kicker">BINANCE · CUENTA</span><h2>Estado de Binance</h2></div><span className={`stream-badge ${online ? 'stream-good' : 'stream-bad'}`}>{loading ? 'Consultando…' : online ? 'Saludable · User Stream' : 'Sin conexión'}</span></div>
-    {account?.error && <p className="binance-error">{account.error}</p>}
+    {account?.error && <div className="binance-error" role="status"><strong>{account.error_title ?? 'Binance no está disponible'}</strong><span>{account.error_message ?? account.error}</span>{account.error_action && <small>Qué hacer: {account.error_action}</small>}<em>El monitor seguirá reintentando automáticamente.</em></div>}
     <div className="binance-metrics"><div><small>Saldo wallet</small><strong>{account?.wallet_balance ?? '—'}</strong></div><div><small>Disponible</small><strong>{account?.available_balance ?? '—'}</strong></div><div><small>PNL no realizado</small><strong>{account?.total_unrealized_pnl ?? '—'}</strong></div><div><small>Última actualización</small><strong>{account?.last_update ? new Date(account.last_update).toLocaleTimeString() : '—'}</strong></div></div>
     <h3>Posiciones de Binance</h3>
     <div className="positions-table-scroll"><table className="positions-table binance-table"><thead><tr><th>Símbolo</th><th>Lado</th><th>Cantidad</th><th>Entrada</th><th>Mark</th><th>UPNL</th></tr></thead><tbody>{account?.positions?.length ? account.positions.map((position, index) => <tr key={`${position.symbol}-${index}`}><td>{position.symbol ?? '—'}</td><td className={position.side === 'LONG' ? 'value-positive' : 'value-negative'}>{position.side ?? '—'}</td><td>{position.quantity ?? '—'}</td><td>{position.entry_price ?? '—'}</td><td>{position.mark_price ?? '—'}</td><td>{position.unrealized_pnl ?? '—'}</td></tr>) : <tr><td colSpan={6}>Sin posiciones abiertas</td></tr>}</tbody></table></div>

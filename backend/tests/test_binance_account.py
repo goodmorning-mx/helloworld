@@ -1,6 +1,7 @@
 import hashlib
 import hmac
 from urllib.parse import parse_qs, urlparse
+from urllib.error import HTTPError
 
 from app.binance_account import BinanceAccountMonitor
 from app.config import Settings
@@ -45,3 +46,14 @@ def test_account_update_exposes_balance_position_and_order_event():
     assert snapshot["wallet_balance"] == "100"
     assert snapshot["positions"][0]["symbol"] == "BTCUSDT"
     assert snapshot["events"][0]["status"] == "FILLED"
+
+
+def test_invalid_api_key_or_ip_gets_actionable_message():
+    instance = monitor()
+    response = HTTPError("https://fapi.example.test/fapi/v2/account", 401, "Unauthorized", {}, None)
+    response.read = lambda: b'{"code":-2015,"msg":"Invalid API-key, IP, or permissions for action"}'
+    kind, title, message, action = instance._friendly_error(response)
+    assert kind == "BINANCE_AUTH_OR_IP"
+    assert "IP" in title
+    assert "whitelist" in action
+    assert "API key" in message

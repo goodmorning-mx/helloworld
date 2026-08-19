@@ -9,6 +9,7 @@ import json
 import logging
 import threading
 import time
+from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
@@ -38,6 +39,7 @@ class BinanceAccountMonitor:
         self._snapshot: dict[str, object] = {
             "enabled": True, "healthy": False, "stream_connected": False,
             "last_update": None, "last_event": None, "error": None,
+            "error_kind": None, "error_title": None, "error_message": None, "error_action": None,
             "wallet_balance": None, "available_balance": None,
             "total_unrealized_pnl": None, "positions": [], "events": [],
         }
@@ -82,7 +84,8 @@ class BinanceAccountMonitor:
                         self._handle_event(json.loads(raw))
             except Exception as exc:  # reconnect with backoff; never crash the API
                 logger.warning("Binance User Data Stream disconnected: %s", exc)
-                self._set(healthy=False, stream_connected=False, error=str(exc))
+                self._set_error(exc)
+                self._set(healthy=False, stream_connected=False)
                 self._stop.wait(retry)
                 retry = min(retry * 2, 30)
 
@@ -150,6 +153,55 @@ class BinanceAccountMonitor:
                           headers={"X-MBX-APIKEY": self._key, "Accept": "application/json"})
         with urlopen(request, timeout=10) as response:
             return json.loads(response.read())
+
+    def _set_error(self, exc: Exception) -> None:
+        kind, title, message, action = self._friendly_error(exc)
+        self._set(error=str(exc), error_kind=kind, error_title=title,
+                  error_message=message, error_action=action)
+
+    @staticmethod
+    def _friendly_error(exc: Exception) -> tuple[str, str, str, str]:
+        provider_code = None
+        if isinstance(exc, HTTPError):
+            try:
+                payload = json.loads(exc.read().decode("utf-8"))
+                provider_code = payload.get("code")
+            except (ValueError, UnicodeDecodeError, OSError):
+                pass
+        if provider_code == -2015 or getattr(exc, "code", None) == 401:
+            return (
+                "BINANCE_AUTH_OR_IP",
+                "Binance rechazó la conexión (IP o permisos)",
+                "La API key, sus permisos o la IP pública del servidor no están autorizados para Binance Futures.",
+                "Agrega la IP pública de Coolify a la whitelist de Binance y verifica que la key tenga permiso de Futures.",
+            )
+        if getattr(exc, "code", None) in {418, 429}:
+            return (
+                "BINANCE_RATE_LIMIT",
+                "Binance limitó temporalmente las solicitudes",
+                "Se alcanzó el límite de consultas de Binance.",
+                "El monitor pausará y reintentará automáticamente; no es necesario recargar la página.",
+            )
+        if getattr(exc, "code", None) and getattr(exc, "code", 0) >= 500:
+            return (
+                "BINANCE_SERVER",
+                "Binance reporta una falla temporal",
+                "El servicio de Binance no está respondiendo correctamente.",
+                "El monitor seguirá reintentando automáticamente.",
+            )
+        if isinstance(exc, (TimeoutError, URLError, ConnectionError)):
+            return (
+                "NETWORK",
+                "No hay conexión con Binance",
+                "El backend no pudo comunicarse con la API o el User Stream de Binance.",
+                "Verifica la red del servidor; el monitor seguirá reintentando automáticamente.",
+            )
+        return (
+            "UNKNOWN",
+            "No se pudo consultar Binance",
+            "Binance devolvió un error no identificado.",
+            "Revisa los logs del backend o intenta nuevamente en unos segundos.",
+        )
 
     def _set(self, **values: object) -> None:
         with self._lock:
