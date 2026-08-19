@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState, type FormEvent, type PointerEvent, type ReactNode } from 'react';
 import { AuthGuard, AuthProvider, createAuthClient, useAuth } from '@goodmorning/gm-auth';
 import { PwaRuntime } from '@goodmorning/gm-pwa';
-import { CandlestickSeries, createChart, type Time, type UTCTimestamp } from 'lightweight-charts';
+import { CandlestickSeries, createChart, type IPriceLine, type Time, type UTCTimestamp } from 'lightweight-charts';
 import './styles.css';
 
 const configuredApiUrl = import.meta.env.VITE_API_URL ?? 'http://localhost:8000';
@@ -261,6 +261,7 @@ function Workspace() {
   const [mobileSheet, setMobileSheet] = useState<'indicators' | 'tools' | null>(null);
   const [, setActivePositionIndex] = useState<number | null>(null);
   const activePositionIndexRef = useRef<number | null>(null);
+  const nativePriceLinesRef = useRef<Array<{ series: ReturnType<ReturnType<typeof createChart>['addSeries']>; line: IPriceLine }>>([]);
 
   useEffect(() => {
     const removeSelected = (event: KeyboardEvent) => {
@@ -275,6 +276,52 @@ function Workspace() {
     window.addEventListener('keydown', removeSelected);
     return () => window.removeEventListener('keydown', removeSelected);
   }, [selectedDrawings]);
+
+  useEffect(() => {
+    nativePriceLinesRef.current.forEach(({ series, line }) => series.removePriceLine(line));
+    nativePriceLinesRef.current = [];
+    const addLines = (canvas: ChartCanvas, series: ReturnType<ReturnType<typeof createChart>['addSeries']> | null) => {
+      if (!series) return;
+      drawings.forEach((drawing, index) => {
+        if (!drawing.paper || (drawing.type !== 'long' && drawing.type !== 'short')) return;
+        if (canvas === 'context' ? drawing.chart !== 'context' : drawing.chart === 'context') return;
+        const targetPrice = drawing.target?.price ?? drawing.end.price;
+        const stopPrice = drawing.stop?.price;
+        if (stopPrice === undefined) return;
+        const targetLine = series.createPriceLine({
+          id: `paper-${index}-tp-${canvas}`,
+          price: targetPrice,
+          color: '#3b82f6',
+          lineWidth: 3,
+          lineStyle: 2,
+          lineVisible: true,
+          axisLabelVisible: true,
+          title: 'TP',
+          axisLabelColor: '#2563eb',
+          axisLabelTextColor: '#eff6ff',
+        });
+        const stopLine = series.createPriceLine({
+          id: `paper-${index}-sl-${canvas}`,
+          price: stopPrice,
+          color: '#ef4444',
+          lineWidth: 4,
+          lineStyle: 2,
+          lineVisible: true,
+          axisLabelVisible: true,
+          title: 'SL',
+          axisLabelColor: '#dc2626',
+          axisLabelTextColor: '#fff1f2',
+        });
+        nativePriceLinesRef.current.push({ series, line: targetLine }, { series, line: stopLine });
+      });
+    };
+    addLines('entry', candlesRef.current);
+    if (!mobilePwa) addLines('context', overviewCandlesRef.current);
+    return () => {
+      nativePriceLinesRef.current.forEach(({ series, line }) => series.removePriceLine(line));
+      nativePriceLinesRef.current = [];
+    };
+  }, [drawings, symbol, interval, mobilePwa]);
 
   useEffect(() => {
     if (!chartStage.current) return;
@@ -573,6 +620,23 @@ function Workspace() {
     return null;
   }
 
+  function priceLineAt(point: { x: number; y: number }, canvas: ChartCanvas = 'entry') {
+    for (let index = drawings.length - 1; index >= 0; index -= 1) {
+      const drawing = drawings[index];
+      if (!drawing.paper || (drawing.type !== 'long' && drawing.type !== 'short')) continue;
+      if ((canvas === 'context' && drawing.chart !== 'context') || (canvas === 'entry' && drawing.chart === 'context')) continue;
+      const target = drawing.target && screenPoint(drawing.target, canvas);
+      const stop = drawing.stop && screenPoint(drawing.stop, canvas);
+      const left = drawing.start && screenPoint(drawing.start, canvas);
+      const right = drawing.end && screenPoint(drawing.end, canvas);
+      const withinOperation = !left || !right || (point.x >= Math.min(left.x, right.x) - 12 && point.x <= Math.max(left.x, right.x) + 12);
+      if (!withinOperation) continue;
+      if (target && Math.abs(point.y - target.y) <= 10) return { index, endpoint: 'target' as const };
+      if (stop && Math.abs(point.y - stop.y) <= 10) return { index, endpoint: 'stop' as const };
+    }
+    return null;
+  }
+
   function renderSessionIndicator() {
     if (!showSessions || !chartRef.current) return null;
     const range = chartRef.current.timeScale().getVisibleRange();
@@ -681,6 +745,14 @@ function Workspace() {
       event.currentTarget.setPointerCapture(event.pointerId);
       setResizeStart({ index: handle.index, endpoint: handle.endpoint });
       if (!drawings[handle.index].paper) setSelectedDrawing(handle.index);
+      return;
+    }
+    const priceLine = priceLineAt(point, canvas);
+    if (priceLine) {
+      event.preventDefault();
+      event.stopPropagation();
+      event.currentTarget.setPointerCapture(event.pointerId);
+      setResizeStart(priceLine);
       return;
     }
     if (!tool) {
@@ -899,9 +971,8 @@ function Workspace() {
     const stopHeight = Math.abs(start.y - stop.y);
     const paperClass = drawing.paper ? `paper-position ${drawing.type === 'long' ? 'paper-long' : 'paper-short'}` : '';
     const paperLabel = drawing.paper ? <text x={left + 8} y={Math.max(18, Math.min(targetTop, stopTop) - 10)} className="paper-operation-label">Paper Operation · {drawing.type.toUpperCase()}</text> : null;
-    const targetPoint = drawing.paper ? screenPoint(drawing.target ?? drawing.end, canvas) : null;
     const pnlLabel = drawing.paper ? <text x={left + width + 8} y={end.y + 4} className="paper-pnl-label">PNL {currentPnlPercent >= 0 ? '+' : ''}{currentPnlPercent.toFixed(8)}%</text> : null;
-    return <g key={index} className={`${selectedClass ?? ''} ${paperClass}`}><rect x={left} y={targetTop} width={width} height={targetHeight} className={targetPercent >= 0 ? 'position-profit' : 'position-risk'} /><rect x={left} y={stopTop} width={width} height={stopHeight} className={riskPercent <= 0 ? 'position-risk' : 'position-profit'} /><line x1={left} y1={start.y} x2={left + width} y2={start.y} className="position-entry" />{targetPoint && <line x1={left} y1={targetPoint.y} x2={left + width} y2={targetPoint.y} className="paper-target-line" />}<line x1={left} y1={stop.y} x2={left + width} y2={stop.y} className="paper-stop-line" /><line x1={left} y1={end.y} x2={left + width} y2={end.y} className="paper-current-price" /><text x={left + 8} y={targetTop + 18} className="position-label">{drawing.paper ? targetLabel : `TP ${targetLabel}`}</text><text x={left + 8} y={stopTop + 18} className="position-label">SL {riskLabel}</text><text x={left + 8} y={Math.max(targetTop, stopTop) + 34} className="position-label">R:R {rr.toFixed(2)}:1</text>{paperLabel}{pnlLabel}{drawing.paper ? handleNodes : null}{drawing.paper ? null : handleNodes}</g>;
+    return <g key={index} className={`${selectedClass ?? ''} ${paperClass}`}><rect x={left} y={targetTop} width={width} height={targetHeight} className={targetPercent >= 0 ? 'position-profit' : 'position-risk'} /><rect x={left} y={stopTop} width={width} height={stopHeight} className={riskPercent <= 0 ? 'position-risk' : 'position-profit'} /><line x1={left} y1={start.y} x2={left + width} y2={start.y} className="position-entry" /><line x1={left} y1={end.y} x2={left + width} y2={end.y} className="paper-current-price" /><text x={left + 8} y={targetTop + 18} className="position-label">{drawing.paper ? targetLabel : `TP ${targetLabel}`}</text><text x={left + 8} y={stopTop + 18} className="position-label">SL {riskLabel}</text><text x={left + 8} y={Math.max(targetTop, stopTop) + 34} className="position-label">R:R {rr.toFixed(2)}:1</text>{paperLabel}{pnlLabel}{drawing.paper ? handleNodes : null}{drawing.paper ? null : handleNodes}</g>;
   };
 
   const chartStageView = <div ref={chartStage} className={`chart-stage ${tool ? 'drawing-mode' : ''}`} onPointerDownCapture={startDrawing} onPointerMoveCapture={updateDrawing} onPointerUpCapture={finishDrawing} onPointerCancelCapture={() => { setDrawingStart(null); setDrawingEnd(null); setMoveStart(null); setResizeStart(null); }}>
