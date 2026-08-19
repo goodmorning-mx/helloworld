@@ -18,7 +18,7 @@ def upgrade() -> None:
             chart VARCHAR(16) NOT NULL,
             entry_time BIGINT NOT NULL,
             entry_price DOUBLE PRECISION NOT NULL,
-            current_time BIGINT NOT NULL,
+            current_at BIGINT NOT NULL,
             current_price DOUBLE PRECISION NOT NULL,
             stop_time BIGINT NOT NULL,
             stop_price DOUBLE PRECISION NOT NULL,
