@@ -247,7 +247,7 @@ function Workspace() {
   const [overviewRevision, setOverviewRevision] = useState(0);
   type ChartPoint = { time: UTCTimestamp; price: number };
   type ChartCanvas = 'entry' | 'context';
-  type Drawing = { type: 'line' | 'ruler' | 'long' | 'short'; start: ChartPoint; end: ChartPoint; stop?: ChartPoint; target?: ChartPoint; chart?: ChartCanvas; paper?: boolean; closed?: boolean; closeReason?: 'TP' | 'SL'; status?: 'CLOSED - WIN' | 'CLOSED - FAILED' };
+  type Drawing = { id?: string; symbol?: string; type: 'line' | 'ruler' | 'long' | 'short'; start: ChartPoint; end: ChartPoint; stop?: ChartPoint; target?: ChartPoint; chart?: ChartCanvas; paper?: boolean; closed?: boolean; closeReason?: 'TP' | 'SL'; status?: 'OPEN' | 'CLOSED - WIN' | 'CLOSED - FAILED' };
   const [drawings, setDrawings] = useState<Drawing[]>([]);
   const [drawingStart, setDrawingStart] = useState<ChartPoint | null>(null);
   const [drawingEnd, setDrawingEnd] = useState<ChartPoint | null>(null);
@@ -262,6 +262,9 @@ function Workspace() {
   const [, setActivePositionIndex] = useState<number | null>(null);
   const activePositionIndexRef = useRef<number | null>(null);
   const nativePriceLinesRef = useRef<Array<{ series: ReturnType<ReturnType<typeof createChart>['addSeries']>; line: IPriceLine }>>([]);
+  const paperReadyRef = useRef(false);
+  const [paperReady, setPaperReady] = useState(false);
+  const [paperSyncError, setPaperSyncError] = useState('');
 
   useEffect(() => {
     const removeSelected = (event: KeyboardEvent) => {
@@ -276,6 +279,79 @@ function Workspace() {
     window.addEventListener('keydown', removeSelected);
     return () => window.removeEventListener('keydown', removeSelected);
   }, [selectedDrawings]);
+
+  useEffect(() => {
+    if (!auth.accessToken) return;
+    let active = true;
+    paperReadyRef.current = false;
+    setPaperReady(false);
+    fetch(`${apiUrl}/trading/paper/operations`, {
+      headers: { Authorization: `Bearer ${auth.accessToken}` },
+      credentials: 'include',
+    }).then(async response => {
+      if (!response.ok) throw new Error('No se pudieron cargar las paper operations.');
+      return response.json() as Promise<Array<{
+        id: string; symbol: string; side: 'long' | 'short'; chart: ChartCanvas;
+        entry_time: number; entry_price: number; current_time: number; current_price: number;
+        stop_time: number; stop_price: number; target_time: number; target_price: number;
+        status: 'OPEN' | 'CLOSED - WIN' | 'CLOSED - FAILED'; close_reason?: 'TP' | 'SL' | null;
+      }>>;
+    }).then(operations => {
+      if (!active) return;
+      const restored = operations.map(operation => ({
+        id: operation.id,
+        symbol: operation.symbol,
+        type: operation.side,
+        paper: true,
+        chart: operation.chart,
+        start: { time: operation.entry_time as UTCTimestamp, price: operation.entry_price },
+        end: { time: operation.current_time as UTCTimestamp, price: operation.current_price },
+        stop: { time: operation.stop_time as UTCTimestamp, price: operation.stop_price },
+        target: { time: operation.target_time as UTCTimestamp, price: operation.target_price },
+        closed: operation.status !== 'OPEN',
+        status: operation.status,
+        closeReason: operation.close_reason ?? undefined,
+      } satisfies Drawing));
+      setDrawings(current => [...current.filter(drawing => !drawing.paper), ...restored]);
+      const activeIndex = restored.findIndex(operation => !operation.closed);
+      activePositionIndexRef.current = activeIndex >= 0 ? activeIndex : null;
+      setActivePositionIndex(activePositionIndexRef.current);
+      paperReadyRef.current = true;
+      setPaperReady(true);
+      setPaperSyncError('');
+    }).catch(reason => {
+      if (!active) return;
+      setPaperSyncError(reason instanceof Error ? reason.message : 'No se pudieron cargar las paper operations.');
+    });
+    return () => { active = false; };
+  }, [auth.accessToken]);
+
+  useEffect(() => {
+    if (!auth.accessToken || !paperReadyRef.current) return;
+    const operations = drawings.filter(drawing => drawing.paper && drawing.id && (drawing.type === 'long' || drawing.type === 'short'));
+    const timer = window.setTimeout(() => {
+      void Promise.all(operations.map(async drawing => {
+        const response = await fetch(`${apiUrl}/trading/paper/operations/${drawing.id}`, {
+          method: 'PUT',
+          headers: { Authorization: `Bearer ${auth.accessToken}`, 'Content-Type': 'application/json' },
+          credentials: 'include',
+          body: JSON.stringify({
+            symbol: drawing.symbol ?? symbol,
+            side: drawing.type,
+            chart: drawing.chart === 'context' ? 'context' : 'entry',
+            entry_time: Number(drawing.start.time), entry_price: drawing.start.price,
+            current_time: Number(drawing.end.time), current_price: drawing.end.price,
+            stop_time: Number(drawing.stop?.time ?? drawing.end.time), stop_price: drawing.stop?.price ?? drawing.start.price,
+            target_time: Number(drawing.target?.time ?? drawing.end.time), target_price: drawing.target?.price ?? drawing.end.price,
+            status: drawing.status ?? (drawing.closed ? 'CLOSED - FAILED' : 'OPEN'),
+            close_reason: drawing.closeReason ?? null,
+          }),
+        });
+        if (!response.ok) throw new Error('No se pudo guardar una paper operation.');
+      })).catch(reason => setPaperSyncError(reason instanceof Error ? reason.message : 'No se pudo guardar una paper operation.'));
+    }, 600);
+    return () => window.clearTimeout(timer);
+  }, [drawings, auth.accessToken, paperReady, symbol]);
 
   useEffect(() => {
     nativePriceLinesRef.current.forEach(({ series, line }) => series.removePriceLine(line));
@@ -417,37 +493,38 @@ function Workspace() {
       candleDataRef.current = candleBarsRef.current.map(({ time, close }) => ({ time, close }));
       candles.update(next);
       setDrawings(current => {
-        const currentPositionIndex = activePositionIndexRef.current;
-        if (currentPositionIndex === null) return current;
-        const activeDrawing = current[currentPositionIndex];
-        if (!activeDrawing || activeDrawing.closed || !activeDrawing.paper || (activeDrawing.type !== 'long' && activeDrawing.type !== 'short')) return current;
-        const direction = activeDrawing.type === 'long' ? 1 : -1;
-        const targetPrice = activeDrawing.target?.price ?? activeDrawing.end.price;
-        const stopPrice = activeDrawing.stop?.price ?? activeDrawing.start.price;
-        // Kline high/low catches a touch even when the candle closes back inside
-        // the position. If both boundaries were touched in one update, use the
-        // current tick/close as the tie-breaker; the stop is conservative when
-        // the order cannot be reconstructed from a kline update.
-        const targetTouched = direction === 1 ? next.high >= targetPrice : next.low <= targetPrice;
-        const stopTouched = direction === 1 ? next.low <= stopPrice : next.high >= stopPrice;
-        const bothTouched = targetTouched && stopTouched;
-        const hitTarget = bothTouched ? (direction === 1 ? next.close >= targetPrice : next.close <= targetPrice) : targetTouched;
-        const hitStop = bothTouched ? !hitTarget : stopTouched;
-        const closeReason = hitTarget ? 'TP' : hitStop ? 'SL' : undefined;
-        const status = closeReason === 'TP' ? 'CLOSED - WIN' : closeReason === 'SL' ? 'CLOSED - FAILED' : undefined;
-        if (closeReason) {
+        let anyOpen = false;
+        const updated = current.map(drawing => {
+          if (drawing.closed || !drawing.paper || (drawing.type !== 'long' && drawing.type !== 'short')) return drawing;
+          anyOpen = true;
+          const direction = drawing.type === 'long' ? 1 : -1;
+          const targetPrice = drawing.target?.price ?? drawing.end.price;
+          const stopPrice = drawing.stop?.price ?? drawing.start.price;
+          // Kline high/low catches a touch even when the candle closes back inside
+          // the position. If both boundaries were touched in one update, use the
+          // current close as a deterministic tie-breaker.
+          const targetTouched = direction === 1 ? next.high >= targetPrice : next.low <= targetPrice;
+          const stopTouched = direction === 1 ? next.low <= stopPrice : next.high >= stopPrice;
+          const bothTouched = targetTouched && stopTouched;
+          const hitTarget = bothTouched ? (direction === 1 ? next.close >= targetPrice : next.close <= targetPrice) : targetTouched;
+          const hitStop = bothTouched ? !hitTarget : stopTouched;
+          const closeReason: 'TP' | 'SL' | undefined = hitTarget ? 'TP' : hitStop ? 'SL' : undefined;
+          const status: Drawing['status'] = closeReason === 'TP' ? 'CLOSED - WIN' : closeReason === 'SL' ? 'CLOSED - FAILED' : 'OPEN';
+          return {
+            ...drawing,
+            end: { time: next.time, price: next.close },
+            target: drawing.target ? { ...drawing.target, time: next.time } : undefined,
+            stop: drawing.stop ? { ...drawing.stop, time: next.time } : undefined,
+            closed: Boolean(closeReason),
+            closeReason,
+            status,
+          };
+        });
+        if (!anyOpen) {
           activePositionIndexRef.current = null;
           setActivePositionIndex(null);
         }
-        return current.map((drawing, index) => index === currentPositionIndex ? {
-          ...drawing,
-          end: { time: next.time, price: next.close },
-          target: drawing.target ? { ...drawing.target, time: next.time } : undefined,
-          stop: drawing.stop ? { ...drawing.stop, time: next.time } : undefined,
-          closed: Boolean(closeReason),
-          closeReason,
-          status,
-        } : drawing);
+        return updated;
       });
       setViewportRevision(value => value + 1);
     };
@@ -879,7 +956,11 @@ function Workspace() {
     if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
   }
 
-  function openSimulatedPosition(type: 'long' | 'short') {
+  async function openSimulatedPosition(type: 'long' | 'short') {
+    if (!auth.accessToken || !paperReadyRef.current) {
+      setPaperSyncError('La cuenta paper todavía está cargando.');
+      return;
+    }
     const latest = candleDataRef.current[candleDataRef.current.length - 1];
     if (!latest) return;
     const entry = latest.close;
@@ -889,13 +970,24 @@ function Workspace() {
     const target = entry * (1 + direction * targetDistance);
     const stop = entry * (1 - direction * stopDistance);
     const intervalSeconds = 60;
+    const futureTime = (Number(latest.time) + intervalSeconds * 5) as UTCTimestamp;
+    const response = await fetch(`${apiUrl}/trading/paper/operations`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${auth.accessToken}`, 'Content-Type': 'application/json' },
+      credentials: 'include',
+      body: JSON.stringify({ symbol, side: type, chart: 'entry', entry_time: Number(latest.time), entry_price: entry, current_time: Number(latest.time), current_price: entry, stop_time: Number(futureTime), stop_price: stop, target_time: Number(futureTime), target_price: target, status: 'OPEN', close_reason: null }),
+    });
+    if (!response.ok) {
+      setPaperSyncError('No se pudo guardar la paper operation.');
+      return;
+    }
+    const saved = await response.json() as { id: string };
     const position: Drawing = {
-      type,
-      paper: true,
+      id: saved.id, symbol, type, paper: true, status: 'OPEN',
       start: { time: latest.time, price: entry },
-      end: { time: (Number(latest.time) + intervalSeconds * 5) as UTCTimestamp, price: target },
-      stop: { time: (Number(latest.time) + intervalSeconds * 5) as UTCTimestamp, price: stop },
-      target: { time: (Number(latest.time) + intervalSeconds * 5) as UTCTimestamp, price: target },
+      end: { time: latest.time, price: entry },
+      stop: { time: futureTime, price: stop },
+      target: { time: futureTime, price: target },
     };
     setDrawings(current => {
       const next = [...current, position];
@@ -904,6 +996,7 @@ function Workspace() {
       setSelectedDrawing(null);
       return next;
     });
+    setPaperSyncError('');
   }
 
   function chooseTool(key: 'line' | 'ruler' | 'long' | 'short') {
@@ -912,7 +1005,7 @@ function Workspace() {
 
   const paperPositions = drawings.filter(drawing => drawing.paper && (drawing.type === 'long' || drawing.type === 'short'));
   const positionsTable = <section className="positions-panel" aria-label="Posiciones abiertas">
-    <div className="positions-panel-head"><div><span className="positions-kicker">TRADING</span><h2>Posiciones abiertas</h2></div><span className="paper-badge">PAPER</span></div>
+    <div className="positions-panel-head"><div><span className="positions-kicker">TRADING</span><h2>Posiciones abiertas</h2></div><span className="paper-badge">PAPER</span></div>{paperSyncError && <p className="paper-sync-error" role="status">{paperSyncError}</p>}
     {paperPositions.length === 0 ? <p className="positions-empty">No hay operaciones abiertas.</p> : <div className="positions-table-scroll"><table className="positions-table"><thead><tr><th>Instrumento</th><th>Lado</th><th>Entrada</th><th>Actual</th><th>Margen</th><th>R:R</th><th>PNL</th><th>ROE</th><th>Estado</th></tr></thead><tbody>{paperPositions.map((position, index) => {
       const direction = position.type === 'long' ? 1 : -1;
       const margin = 100;
@@ -925,7 +1018,7 @@ function Workspace() {
       const rewardDistance = Math.abs(targetPrice - position.start.price);
       const rr = riskDistance > 0 ? rewardDistance / riskDistance : 0;
       const status = position.status ?? (position.closed ? `CLOSED - ${position.closeReason === 'TP' ? 'WIN' : 'FAILED'}` : 'OPEN');
-      return <tr key={`${position.start.time}-${index}`}><td>{symbol}</td><td><span className={`position-side ${position.type}`}>{position.type.toUpperCase()}</span></td><td>{position.start.price.toFixed(8)}</td><td>{position.end.price.toFixed(8)}</td><td>{margin.toFixed(2)} USDT</td><td>{rr.toFixed(2)}:1</td><td className={pnl >= 0 ? 'value-positive' : 'value-negative'}>{pnl >= 0 ? '+' : ''}{pnl.toFixed(8)} USDT</td><td className={roe >= 0 ? 'value-positive' : 'value-negative'}>{roe >= 0 ? '+' : ''}{roe.toFixed(8)}%</td><td><span className={`position-status ${position.closed ? (position.status === 'CLOSED - WIN' ? 'position-win' : 'position-failed') : 'position-live'}`}><i />{status}</span></td></tr>;
+      return <tr key={`${position.start.time}-${index}`}><td>{position.symbol ?? symbol}</td><td><span className={`position-side ${position.type}`}>{position.type.toUpperCase()}</span></td><td>{position.start.price.toFixed(8)}</td><td>{position.end.price.toFixed(8)}</td><td>{margin.toFixed(2)} USDT</td><td>{rr.toFixed(2)}:1</td><td className={pnl >= 0 ? 'value-positive' : 'value-negative'}>{pnl >= 0 ? '+' : ''}{pnl.toFixed(8)} USDT</td><td className={roe >= 0 ? 'value-positive' : 'value-negative'}>{roe >= 0 ? '+' : ''}{roe.toFixed(8)}%</td><td><span className={`position-status ${position.closed ? (position.status === 'CLOSED - WIN' ? 'position-win' : 'position-failed') : 'position-live'}`}><i />{status}</span></td></tr>;
     })}</tbody></table></div>}
   </section>;
 
@@ -984,7 +1077,7 @@ function Workspace() {
 
   const chartStageView = <div ref={chartStage} className={`chart-stage ${tool ? 'drawing-mode' : ''}`} onPointerDownCapture={startDrawing} onPointerMoveCapture={updateDrawing} onPointerUpCapture={finishDrawing} onPointerCancelCapture={() => { setDrawingStart(null); setDrawingEnd(null); setMoveStart(null); setResizeStart(null); }}>
     <div ref={chartContainer} className="candlestick-chart" /><svg className="drawing-overlay" viewBox={`0 0 ${stageSize.width} ${stageSize.height}`} preserveAspectRatio="none" aria-hidden="true">{renderSessionIndicator()}{renderInterestMarkers()}{drawings.map((drawing, index) => drawing.chart !== 'context' ? renderDrawing(drawing, index, 'entry') : null)}{tool && drawingStart && drawingEnd && drawingCanvas === 'entry' && renderDrawing({ type: tool, chart: 'entry', start: drawingStart, end: drawingEnd }, 'preview', 'entry')}{lassoStart && lassoEnd && drawingCanvas === 'entry' && <rect x={Math.min(lassoStart.x, lassoEnd.x)} y={Math.min(lassoStart.y, lassoEnd.y)} width={Math.abs(lassoEnd.x - lassoStart.x)} height={Math.abs(lassoEnd.y - lassoStart.y)} className="selection-lasso" />}</svg><div className="chart-bottom-controls"><span className="timezone-icon" aria-hidden="true">◷</span><select className="timezone-select" value={timezone} onChange={event => setTimezone(event.target.value)} aria-label="Zona horaria">{TIMEZONES.map(([label, value]) => <option key={value} value={value}>{label}</option>)}</select></div>
-    <div className="floating-order-buttons" aria-label="Abrir operación simulada"><button className="open-long-button" onClick={() => openSimulatedPosition('long')}>▲ <span>Abrir Long</span></button><button className="open-short-button" onClick={() => openSimulatedPosition('short')}>▼ <span>Abrir Short</span></button></div>
+    <div className="floating-order-buttons" aria-label="Abrir operación simulada"><button className="open-long-button" disabled={!paperReady} onClick={() => void openSimulatedPosition('long')}>▲ <span>Abrir Long</span></button><button className="open-short-button" disabled={!paperReady} onClick={() => void openSimulatedPosition('short')}>▼ <span>Abrir Short</span></button></div>
   </div>;
 
   const avatarLabel = (auth.identity?.name ?? auth.identity?.email ?? 'U').slice(0, 1).toUpperCase();
@@ -994,7 +1087,7 @@ function Workspace() {
   </select><select className="interval-select" value={interval} onChange={event => setInterval(event.target.value as typeof interval)} aria-label="Intervalo de contexto">{(['1s', '1m', '3m', '5m', '15m'] as const).map(value => <option key={value} value={value}>{value}</option>)}</select><span className="chart-source">BINANCE · {entryInterval.toUpperCase()} ENTRADA · {interval.toUpperCase()} CONTEXTO</span><button className={`session-toggle ${showSessions ? 'session-active' : ''}`} onClick={() => setShowSessions(value => !value)} aria-label="Mostrar sesiones" title="Mostrar sesiones">Sesiones</button><div className="chart-tools" aria-label="Herramientas del gráfico">
     <button className={!tool ? 'tool-active' : ''} onClick={() => setTool(null)} aria-label="Seleccionar y navegar" title="Seleccionar y navegar">↖</button>
     {([['line', '╱', 'Línea'], ['ruler', '▥', 'Regla'], ['long', 'L', 'Long'], ['short', 'S', 'Short']] as const).map(([key, icon, label]) => <button key={key} className={tool === key ? 'tool-active' : ''} onClick={() => chooseTool(key)} aria-label={label} title={label}>{icon}</button>)}
-    <button onClick={() => setDrawings([])} aria-label="Borrar dibujos" title="Borrar dibujos">×</button>
+    <button onClick={() => setDrawings(current => current.filter(drawing => drawing.paper))} aria-label="Borrar dibujos" title="Borrar dibujos">×</button>
   </div>{profileButton}<button className="logout-button" onClick={() => void auth.logout()} aria-label="Cerrar sesión">Salir</button></div>;
 
   const toolOptions = [['line', '╱', 'Línea'], ['ruler', '▥', 'Medir'], ['long', 'L', 'Long'], ['short', 'S', 'Short']] as const;
@@ -1005,7 +1098,7 @@ function Workspace() {
     <section className="pwa-chart-wrap">{chartStageView}</section><BinanceAccountPanel revision={profileRevision} />{positionsTable}
     <nav className="pwa-bottom-nav" aria-label="Controles PWA"><button onClick={() => setTool(null)} className={!tool ? 'pwa-nav-active' : ''}>↖<span>Seleccionar</span></button><button onClick={() => setMobileSheet('indicators')} className={showSessions ? 'pwa-nav-active' : ''}>◉<span>Indicadores</span></button><button onClick={() => setMobileSheet('tools')} className={tool ? 'pwa-nav-active' : ''}>⌁<span>Herramientas</span></button><button onClick={() => void auth.logout()}>⇥<span>Salir</span></button></nav>
     {mobileSheet === 'indicators' && <MobileSheet title="Indicadores" onClose={() => setMobileSheet(null)}><button className={`mobile-option ${showSessions ? 'option-active' : ''}`} onClick={() => setShowSessions(value => !value)}><span><b>Sesiones de mercado</b><small>Tokyo, Londres, Nueva York y Sydney</small></span><i>{showSessions ? '✓' : ''}</i></button><label className="mobile-field">Intervalo<select value={interval} onChange={event => setInterval(event.target.value as typeof interval)}>{(['1s', '1m', '3m', '5m', '15m'] as const).map(value => <option key={value}>{value}</option>)}</select></label><label className="mobile-field">Zona horaria<select value={timezone} onChange={event => setTimezone(event.target.value)}>{TIMEZONES.map(([label, value]) => <option key={value} value={value}>{label}</option>)}</select></label></MobileSheet>}
-    {mobileSheet === 'tools' && <MobileSheet title="Herramientas" onClose={() => setMobileSheet(null)}><div className="mobile-tool-grid"><button className={!tool ? 'option-active' : ''} onClick={() => { setTool(null); setMobileSheet(null); }}>↖<span>Seleccionar</span></button>{toolOptions.map(([key, icon, label]) => <button key={key} className={tool === key ? 'option-active' : ''} onClick={() => { chooseTool(key); setMobileSheet(null); }}>{icon}<span>{label}</span></button>)}<button onClick={() => { setDrawings([]); activePositionIndexRef.current = null; setActivePositionIndex(null); }}>×<span>Borrar todo</span></button></div></MobileSheet>}
+    {mobileSheet === 'tools' && <MobileSheet title="Herramientas" onClose={() => setMobileSheet(null)}><div className="mobile-tool-grid"><button className={!tool ? 'option-active' : ''} onClick={() => { setTool(null); setMobileSheet(null); }}>↖<span>Seleccionar</span></button>{toolOptions.map(([key, icon, label]) => <button key={key} className={tool === key ? 'option-active' : ''} onClick={() => { chooseTool(key); setMobileSheet(null); }}>{icon}<span>{label}</span></button>)}<button onClick={() => { setDrawings(current => current.filter(drawing => drawing.paper)); activePositionIndexRef.current = null; setActivePositionIndex(null); }}>×<span>Borrar dibujos</span></button></div></MobileSheet>}
     {showProfile && <ProfileModal onClose={() => setShowProfile(false)} onSaved={() => setProfileRevision(value => value + 1)} />}
   </main> : <main className="trading-shell">{desktopHeader}{chartsRow}<BinanceAccountPanel revision={profileRevision} />{positionsTable}{showProfile && <ProfileModal onClose={() => setShowProfile(false)} onSaved={() => setProfileRevision(value => value + 1)} />}</main>;
 }

@@ -6,6 +6,7 @@ from uuid import uuid4
 from fastapi import Depends, FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
+from typing import Literal
 from openai import AsyncOpenAI
 
 from gm_agent import AgentService, Conversation, OpenAIProvider
@@ -17,6 +18,7 @@ from gm_mcp import Permission, RequestContext, ToolRegistry, tool
 from app.config import get_settings
 from app.database import create_database_engine
 from app.binance_credentials import BinanceCredentialStore, BinanceMonitorManager
+from app.paper_operations import PaperOperationStore
 
 settings = get_settings()
 engine = create_database_engine()
@@ -29,6 +31,7 @@ conversations: dict[str, Conversation] = {}
 paper_orders: list[dict[str, object]] = []
 binance_credentials = BinanceCredentialStore(engine, settings)
 binance_manager = BinanceMonitorManager(binance_credentials, settings)
+paper_operation_store = PaperOperationStore(engine)
 
 
 class FallbackProvider:
@@ -130,6 +133,22 @@ class BinanceCredentialsInput(BaseModel):
     api_secret: str = Field(min_length=10, max_length=256)
 
 
+class PaperOperationInput(BaseModel):
+    symbol: str = Field(min_length=1, max_length=32)
+    side: Literal["long", "short"]
+    chart: Literal["entry", "context"]
+    entry_time: int
+    entry_price: float
+    current_time: int
+    current_price: float
+    stop_time: int
+    stop_price: float
+    target_time: int
+    target_price: float
+    status: Literal["OPEN", "CLOSED - WIN", "CLOSED - FAILED"] = "OPEN"
+    close_reason: Literal["TP", "SL"] | None = None
+
+
 @app.on_event("startup")
 def initialize_auth_schema() -> None:
     auth_service.create_schema()
@@ -169,7 +188,25 @@ def health() -> dict[str, str]:
 
 @app.get("/trading/summary")
 def summary(identity: AuthIdentity = Depends(identity_dependency(auth_service))) -> dict[str, object]:
-    return {"mode": "paper", "balance": 10000, "currency": "USD", "open_orders": paper_orders}
+    return {"mode": "paper", "balance": 10000, "currency": "USD", "open_orders": paper_orders, "operations": paper_operation_store.list(identity.user_id)}
+
+
+@app.get("/trading/paper/operations")
+def list_paper_operations(identity: AuthIdentity = Depends(identity_dependency(auth_service))) -> list[dict[str, object]]:
+    return paper_operation_store.list(identity.user_id)
+
+
+@app.post("/trading/paper/operations")
+def create_paper_operation(payload: PaperOperationInput, identity: AuthIdentity = Depends(identity_dependency(auth_service))) -> dict[str, object]:
+    return paper_operation_store.create(identity.user_id, payload.model_dump())
+
+
+@app.put("/trading/paper/operations/{operation_id}")
+def update_paper_operation(operation_id: str, payload: PaperOperationInput, identity: AuthIdentity = Depends(identity_dependency(auth_service))) -> dict[str, object]:
+    operation = paper_operation_store.update(identity.user_id, operation_id, payload.model_dump())
+    if operation is None:
+        raise HTTPException(status_code=404, detail="Paper operation not found.")
+    return operation
 
 
 @app.get("/trading/binance")
