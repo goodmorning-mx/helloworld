@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type FormEvent, type PointerEvent } from 'react';
+import { useEffect, useMemo, useRef, useState, type FormEvent, type PointerEvent, type ReactNode } from 'react';
 import { AuthGuard, AuthProvider, createAuthClient, useAuth } from '@goodmorning/gm-auth';
 import { PwaRuntime } from '@goodmorning/gm-pwa';
 import { CandlestickSeries, createChart, type Time, type UTCTimestamp } from 'lightweight-charts';
@@ -39,15 +39,21 @@ function timezoneParts(timestamp: number, timezone: string) {
   return Object.fromEntries(parts.map(part => [part.type, part.value]));
 }
 
+/**
+ * Converts a wall-clock time in `timezone` to the UTC epoch used by the
+ * chart. Lightweight Charts expects numeric times to always be UTC seconds;
+ * passing the local hour as a timestamp shifts session lines by the zone
+ * offset (for example, 07:00 becomes 13:00 in Mexico City).
+ */
 function timestampInTimezone(year: number, month: number, day: number, hour: number, timezone: string) {
-  const target = Date.UTC(year, month - 1, day, hour, 0, 0);
-  let guess = target;
-  for (let attempt = 0; attempt < 2; attempt += 1) {
-    const parts = timezoneParts(guess / 1000, timezone);
-    const represented = Date.UTC(Number(parts.year), Number(parts.month) - 1, Number(parts.day), Number(parts.hour), Number(parts.minute), Number(parts.second));
-    guess = target - (represented - guess);
-  }
-  return Math.round(guess / 1000);
+  const wallClock = Date.UTC(year, month - 1, day, hour, 0, 0);
+  const parts = timezoneParts(wallClock / 1000, timezone);
+  const representedWallClock = Date.UTC(
+    Number(parts.year), Number(parts.month) - 1, Number(parts.day),
+    Number(parts.hour), Number(parts.minute), Number(parts.second),
+  );
+  const timezoneOffset = representedWallClock - wallClock;
+  return Math.round((wallClock - timezoneOffset) / 1000);
 }
 
 function chartTimeLabel(time: Time, timezone: string, detailed: boolean) {
@@ -65,6 +71,27 @@ function sessionDateLabel(timestamp: number, timezone: string) {
   const values = Object.fromEntries(parts.map(part => [part.type, part.value]));
   const month = (values.month ?? '').replace('.', '').toLowerCase();
   return `${(values.weekday ?? '').toLowerCase()} ${values.hour ?? ''}:${values.minute ?? ''} ${values.day ?? ''} de ${month}`;
+}
+
+function useMobilePwa() {
+  const [mobile, setMobile] = useState(() => typeof window !== 'undefined' && window.matchMedia('(max-width: 760px), (display-mode: standalone)').matches);
+  useEffect(() => {
+    const query = window.matchMedia('(max-width: 760px), (display-mode: standalone)');
+    const update = () => setMobile(query.matches);
+    update();
+    query.addEventListener('change', update);
+    return () => query.removeEventListener('change', update);
+  }, []);
+  return mobile;
+}
+
+function MobileSheet({ title, onClose, children }: { title: string; onClose: () => void; children: ReactNode }) {
+  return <div className="mobile-modal-backdrop" role="presentation" onClick={onClose}>
+    <section className="mobile-sheet" role="dialog" aria-modal="true" aria-label={title} onClick={event => event.stopPropagation()}>
+      <div className="mobile-sheet-head"><h2>{title}</h2><button onClick={onClose} aria-label="Cerrar">×</button></div>
+      {children}
+    </section>
+  </div>;
 }
 
 function Access() {
@@ -91,6 +118,7 @@ function Access() {
 
 function Workspace() {
   const auth = useAuth();
+  const mobilePwa = useMobilePwa();
   const chartContainer = useRef<HTMLDivElement>(null);
   const chartStage = useRef<HTMLDivElement>(null);
   const chartRef = useRef<ReturnType<typeof createChart> | null>(null);
@@ -111,6 +139,8 @@ function Workspace() {
   const [resizeStart, setResizeStart] = useState<{ index: number; endpoint: 'start' | 'end' | 'stop' } | null>(null);
   const [selectedDrawing, setSelectedDrawing] = useState<number | null>(null);
   const [moveStart, setMoveStart] = useState<{ index: number; point: ChartPoint; drawing: Drawing } | null>(null);
+  const [mobileSheet, setMobileSheet] = useState<'indicators' | 'tools' | null>(null);
+  const [activePositionIndex, setActivePositionIndex] = useState<number | null>(null);
 
   useEffect(() => {
     if (!chartStage.current) return;
@@ -162,6 +192,9 @@ function Workspace() {
       const next = { time: Math.floor(candle.t / 1000) as UTCTimestamp, open: Number(candle.o), high: Number(candle.h), low: Number(candle.l), close: Number(candle.c) };
       candleDataRef.current = [...candleDataRef.current.filter(value => value.time !== next.time), { time: next.time, close: next.close }].slice(-1200);
       candles.update(next);
+      setDrawings(current => activePositionIndex === null ? current : current.map((drawing, index) => index === activePositionIndex && (drawing.type === 'long' || drawing.type === 'short')
+        ? { ...drawing, end: { time: next.time, price: next.close }, stop: drawing.stop ? { ...drawing.stop, time: next.time } : undefined }
+        : drawing));
       setViewportRevision(value => value + 1);
     };
     return () => {
@@ -174,7 +207,7 @@ function Workspace() {
       candleDataRef.current = [];
       chart.remove();
     };
-  }, [symbol, interval]);
+  }, [symbol, interval, activePositionIndex]);
 
   useEffect(() => {
     const chart = chartRef.current;
@@ -406,6 +439,36 @@ function Workspace() {
     if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
   }
 
+  function openSimulatedPosition(type: 'long' | 'short') {
+    const latest = candleDataRef.current[candleDataRef.current.length - 1];
+    if (!latest) return;
+    const entry = latest.close;
+    const direction = type === 'long' ? 1 : -1;
+    const target = entry * (1 + direction * 0.01);
+    const stop = entry * (1 - direction * 0.0025);
+    const intervalSeconds = interval === '1s' ? 1 : interval === '1m' ? 60 : interval === '3m' ? 180 : interval === '5m' ? 300 : 900;
+    const position: Drawing = {
+      type,
+      start: { time: latest.time, price: entry },
+      end: { time: (Number(latest.time) + intervalSeconds * 5) as UTCTimestamp, price: target },
+      stop: { time: (Number(latest.time) + intervalSeconds * 5) as UTCTimestamp, price: stop },
+    };
+    setDrawings(current => {
+      const next = [...current, position];
+      setActivePositionIndex(next.length - 1);
+      setSelectedDrawing(next.length - 1);
+      return next;
+    });
+  }
+
+  function chooseTool(key: 'line' | 'ruler' | 'long' | 'short') {
+    if (key === 'long' || key === 'short') {
+      openSimulatedPosition(key);
+      return;
+    }
+    setTool(tool === key ? null : key);
+  }
+
   const renderDrawing = (drawing: Drawing, index: number | string) => {
     void viewportRevision;
     const chart = chartRef.current;
@@ -450,15 +513,26 @@ function Workspace() {
     return <g key={index} className={selectedClass}><rect x={left} y={targetTop} width={width} height={targetHeight} className={targetPercent >= 0 ? 'position-profit' : 'position-risk'} /><rect x={left} y={stopTop} width={width} height={stopHeight} className={riskPercent <= 0 ? 'position-risk' : 'position-profit'} /><line x1={left} y1={start.y} x2={left + width} y2={start.y} className="position-entry" /><text x={left + 8} y={targetTop + 18} className="position-label">TP {targetLabel}</text><text x={left + 8} y={stopTop + 18} className="position-label">SL {riskLabel}</text>{handleNodes}</g>;
   };
 
-  return <main className="trading-shell"><div className="symbol-bar"><select className="symbol-select" value={symbol} onChange={event => setSymbol(event.target.value)} aria-label="Símbolo">
+  const chartStageView = <div ref={chartStage} className={`chart-stage ${tool ? 'drawing-mode' : ''}`} onPointerDownCapture={startDrawing} onPointerMoveCapture={updateDrawing} onPointerUpCapture={finishDrawing} onPointerCancelCapture={() => { setDrawingStart(null); setDrawingEnd(null); setMoveStart(null); setResizeStart(null); }}>
+    <div ref={chartContainer} className="candlestick-chart" /><svg className="drawing-overlay" viewBox={`0 0 ${stageSize.width} ${stageSize.height}`} preserveAspectRatio="none" aria-hidden="true">{renderSessionIndicator()}{renderInterestMarkers()}{drawings.map(renderDrawing)}{tool && drawingStart && drawingEnd && renderDrawing({ type: tool, start: drawingStart, end: drawingEnd }, 'preview')}</svg><div className="chart-bottom-controls"><span className="timezone-icon" aria-hidden="true">◷</span><select className="timezone-select" value={timezone} onChange={event => setTimezone(event.target.value)} aria-label="Zona horaria">{TIMEZONES.map(([label, value]) => <option key={value} value={value}>{label}</option>)}</select></div>
+  </div>;
+
+  const desktopHeader = <div className="symbol-bar"><select className="symbol-select" value={symbol} onChange={event => setSymbol(event.target.value)} aria-label="Símbolo">
     {['BTCUSDT', 'ETHUSDT', 'BNBUSDT', 'SOLUSDT', 'XRPUSDT', 'DOGEUSDT'].map(option => <option key={option}>{option}</option>)}
   </select><select className="interval-select" value={interval} onChange={event => setInterval(event.target.value as typeof interval)} aria-label="Intervalo">{(['1s', '1m', '3m', '5m', '15m'] as const).map(value => <option key={value} value={value}>{value}</option>)}</select><span className="chart-source">BINANCE · {interval.toUpperCase()}</span><button className={`session-toggle ${showSessions ? 'session-active' : ''}`} onClick={() => setShowSessions(value => !value)} aria-label="Mostrar sesiones" title="Mostrar sesiones">Sesiones</button><div className="chart-tools" aria-label="Herramientas del gráfico">
     <button className={!tool ? 'tool-active' : ''} onClick={() => setTool(null)} aria-label="Seleccionar y navegar" title="Seleccionar y navegar">↖</button>
-    {([['line', '╱', 'Línea'], ['ruler', '↔', 'Regla'], ['long', 'L', 'Long'], ['short', 'S', 'Short']] as const).map(([key, icon, label]) => <button key={key} className={tool === key ? 'tool-active' : ''} onClick={() => setTool(tool === key ? null : key)} aria-label={label} title={label}>{icon}</button>)}
+    {([['line', '╱', 'Línea'], ['ruler', '↔', 'Regla'], ['long', 'L', 'Long'], ['short', 'S', 'Short']] as const).map(([key, icon, label]) => <button key={key} className={tool === key ? 'tool-active' : ''} onClick={() => chooseTool(key)} aria-label={label} title={label}>{icon}</button>)}
     <button onClick={() => setDrawings([])} aria-label="Borrar dibujos" title="Borrar dibujos">×</button>
-  </div><button className="logout-button" onClick={() => void auth.logout()} aria-label="Cerrar sesión">Salir</button></div><div ref={chartStage} className={`chart-stage ${tool ? 'drawing-mode' : ''}`} onPointerDownCapture={startDrawing} onPointerMoveCapture={updateDrawing} onPointerUpCapture={finishDrawing} onPointerCancelCapture={() => { setDrawingStart(null); setDrawingEnd(null); setMoveStart(null); setResizeStart(null); }}>
-    <div ref={chartContainer} className="candlestick-chart" /><svg className="drawing-overlay" viewBox={`0 0 ${stageSize.width} ${stageSize.height}`} preserveAspectRatio="none" aria-hidden="true">{renderSessionIndicator()}{renderInterestMarkers()}{drawings.map(renderDrawing)}{tool && drawingStart && drawingEnd && renderDrawing({ type: tool, start: drawingStart, end: drawingEnd }, 'preview')}</svg><div className="chart-bottom-controls"><span className="timezone-icon" aria-hidden="true">◷</span><select className="timezone-select" value={timezone} onChange={event => setTimezone(event.target.value)} aria-label="Zona horaria">{TIMEZONES.map(([label, value]) => <option key={value} value={value}>{label}</option>)}</select></div>
-  </div></main>;
+  </div><button className="logout-button" onClick={() => void auth.logout()} aria-label="Cerrar sesión">Salir</button></div>;
+
+  const toolOptions = [['line', '╱', 'Línea'], ['ruler', '↔', 'Medir'], ['long', 'L', 'Long'], ['short', 'S', 'Short']] as const;
+  return mobilePwa ? <main className="trading-shell pwa-shell">
+    <header className="pwa-mobile-header"><div><span className="pwa-brand">helloworld</span><span className="pwa-market">BINANCE · {interval.toUpperCase()}</span></div><select className="pwa-symbol-select" value={symbol} onChange={event => setSymbol(event.target.value)} aria-label="Símbolo">{['BTCUSDT', 'ETHUSDT', 'BNBUSDT', 'SOLUSDT', 'XRPUSDT', 'DOGEUSDT'].map(option => <option key={option}>{option}</option>)}</select></header>
+    <section className="pwa-chart-wrap">{chartStageView}</section>
+    <nav className="pwa-bottom-nav" aria-label="Controles PWA"><button onClick={() => setTool(null)} className={!tool ? 'pwa-nav-active' : ''}>↖<span>Seleccionar</span></button><button onClick={() => setMobileSheet('indicators')} className={showSessions ? 'pwa-nav-active' : ''}>◉<span>Indicadores</span></button><button onClick={() => setMobileSheet('tools')} className={tool ? 'pwa-nav-active' : ''}>⌁<span>Herramientas</span></button><button onClick={() => void auth.logout()}>⇥<span>Salir</span></button></nav>
+    {mobileSheet === 'indicators' && <MobileSheet title="Indicadores" onClose={() => setMobileSheet(null)}><button className={`mobile-option ${showSessions ? 'option-active' : ''}`} onClick={() => setShowSessions(value => !value)}><span><b>Sesiones de mercado</b><small>Tokyo, Londres, Nueva York y Sydney</small></span><i>{showSessions ? '✓' : ''}</i></button><label className="mobile-field">Intervalo<select value={interval} onChange={event => setInterval(event.target.value as typeof interval)}>{(['1s', '1m', '3m', '5m', '15m'] as const).map(value => <option key={value}>{value}</option>)}</select></label><label className="mobile-field">Zona horaria<select value={timezone} onChange={event => setTimezone(event.target.value)}>{TIMEZONES.map(([label, value]) => <option key={value} value={value}>{label}</option>)}</select></label></MobileSheet>}
+    {mobileSheet === 'tools' && <MobileSheet title="Herramientas" onClose={() => setMobileSheet(null)}><div className="mobile-tool-grid"><button className={!tool ? 'option-active' : ''} onClick={() => { setTool(null); setMobileSheet(null); }}>↖<span>Seleccionar</span></button>{toolOptions.map(([key, icon, label]) => <button key={key} className={tool === key ? 'option-active' : ''} onClick={() => { chooseTool(key); setMobileSheet(null); }}>{icon}<span>{label}</span></button>)}<button onClick={() => { setDrawings([]); setActivePositionIndex(null); }}>×<span>Borrar todo</span></button></div></MobileSheet>}
+  </main> : <main className="trading-shell">{desktopHeader}{chartStageView}</main>;
 }
 
 function App() {
