@@ -1,4 +1,4 @@
-const CACHE = 'helloworld-shell-v6';
+const CACHE = 'helloworld-shell-v7';
 self.addEventListener('install', event => {
   event.waitUntil(caches.open(CACHE).then(cache => cache.addAll(['/'])));
   self.skipWaiting();

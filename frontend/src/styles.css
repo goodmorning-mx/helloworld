@@ -51,6 +51,7 @@
 .position-label { fill: #d7dde8; font: 12px 'DM Mono', monospace; }
 .session-line { stroke-width: 2.5; stroke-dasharray: 5 4; opacity: .7; }
 .session-label { font: 20px 'DM Mono', monospace; opacity: .95; }
+.ny-interest-marker { fill: #22d3ee; stroke: #e0f2fe; stroke-width: 2; }
 .drawing-selected .drawing-line { stroke-width: 3; filter: drop-shadow(0 0 4px #f5b84b); }
 .drawing-selected .measurement-box { stroke-width: 3; filter: drop-shadow(0 0 4px #3b82f6); }
 .drawing-selected .position-profit, .drawing-selected .position-risk { stroke-width: 2; }

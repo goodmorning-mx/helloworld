@@ -88,6 +88,7 @@ function Workspace() {
   const chartStage = useRef<HTMLDivElement>(null);
   const chartRef = useRef<ReturnType<typeof createChart> | null>(null);
   const candlesRef = useRef<ReturnType<ReturnType<typeof createChart>['addSeries']> | null>(null);
+  const candleDataRef = useRef<Array<{ time: UTCTimestamp; close: number }>>([]);
   const [symbol, setSymbol] = useState('BTCUSDT');
   const [interval, setInterval] = useState<'1s' | '1m' | '3m' | '5m' | '15m'>('1m');
   const [timezone, setTimezone] = useState('America/Mexico_City');
@@ -134,19 +135,24 @@ function Workspace() {
     chart.timeScale().subscribeVisibleTimeRangeChange(refreshDrawings);
     chart.timeScale().subscribeVisibleLogicalRangeChange(refreshDrawings);
     let active = true;
+    candleDataRef.current = [];
     const stream = new WebSocket(`wss://stream.binance.com:9443/ws/${symbol.toLowerCase()}@kline_${interval}`);
     fetch(`https://api.binance.com/api/v3/klines?symbol=${symbol}&interval=${interval}&limit=500`)
       .then(response => response.json())
       .then(rows => {
         if (!active || !Array.isArray(rows)) return;
-        candles.setData(rows.map(row => ({ time: Math.floor(Number(row[0]) / 1000) as UTCTimestamp, open: Number(row[1]), high: Number(row[2]), low: Number(row[3]), close: Number(row[4]) })));
+        const parsed = rows.map(row => ({ time: Math.floor(Number(row[0]) / 1000) as UTCTimestamp, open: Number(row[1]), high: Number(row[2]), low: Number(row[3]), close: Number(row[4]) }));
+        candleDataRef.current = parsed.map(({ time, close }) => ({ time, close }));
+        candles.setData(parsed);
         chart.timeScale().fitContent();
       })
       .catch(() => undefined);
     stream.onmessage = event => {
       if (!active) return;
       const candle = JSON.parse(event.data).k;
-      candles.update({ time: Math.floor(candle.t / 1000) as UTCTimestamp, open: Number(candle.o), high: Number(candle.h), low: Number(candle.l), close: Number(candle.c) });
+      const next = { time: Math.floor(candle.t / 1000) as UTCTimestamp, open: Number(candle.o), high: Number(candle.h), low: Number(candle.l), close: Number(candle.c) };
+      candleDataRef.current = [...candleDataRef.current.filter(value => value.time !== next.time), { time: next.time, close: next.close }].slice(-1200);
+      candles.update(next);
     };
     return () => {
       active = false;
@@ -155,6 +161,7 @@ function Workspace() {
       chart.timeScale().unsubscribeVisibleLogicalRangeChange(refreshDrawings);
       chartRef.current = null;
       candlesRef.current = null;
+      candleDataRef.current = [];
       chart.remove();
     };
   }, [symbol, interval]);
@@ -262,6 +269,22 @@ function Workspace() {
       });
     }
     return <g className="session-indicator">{events.map((event, index) => <g key={`${event.label}-${event.x}-${index}`}><line x1={event.x} y1="0" x2={event.x} y2={stageSize.height} stroke={event.color} className="session-line" /><text x={event.x + 4} y="18" fill={event.color} className="session-label"><tspan x={event.x + 4} dy="0">{event.label}</tspan><tspan x={event.x + 4} dy="12">{event.date}</tspan></text></g>)}</g>;
+  }
+
+  function renderInterestMarkers() {
+    const chart = chartRef.current;
+    const candles = candlesRef.current;
+    if (!chart || !candles) return null;
+    const markers = candleDataRef.current.flatMap(candle => {
+      const local = timezoneParts(Number(candle.time), SESSION_TIMEZONE);
+      const hour = Number(local.hour);
+      const minute = Number(local.minute);
+      if (hour !== 7 || minute < 20 || minute >= 35) return [];
+      const x = chart.timeScale().timeToCoordinate(candle.time);
+      const y = candles.priceToCoordinate(candle.close);
+      return x === null || x === undefined || y === null || y === undefined ? [] : [{ x, y }];
+    });
+    return <g className="ny-interest-markers">{markers.map((marker, index) => <circle key={`${marker.x}-${index}`} cx={marker.x} cy={marker.y} r="6" className="ny-interest-marker" />)}</g>;
   }
 
   function drawingAt(point: { x: number; y: number }) {
@@ -430,13 +453,13 @@ function Workspace() {
     {([['line', '╱', 'Línea'], ['ruler', '↔', 'Regla'], ['long', 'L', 'Long'], ['short', 'S', 'Short']] as const).map(([key, icon, label]) => <button key={key} className={tool === key ? 'tool-active' : ''} onClick={() => setTool(tool === key ? null : key)} aria-label={label} title={label}>{icon}</button>)}
     <button onClick={() => setDrawings([])} aria-label="Borrar dibujos" title="Borrar dibujos">×</button>
   </div><button className="logout-button" onClick={() => void auth.logout()} aria-label="Cerrar sesión">Salir</button></div><div ref={chartStage} className={`chart-stage ${tool ? 'drawing-mode' : ''}`} onPointerDownCapture={startDrawing} onPointerMoveCapture={updateDrawing} onPointerUpCapture={finishDrawing} onPointerCancelCapture={() => { setDrawingStart(null); setDrawingEnd(null); setMoveStart(null); setResizeStart(null); }}>
-    <div ref={chartContainer} className="candlestick-chart" /><svg className="drawing-overlay" viewBox={`0 0 ${stageSize.width} ${stageSize.height}`} preserveAspectRatio="none" aria-hidden="true">{renderSessionIndicator()}{drawings.map(renderDrawing)}{tool && drawingStart && drawingEnd && renderDrawing({ type: tool, start: drawingStart, end: drawingEnd }, 'preview')}</svg><div className="chart-bottom-controls"><span className="timezone-icon" aria-hidden="true">◷</span><select className="timezone-select" value={timezone} onChange={event => setTimezone(event.target.value)} aria-label="Zona horaria">{TIMEZONES.map(([label, value]) => <option key={value} value={value}>{label}</option>)}</select></div>
+    <div ref={chartContainer} className="candlestick-chart" /><svg className="drawing-overlay" viewBox={`0 0 ${stageSize.width} ${stageSize.height}`} preserveAspectRatio="none" aria-hidden="true">{renderSessionIndicator()}{renderInterestMarkers()}{drawings.map(renderDrawing)}{tool && drawingStart && drawingEnd && renderDrawing({ type: tool, start: drawingStart, end: drawingEnd }, 'preview')}</svg><div className="chart-bottom-controls"><span className="timezone-icon" aria-hidden="true">◷</span><select className="timezone-select" value={timezone} onChange={event => setTimezone(event.target.value)} aria-label="Zona horaria">{TIMEZONES.map(([label, value]) => <option key={value} value={value}>{label}</option>)}</select></div>
   </div></main>;
 }
 
 function App() {
   const client = useMemo(() => createAuthClient(apiUrl), []);
-  return <PwaRuntime config={{ appName: 'helloworld', version: '0.1.6', serviceWorkerUrl: '/sw.js?v=0.1.6', updateIntervalMs: 5 * 60 * 1000 }}><AuthProvider client={client}><AuthGuard fallback={<Access />}><Workspace /></AuthGuard></AuthProvider></PwaRuntime>;
+  return <PwaRuntime config={{ appName: 'helloworld', version: '0.1.7', serviceWorkerUrl: '/sw.js?v=0.1.7', updateIntervalMs: 5 * 60 * 1000 }}><AuthProvider client={client}><AuthGuard fallback={<Access />}><Workspace /></AuthGuard></AuthProvider></PwaRuntime>;
 }
 
 export default App;
