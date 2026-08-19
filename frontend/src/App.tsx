@@ -94,6 +94,51 @@ function MobileSheet({ title, onClose, children }: { title: string; onClose: () 
   </div>;
 }
 
+type BinancePosition = {
+  symbol?: string; side?: string; quantity?: string; entry_price?: string;
+  mark_price?: string; unrealized_pnl?: string; liquidation_price?: string;
+};
+type BinanceAccount = {
+  enabled?: boolean; healthy?: boolean; stream_connected?: boolean;
+  last_update?: string; last_event?: string; error?: string | null;
+  wallet_balance?: string | null; available_balance?: string | null;
+  total_unrealized_pnl?: string | null; positions?: BinancePosition[];
+  events?: Array<{ time?: string; type?: string; symbol?: string; status?: string }>;
+};
+
+function BinanceAccountPanel() {
+  const [account, setAccount] = useState<BinanceAccount | null>(null);
+  const [loading, setLoading] = useState(true);
+  useEffect(() => {
+    let active = true;
+    const load = async () => {
+      try {
+        const response = await fetch(`${apiUrl}/trading/binance`, { credentials: 'include' });
+        if (!response.ok) throw new Error(`Binance ${response.status}`);
+        const payload = await response.json() as BinanceAccount;
+        if (active) setAccount(payload);
+      } catch {
+        if (active) setAccount({ enabled: true, healthy: false, error: 'No fue posible consultar el monitor Binance.' });
+      } finally {
+        if (active) setLoading(false);
+      }
+    };
+    void load();
+    const timer = window.setInterval(() => void load(), 10_000);
+    return () => { active = false; window.clearInterval(timer); };
+  }, []);
+  const online = Boolean(account?.healthy && account?.stream_connected);
+  return <section className="binance-account-panel" aria-label="Estado de Binance">
+    <div className="binance-panel-head"><div><span className="positions-kicker">BINANCE · CUENTA</span><h2>Estado de Binance</h2></div><span className={`stream-badge ${online ? 'stream-good' : 'stream-bad'}`}>{loading ? 'Consultando…' : online ? 'Saludable · User Stream' : 'Sin conexión'}</span></div>
+    {account?.error && <p className="binance-error">{account.error}</p>}
+    <div className="binance-metrics"><div><small>Saldo wallet</small><strong>{account?.wallet_balance ?? '—'}</strong></div><div><small>Disponible</small><strong>{account?.available_balance ?? '—'}</strong></div><div><small>PNL no realizado</small><strong>{account?.total_unrealized_pnl ?? '—'}</strong></div><div><small>Última actualización</small><strong>{account?.last_update ? new Date(account.last_update).toLocaleTimeString() : '—'}</strong></div></div>
+    <h3>Posiciones de Binance</h3>
+    <div className="positions-table-scroll"><table className="positions-table binance-table"><thead><tr><th>Símbolo</th><th>Lado</th><th>Cantidad</th><th>Entrada</th><th>Mark</th><th>UPNL</th></tr></thead><tbody>{account?.positions?.length ? account.positions.map((position, index) => <tr key={`${position.symbol}-${index}`}><td>{position.symbol ?? '—'}</td><td className={position.side === 'LONG' ? 'value-positive' : 'value-negative'}>{position.side ?? '—'}</td><td>{position.quantity ?? '—'}</td><td>{position.entry_price ?? '—'}</td><td>{position.mark_price ?? '—'}</td><td>{position.unrealized_pnl ?? '—'}</td></tr>) : <tr><td colSpan={6}>Sin posiciones abiertas</td></tr>}</tbody></table></div>
+    <h3>Últimos eventos del User Stream</h3>
+    <div className="binance-events">{account?.events?.length ? account.events.slice(-5).reverse().map((event, index) => <div key={`${event.time}-${index}`}><span>{event.time ? new Date(event.time).toLocaleTimeString() : '—'}</span>{event.type ?? 'evento'} · {event.symbol ?? ''} · {event.status ?? ''}</div>) : 'Sin eventos recientes'}</div>
+  </section>;
+}
+
 function Access() {
   const auth = useAuth();
   const [username, setUsername] = useState('');
@@ -820,11 +865,11 @@ function Workspace() {
 
   return mobilePwa ? <main className="trading-shell pwa-shell">
     <header className="pwa-mobile-header"><div><span className="pwa-brand">helloworld</span><span className="pwa-market">BINANCE · {entryInterval.toUpperCase()} ENTRADA · {interval.toUpperCase()} CONTEXTO</span></div><select className="pwa-symbol-select" value={symbol} onChange={event => setSymbol(event.target.value)} aria-label="Símbolo">{['BTCUSDT', 'ETHUSDT', 'BNBUSDT', 'SOLUSDT', 'XRPUSDT', 'DOGEUSDT'].map(option => <option key={option}>{option}</option>)}</select></header>
-    <section className="pwa-chart-wrap">{chartStageView}</section>{positionsTable}
+    <section className="pwa-chart-wrap">{chartStageView}</section><BinanceAccountPanel />{positionsTable}
     <nav className="pwa-bottom-nav" aria-label="Controles PWA"><button onClick={() => setTool(null)} className={!tool ? 'pwa-nav-active' : ''}>↖<span>Seleccionar</span></button><button onClick={() => setMobileSheet('indicators')} className={showSessions ? 'pwa-nav-active' : ''}>◉<span>Indicadores</span></button><button onClick={() => setMobileSheet('tools')} className={tool ? 'pwa-nav-active' : ''}>⌁<span>Herramientas</span></button><button onClick={() => void auth.logout()}>⇥<span>Salir</span></button></nav>
     {mobileSheet === 'indicators' && <MobileSheet title="Indicadores" onClose={() => setMobileSheet(null)}><button className={`mobile-option ${showSessions ? 'option-active' : ''}`} onClick={() => setShowSessions(value => !value)}><span><b>Sesiones de mercado</b><small>Tokyo, Londres, Nueva York y Sydney</small></span><i>{showSessions ? '✓' : ''}</i></button><label className="mobile-field">Intervalo<select value={interval} onChange={event => setInterval(event.target.value as typeof interval)}>{(['1s', '1m', '3m', '5m', '15m'] as const).map(value => <option key={value}>{value}</option>)}</select></label><label className="mobile-field">Zona horaria<select value={timezone} onChange={event => setTimezone(event.target.value)}>{TIMEZONES.map(([label, value]) => <option key={value} value={value}>{label}</option>)}</select></label></MobileSheet>}
     {mobileSheet === 'tools' && <MobileSheet title="Herramientas" onClose={() => setMobileSheet(null)}><div className="mobile-tool-grid"><button className={!tool ? 'option-active' : ''} onClick={() => { setTool(null); setMobileSheet(null); }}>↖<span>Seleccionar</span></button>{toolOptions.map(([key, icon, label]) => <button key={key} className={tool === key ? 'option-active' : ''} onClick={() => { chooseTool(key); setMobileSheet(null); }}>{icon}<span>{label}</span></button>)}<button onClick={() => { setDrawings([]); activePositionIndexRef.current = null; setActivePositionIndex(null); }}>×<span>Borrar todo</span></button></div></MobileSheet>}
-  </main> : <main className="trading-shell">{desktopHeader}{chartsRow}{positionsTable}</main>;
+  </main> : <main className="trading-shell">{desktopHeader}{chartsRow}<BinanceAccountPanel />{positionsTable}</main>;
 }
 
 function App() {

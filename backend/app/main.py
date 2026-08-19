@@ -16,6 +16,7 @@ from gm_mcp import Permission, RequestContext, ToolRegistry, tool
 
 from app.config import get_settings
 from app.database import create_database_engine
+from app.binance_account import BinanceAccountMonitor
 
 settings = get_settings()
 engine = create_database_engine()
@@ -26,6 +27,7 @@ auth_service = AuthService(
 tool_registry = ToolRegistry()
 conversations: dict[str, Conversation] = {}
 paper_orders: list[dict[str, object]] = []
+binance_monitor = BinanceAccountMonitor(settings) if settings.binance_account_monitor_enabled and settings.binance_api_key and settings.binance_api_secret else None
 
 
 class FallbackProvider:
@@ -125,6 +127,14 @@ class ChatInput(BaseModel):
 @app.on_event("startup")
 def initialize_auth_schema() -> None:
     auth_service.create_schema()
+    if binance_monitor is not None:
+        binance_monitor.start()
+
+
+@app.on_event("shutdown")
+def stop_binance_monitor() -> None:
+    if binance_monitor is not None:
+        binance_monitor.stop()
 
 
 @app.post("/auth/register")
@@ -157,6 +167,13 @@ def health() -> dict[str, str]:
 @app.get("/trading/summary")
 def summary(identity: AuthIdentity = Depends(identity_dependency(auth_service))) -> dict[str, object]:
     return {"mode": "paper", "balance": 10000, "currency": "USD", "open_orders": paper_orders}
+
+
+@app.get("/trading/binance")
+def binance_account(identity: AuthIdentity = Depends(identity_dependency(auth_service))) -> dict[str, object]:
+    if binance_monitor is None:
+        return {"enabled": False, "healthy": False, "error": "Monitor Binance deshabilitado"}
+    return binance_monitor.snapshot()
 
 
 @app.post("/agent/chat")
