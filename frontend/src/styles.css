@@ -32,14 +32,14 @@
 .drawing-ruler { stroke: #3b82f6; stroke-width: 2; stroke-dasharray: 6 4; }
 .drawing-label { fill: #f5b84b; font: 12px 'DM Mono', monospace; }
 .drawing-handle { fill: #f5b84b; stroke: #fff; stroke-width: 3; pointer-events: none; }
-.handle-long { fill: #22c55e; }
-.handle-short { fill: #ef4444; }
+.handle-target { fill: #22c55e; }
+.handle-stop { fill: #ef4444; }
 .handle-ruler { fill: #3b82f6; }
 .measurement-box { fill: #3b82f622; stroke: #3b82f6; stroke-width: 1.5; }
 .measurement-label { fill: #93c5fd; font: 12px 'DM Mono', monospace; }
-.position-profit { fill: #64d39a22; stroke: #64d39a; stroke-width: 1; }
-.position-risk { fill: #f27e7e22; stroke: #f27e7e; stroke-width: 1; }
-.position-entry { stroke: #f5b84b; stroke-width: 1.5; stroke-dasharray: 5 3; }
+.position-profit { fill: #64d39a22; stroke: #64d39a; stroke-width: 2.5; }
+.position-risk { fill: #f27e7e22; stroke: #f27e7e; stroke-width: 2.5; }
+.position-entry { stroke: #f5b84b; stroke-width: 3; stroke-dasharray: 6 4; }
 .position-label { fill: #d7dde8; font: 12px 'DM Mono', monospace; }
 .drawing-selected .drawing-line { stroke-width: 3; filter: drop-shadow(0 0 4px #f5b84b); }
 .drawing-selected .measurement-box { stroke-width: 3; filter: drop-shadow(0 0 4px #3b82f6); }

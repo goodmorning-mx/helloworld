@@ -134,20 +134,32 @@ function Workspace() {
     const start = screenPoint(drawing.start);
     const end = screenPoint(drawing.end);
     if (!start || !end) return [];
-    if (drawing.type !== 'long' && drawing.type !== 'short') return [
-      { ...start, index, endpoint: 'start' as const },
-      { ...end, index, endpoint: 'end' as const },
+    if (drawing.type === 'line') return [
+      { ...start, index, endpoint: 'start' as const, role: 'default' as const },
+      { ...end, index, endpoint: 'end' as const, role: 'default' as const },
     ];
+    if (drawing.type === 'ruler') {
+      const left = Math.min(start.x, end.x);
+      const right = Math.max(start.x, end.x);
+      const top = Math.min(start.y, end.y);
+      const bottom = Math.max(start.y, end.y);
+      return [
+        { x: left, y: top, index, endpoint: 'start' as const, role: 'default' as const },
+        { x: right, y: top, index, endpoint: 'end' as const, role: 'default' as const },
+        { x: left, y: bottom, index, endpoint: 'start' as const, role: 'default' as const },
+        { x: right, y: bottom, index, endpoint: 'end' as const, role: 'default' as const },
+      ];
+    }
     const stopPrice = drawing.stop?.price ?? drawing.start.price - (drawing.end.price - drawing.start.price) / 4;
     const stop = screenPoint(drawing.stop ?? { time: drawing.end.time, price: stopPrice });
     if (!stop) return [];
     const left = Math.min(start.x, end.x);
     const right = Math.max(start.x, end.x);
     return [
-      { x: left, y: end.y, index, endpoint: 'end' as const },
-      { x: right, y: end.y, index, endpoint: 'end' as const },
-      { x: left, y: stop.y, index, endpoint: 'stop' as const },
-      { x: right, y: stop.y, index, endpoint: 'stop' as const },
+      { x: left, y: end.y, index, endpoint: 'end' as const, role: 'target' as const },
+      { x: right, y: end.y, index, endpoint: 'end' as const, role: 'target' as const },
+      { x: left, y: stop.y, index, endpoint: 'stop' as const, role: 'stop' as const },
+      { x: right, y: stop.y, index, endpoint: 'stop' as const, role: 'stop' as const },
     ];
   }
 
@@ -240,7 +252,15 @@ function Workspace() {
       const resize = resizeStart;
       if (end) setDrawings(current => current.map((drawing, index) => {
         if (index !== resize.index) return drawing;
-        if (resize.endpoint === 'end' && drawing.stop) return { ...drawing, end, stop: { ...drawing.stop, time: end.time } };
+        if (resize.endpoint === 'end' && drawing.type !== 'line' && drawing.type !== 'ruler') {
+          const price = drawing.type === 'long' ? Math.max(end.price, drawing.start.price) : Math.min(end.price, drawing.start.price);
+          const target = { ...end, price };
+          return { ...drawing, end: target, stop: drawing.stop ? { ...drawing.stop, time: target.time } : undefined };
+        }
+        if (resize.endpoint === 'stop' && drawing.stop) {
+          const price = drawing.type === 'long' ? Math.min(end.price, drawing.start.price) : Math.max(end.price, drawing.start.price);
+          return { ...drawing, stop: { ...end, price } };
+        }
         return { ...drawing, [resize.endpoint]: end };
       }));
       setResizeStart(null);
@@ -252,9 +272,14 @@ function Workspace() {
     event.stopPropagation();
     const end = chartPointFromEvent(event);
     if (!end) return;
-    const stopPrice = drawingStart.price - (end.price - drawingStart.price) / 4;
-    const stop = tool === 'long' || tool === 'short' ? { time: end.time, price: stopPrice } : undefined;
-    setDrawings(current => [...current, { type: tool, start: drawingStart, end, stop }]);
+    const positionEnd = tool === 'long'
+      ? { ...end, price: Math.max(end.price, drawingStart.price) }
+      : tool === 'short'
+        ? { ...end, price: Math.min(end.price, drawingStart.price) }
+        : end;
+    const stopPrice = drawingStart.price - (positionEnd.price - drawingStart.price) / 4;
+    const stop = tool === 'long' || tool === 'short' ? { time: positionEnd.time, price: stopPrice } : undefined;
+    setDrawings(current => [...current, { type: tool, start: drawingStart, end: positionEnd, stop }]);
     setDrawingStart(null);
     setDrawingEnd(null);
     setTool(null);
@@ -274,8 +299,7 @@ function Workspace() {
     const start = { x: startX, y: startY };
     const end = { x: endX, y: endY };
     const handles = drawingHandles(drawing, typeof index === 'number' ? index : -1);
-    const handleClass = drawing.type === 'long' ? 'drawing-handle handle-long' : drawing.type === 'short' ? 'drawing-handle handle-short' : drawing.type === 'ruler' ? 'drawing-handle handle-ruler' : 'drawing-handle';
-    const handleNodes = handles.map((handle, handleIndex) => <circle key={handleIndex} cx={handle.x} cy={handle.y} r="7" className={handleClass} />);
+    const handleNodes = handles.map((handle, handleIndex) => <circle key={handleIndex} cx={handle.x} cy={handle.y} r="7" className={`drawing-handle ${handle.role === 'stop' ? 'handle-stop' : handle.role === 'target' ? 'handle-target' : drawing.type === 'ruler' ? 'handle-ruler' : ''}`} />);
     const pricePercent = ((drawing.end.price - drawing.start.price) / drawing.start.price) * 100;
     const selectedClass = typeof index === 'number' && selectedDrawing === index ? 'drawing-selected' : undefined;
     if (drawing.type === 'line') return <g key={index} className={selectedClass}><line x1={start.x} y1={start.y} x2={end.x} y2={end.y} className="drawing-line" /><text x={(start.x + end.x) / 2} y={(start.y + end.y) / 2 - 8} className="drawing-label">{pricePercent >= 0 ? '+' : ''}{pricePercent.toFixed(2)}%</text>{handleNodes}</g>;
