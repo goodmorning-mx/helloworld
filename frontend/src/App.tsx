@@ -50,6 +50,17 @@ function timestampInTimezone(year: number, month: number, day: number, hour: num
   return Math.round(guess / 1000);
 }
 
+function sessionDateLabel(timestamp: number, timezone: string) {
+  const parts = new Intl.DateTimeFormat('es-MX', {
+    timeZone: timezone, weekday: 'long', day: '2-digit', month: 'short', year: 'numeric',
+    hour: '2-digit', minute: '2-digit', hour12: true,
+  }).formatToParts(new Date(timestamp * 1000));
+  const values = Object.fromEntries(parts.map(part => [part.type, part.value]));
+  const capitalize = (value: string) => value ? `${value[0].toUpperCase()}${value.slice(1).replace('.', '')}` : value;
+  const period = (values.dayPeriod ?? '').replace(/\./g, '').replace(/\s/g, '').toLowerCase();
+  return `${capitalize(values.weekday ?? '')} ${values.day ?? ''} ${capitalize(values.month ?? '')} ${values.year ?? ''} ${values.hour ?? ''}:${values.minute ?? ''} ${period}`;
+}
+
 function Access() {
   const auth = useAuth();
   const [username, setUsername] = useState('');
@@ -247,7 +258,7 @@ function Workspace() {
           if (session.name === 'New York' && type === 'Close') return;
           const eventTime = timestampInTimezone(year, month, date, Number(hour), SESSION_TIMEZONE);
           const x = chartRef.current?.timeScale().timeToCoordinate(eventTime as UTCTimestamp);
-          if (x !== null && x !== undefined) events.push({ x, color: session.color, label: `${session.name} ${type}` });
+          if (x !== null && x !== undefined) events.push({ x, color: session.color, label: `${session.name} ${type} · ${sessionDateLabel(eventTime, timezone)}` });
         });
       });
     }
