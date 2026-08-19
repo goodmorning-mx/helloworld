@@ -247,7 +247,7 @@ function Workspace() {
   const [overviewRevision, setOverviewRevision] = useState(0);
   type ChartPoint = { time: UTCTimestamp; price: number };
   type ChartCanvas = 'entry' | 'context';
-  type Drawing = { type: 'line' | 'ruler' | 'long' | 'short'; start: ChartPoint; end: ChartPoint; stop?: ChartPoint; target?: ChartPoint; chart?: ChartCanvas; paper?: boolean; closed?: boolean; closeReason?: 'TP' | 'SL' };
+  type Drawing = { type: 'line' | 'ruler' | 'long' | 'short'; start: ChartPoint; end: ChartPoint; stop?: ChartPoint; target?: ChartPoint; chart?: ChartCanvas; paper?: boolean; closed?: boolean; closeReason?: 'TP' | 'SL'; status?: 'CLOSED - WIN' | 'CLOSED - FAILED' };
   const [drawings, setDrawings] = useState<Drawing[]>([]);
   const [drawingStart, setDrawingStart] = useState<ChartPoint | null>(null);
   const [drawingEnd, setDrawingEnd] = useState<ChartPoint | null>(null);
@@ -424,9 +424,17 @@ function Workspace() {
         const direction = activeDrawing.type === 'long' ? 1 : -1;
         const targetPrice = activeDrawing.target?.price ?? activeDrawing.end.price;
         const stopPrice = activeDrawing.stop?.price ?? activeDrawing.start.price;
-        const hitTarget = direction === 1 ? next.close >= targetPrice : next.close <= targetPrice;
-        const hitStop = direction === 1 ? next.close <= stopPrice : next.close >= stopPrice;
+        // Kline high/low catches a touch even when the candle closes back inside
+        // the position. If both boundaries were touched in one update, use the
+        // current tick/close as the tie-breaker; the stop is conservative when
+        // the order cannot be reconstructed from a kline update.
+        const targetTouched = direction === 1 ? next.high >= targetPrice : next.low <= targetPrice;
+        const stopTouched = direction === 1 ? next.low <= stopPrice : next.high >= stopPrice;
+        const bothTouched = targetTouched && stopTouched;
+        const hitTarget = bothTouched ? (direction === 1 ? next.close >= targetPrice : next.close <= targetPrice) : targetTouched;
+        const hitStop = bothTouched ? !hitTarget : stopTouched;
         const closeReason = hitTarget ? 'TP' : hitStop ? 'SL' : undefined;
+        const status = closeReason === 'TP' ? 'CLOSED - WIN' : closeReason === 'SL' ? 'CLOSED - FAILED' : undefined;
         if (closeReason) {
           activePositionIndexRef.current = null;
           setActivePositionIndex(null);
@@ -438,6 +446,7 @@ function Workspace() {
           stop: drawing.stop ? { ...drawing.stop, time: next.time } : undefined,
           closed: Boolean(closeReason),
           closeReason,
+          status,
         } : drawing);
       });
       setViewportRevision(value => value + 1);
@@ -627,10 +636,6 @@ function Workspace() {
       if ((canvas === 'context' && drawing.chart !== 'context') || (canvas === 'entry' && drawing.chart === 'context')) continue;
       const target = drawing.target && screenPoint(drawing.target, canvas);
       const stop = drawing.stop && screenPoint(drawing.stop, canvas);
-      const left = drawing.start && screenPoint(drawing.start, canvas);
-      const right = drawing.end && screenPoint(drawing.end, canvas);
-      const withinOperation = !left || !right || (point.x >= Math.min(left.x, right.x) - 12 && point.x <= Math.max(left.x, right.x) + 12);
-      if (!withinOperation) continue;
       if (target && Math.abs(point.y - target.y) <= 10) return { index, endpoint: 'target' as const };
       if (stop && Math.abs(point.y - stop.y) <= 10) return { index, endpoint: 'stop' as const };
     }
@@ -918,7 +923,8 @@ function Workspace() {
       const riskDistance = Math.abs(position.start.price - (position.stop?.price ?? position.start.price));
       const rewardDistance = Math.abs(targetPrice - position.start.price);
       const rr = riskDistance > 0 ? rewardDistance / riskDistance : 0;
-      return <tr key={`${position.start.time}-${index}`}><td>{symbol}</td><td><span className={`position-side ${position.type}`}>{position.type.toUpperCase()}</span></td><td>{position.start.price.toFixed(8)}</td><td>{position.end.price.toFixed(8)}</td><td>{margin.toFixed(2)} USDT</td><td>{rr.toFixed(2)}:1</td><td className={pnl >= 0 ? 'value-positive' : 'value-negative'}>{pnl >= 0 ? '+' : ''}{pnl.toFixed(8)} USDT</td><td className={roe >= 0 ? 'value-positive' : 'value-negative'}>{roe >= 0 ? '+' : ''}{roe.toFixed(8)}%</td><td><span className={`position-status ${position.closed ? 'position-closed' : 'position-live'}`}><i />{position.closed ? `Cerrada · ${position.closeReason}` : 'Abierta'}</span></td></tr>;
+      const status = position.status ?? (position.closed ? `CLOSED - ${position.closeReason === 'TP' ? 'WIN' : 'FAILED'}` : 'OPEN');
+      return <tr key={`${position.start.time}-${index}`}><td>{symbol}</td><td><span className={`position-side ${position.type}`}>{position.type.toUpperCase()}</span></td><td>{position.start.price.toFixed(8)}</td><td>{position.end.price.toFixed(8)}</td><td>{margin.toFixed(2)} USDT</td><td>{rr.toFixed(2)}:1</td><td className={pnl >= 0 ? 'value-positive' : 'value-negative'}>{pnl >= 0 ? '+' : ''}{pnl.toFixed(8)} USDT</td><td className={roe >= 0 ? 'value-positive' : 'value-negative'}>{roe >= 0 ? '+' : ''}{roe.toFixed(8)}%</td><td><span className={`position-status ${position.closed ? (position.status === 'CLOSED - WIN' ? 'position-win' : 'position-failed') : 'position-live'}`}><i />{status}</span></td></tr>;
     })}</tbody></table></div>}
   </section>;
 
@@ -970,7 +976,7 @@ function Workspace() {
     const stopTop = Math.min(start.y, stop.y);
     const stopHeight = Math.abs(start.y - stop.y);
     const paperClass = drawing.paper ? `paper-position ${drawing.type === 'long' ? 'paper-long' : 'paper-short'}` : '';
-    const paperLabel = drawing.paper ? <text x={left + 8} y={Math.max(18, Math.min(targetTop, stopTop) - 10)} className="paper-operation-label">Paper Operation · {drawing.type.toUpperCase()}</text> : null;
+    const paperLabel = drawing.paper ? <text x={left + 8} y={Math.max(18, Math.min(targetTop, stopTop) - 10)} className="paper-operation-label"><tspan x={left + 8} dy="0">Paper Operation · {drawing.type.toUpperCase()}</tspan>{drawing.status && <tspan x={left + 8} dy="16">{drawing.status}</tspan>}</text> : null;
     const pnlLabel = drawing.paper ? <text x={left + width + 8} y={end.y + 4} className="paper-pnl-label">PNL {currentPnlPercent >= 0 ? '+' : ''}{currentPnlPercent.toFixed(8)}%</text> : null;
     return <g key={index} className={`${selectedClass ?? ''} ${paperClass}`}><rect x={left} y={targetTop} width={width} height={targetHeight} className={targetPercent >= 0 ? 'position-profit' : 'position-risk'} /><rect x={left} y={stopTop} width={width} height={stopHeight} className={riskPercent <= 0 ? 'position-risk' : 'position-profit'} /><line x1={left} y1={start.y} x2={left + width} y2={start.y} className="position-entry" /><line x1={left} y1={end.y} x2={left + width} y2={end.y} className="paper-current-price" /><text x={left + 8} y={targetTop + 18} className="position-label">{drawing.paper ? targetLabel : `TP ${targetLabel}`}</text><text x={left + 8} y={stopTop + 18} className="position-label">SL {riskLabel}</text><text x={left + 8} y={Math.max(targetTop, stopTop) + 34} className="position-label">R:R {rr.toFixed(2)}:1</text>{paperLabel}{pnlLabel}{drawing.paper ? handleNodes : null}{drawing.paper ? null : handleNodes}</g>;
   };
