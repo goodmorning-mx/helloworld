@@ -53,6 +53,7 @@
 .position-risk { fill: #f27e7e22; stroke: #f27e7e; stroke-width: 2.5; }
 .position-entry { stroke: #f5b84b; stroke-width: 3; stroke-dasharray: 6 4; }
 .position-label { fill: #d7dde8; font: 12px 'DM Mono', monospace; }
+.paper-operation-label { font: 700 13px 'DM Mono', monospace; letter-spacing: .03em; }.paper-long .paper-operation-label { fill: #64d39a; }.paper-short .paper-operation-label { fill: #f27e7e; }.paper-long .position-entry { stroke: #64d39a; }.paper-short .position-entry { stroke: #f27e7e; }
 .session-line { stroke-width: 2.5; stroke-dasharray: 5 4; opacity: .7; }
 .session-label { font: 20px 'DM Mono', monospace; opacity: .95; }
 .ny-interest-marker { fill: #22d3ee; stroke: #e0f2fe; stroke-width: 2; }

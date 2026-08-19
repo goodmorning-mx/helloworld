@@ -132,7 +132,7 @@ function Workspace() {
   const [tool, setTool] = useState<'line' | 'ruler' | 'long' | 'short' | null>(null);
   const [viewportRevision, setViewportRevision] = useState(0);
   type ChartPoint = { time: UTCTimestamp; price: number };
-  type Drawing = { type: 'line' | 'ruler' | 'long' | 'short'; start: ChartPoint; end: ChartPoint; stop?: ChartPoint };
+  type Drawing = { type: 'line' | 'ruler' | 'long' | 'short'; start: ChartPoint; end: ChartPoint; stop?: ChartPoint; paper?: boolean };
   const [drawings, setDrawings] = useState<Drawing[]>([]);
   const [drawingStart, setDrawingStart] = useState<ChartPoint | null>(null);
   const [drawingEnd, setDrawingEnd] = useState<ChartPoint | null>(null);
@@ -279,6 +279,7 @@ function Workspace() {
 
   function handleAt(point: { x: number; y: number }) {
     for (let index = drawings.length - 1; index >= 0; index -= 1) {
+      if (drawings[index].paper) continue;
       const handle = drawingHandles(drawings[index], index).find(candidate => Math.hypot(candidate.x - point.x, candidate.y - point.y) <= 12);
       if (handle) return handle;
     }
@@ -327,6 +328,7 @@ function Workspace() {
   function drawingAt(point: { x: number; y: number }) {
     for (let index = drawings.length - 1; index >= 0; index -= 1) {
       const drawing = drawings[index];
+      if (drawing.paper) continue;
       const start = screenPoint(drawing.start);
       const end = screenPoint(drawing.end);
       if (!start || !end) continue;
@@ -385,7 +387,7 @@ function Workspace() {
       const timeDelta = Number(point.time) - Number(moveStart.point.time);
       const priceDelta = point.price - moveStart.point.price;
       const shift = (value: ChartPoint): ChartPoint => ({ time: (Number(value.time) + timeDelta) as UTCTimestamp, price: value.price + priceDelta });
-      setDrawings(current => current.map((drawing, index) => index === moveStart.index ? { start: shift(moveStart.drawing.start), end: shift(moveStart.drawing.end), stop: moveStart.drawing.stop ? shift(moveStart.drawing.stop) : undefined, type: drawing.type } : drawing));
+      setDrawings(current => current.map((drawing, index) => index === moveStart.index ? { ...drawing, start: shift(moveStart.drawing.start), end: shift(moveStart.drawing.end), stop: moveStart.drawing.stop ? shift(moveStart.drawing.stop) : undefined } : drawing));
       return;
     }
     if (!tool || !drawingStart || resizeStart) return;
@@ -449,6 +451,7 @@ function Workspace() {
     const intervalSeconds = interval === '1s' ? 1 : interval === '1m' ? 60 : interval === '3m' ? 180 : interval === '5m' ? 300 : 900;
     const position: Drawing = {
       type,
+      paper: true,
       start: { time: latest.time, price: entry },
       end: { time: (Number(latest.time) + intervalSeconds * 5) as UTCTimestamp, price: target },
       stop: { time: (Number(latest.time) + intervalSeconds * 5) as UTCTimestamp, price: stop },
@@ -456,7 +459,7 @@ function Workspace() {
     setDrawings(current => {
       const next = [...current, position];
       setActivePositionIndex(next.length - 1);
-      setSelectedDrawing(next.length - 1);
+      setSelectedDrawing(null);
       return next;
     });
   }
@@ -506,7 +509,9 @@ function Workspace() {
     const targetHeight = Math.abs(start.y - end.y);
     const stopTop = Math.min(start.y, stop.y);
     const stopHeight = Math.abs(start.y - stop.y);
-    return <g key={index} className={selectedClass}><rect x={left} y={targetTop} width={width} height={targetHeight} className={targetPercent >= 0 ? 'position-profit' : 'position-risk'} /><rect x={left} y={stopTop} width={width} height={stopHeight} className={riskPercent <= 0 ? 'position-risk' : 'position-profit'} /><line x1={left} y1={start.y} x2={left + width} y2={start.y} className="position-entry" /><text x={left + 8} y={targetTop + 18} className="position-label">TP {targetLabel}</text><text x={left + 8} y={stopTop + 18} className="position-label">SL {riskLabel}</text>{handleNodes}</g>;
+    const paperClass = drawing.paper ? `paper-position ${drawing.type === 'long' ? 'paper-long' : 'paper-short'}` : '';
+    const paperLabel = drawing.paper ? <text x={left + 8} y={Math.max(18, Math.min(targetTop, stopTop) - 10)} className="paper-operation-label">Paper Operation · {drawing.type.toUpperCase()}</text> : null;
+    return <g key={index} className={`${selectedClass ?? ''} ${paperClass}`}><rect x={left} y={targetTop} width={width} height={targetHeight} className={targetPercent >= 0 ? 'position-profit' : 'position-risk'} /><rect x={left} y={stopTop} width={width} height={stopHeight} className={riskPercent <= 0 ? 'position-risk' : 'position-profit'} /><line x1={left} y1={start.y} x2={left + width} y2={start.y} className="position-entry" /><text x={left + 8} y={targetTop + 18} className="position-label">TP {targetLabel}</text><text x={left + 8} y={stopTop + 18} className="position-label">SL {riskLabel}</text>{paperLabel}{drawing.paper ? null : handleNodes}</g>;
   };
 
   const chartStageView = <div ref={chartStage} className={`chart-stage ${tool ? 'drawing-mode' : ''}`} onPointerDownCapture={startDrawing} onPointerMoveCapture={updateDrawing} onPointerUpCapture={finishDrawing} onPointerCancelCapture={() => { setDrawingStart(null); setDrawingEnd(null); setMoveStart(null); setResizeStart(null); }}>
