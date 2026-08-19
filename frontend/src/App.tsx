@@ -446,8 +446,10 @@ function Workspace() {
     if (!latest) return;
     const entry = latest.close;
     const direction = type === 'long' ? 1 : -1;
-    const target = entry * (1 + direction * 0.01);
-    const stop = entry * (1 - direction * 0.0025);
+    const stopDistance = 0.00087;
+    const targetDistance = stopDistance * 4;
+    const target = entry * (1 + direction * targetDistance);
+    const stop = entry * (1 - direction * stopDistance);
     const intervalSeconds = interval === '1s' ? 1 : interval === '1m' ? 60 : interval === '3m' ? 180 : interval === '5m' ? 300 : 900;
     const position: Drawing = {
       type,
