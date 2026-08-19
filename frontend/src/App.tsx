@@ -145,6 +145,7 @@ function Workspace() {
         candleDataRef.current = parsed.map(({ time, close }) => ({ time, close }));
         candles.setData(parsed);
         chart.timeScale().fitContent();
+        setViewportRevision(value => value + 1);
       })
       .catch(() => undefined);
     stream.onmessage = event => {
@@ -153,6 +154,7 @@ function Workspace() {
       const next = { time: Math.floor(candle.t / 1000) as UTCTimestamp, open: Number(candle.o), high: Number(candle.h), low: Number(candle.l), close: Number(candle.c) };
       candleDataRef.current = [...candleDataRef.current.filter(value => value.time !== next.time), { time: next.time, close: next.close }].slice(-1200);
       candles.update(next);
+      setViewportRevision(value => value + 1);
     };
     return () => {
       active = false;
@@ -459,7 +461,7 @@ function Workspace() {
 
 function App() {
   const client = useMemo(() => createAuthClient(apiUrl), []);
-  return <PwaRuntime config={{ appName: 'helloworld', version: '0.1.7', serviceWorkerUrl: '/sw.js?v=0.1.7', updateIntervalMs: 5 * 60 * 1000 }}><AuthProvider client={client}><AuthGuard fallback={<Access />}><Workspace /></AuthGuard></AuthProvider></PwaRuntime>;
+  return <PwaRuntime config={{ appName: 'helloworld', version: '0.1.8', serviceWorkerUrl: '/sw.js?v=0.1.8', updateIntervalMs: 5 * 60 * 1000 }}><AuthProvider client={client}><AuthGuard fallback={<Access />}><Workspace /></AuthGuard></AuthProvider></PwaRuntime>;
 }
 
 export default App;
