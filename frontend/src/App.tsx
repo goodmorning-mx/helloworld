@@ -1,13 +1,54 @@
 import { useEffect, useMemo, useRef, useState, type FormEvent, type PointerEvent } from 'react';
 import { AuthGuard, AuthProvider, createAuthClient, useAuth } from '@goodmorning/gm-auth';
 import { PwaRuntime } from '@goodmorning/gm-pwa';
-import { CandlestickSeries, createChart, type UTCTimestamp } from 'lightweight-charts';
+import { CandlestickSeries, createChart, type Time, type UTCTimestamp } from 'lightweight-charts';
 import './styles.css';
 
 const configuredApiUrl = import.meta.env.VITE_API_URL ?? 'http://localhost:8000';
 const apiUrl = configuredApiUrl === '/api' && window.location.hostname === 'dev.helloworld.goodmorning.mx'
   ? 'https://api.dev.helloworld.goodmorning.mx'
   : configuredApiUrl;
+
+const SESSION_TIMEZONE = 'America/Mexico_City';
+const MARKET_SESSIONS = [
+  { name: 'Tokyo', open: 18, close: 3, color: '#f59e0b' },
+  { name: 'London', open: 2, close: 11, color: '#22c55e' },
+  { name: 'New York', open: 7, close: 16, color: '#ef4444' },
+  { name: 'Sydney', open: 16, close: 1, color: '#a855f7' },
+];
+const TIMEZONES = [
+  ['Ciudad de México', 'America/Mexico_City'], ['UTC', 'UTC'], ['Nueva York', 'America/New_York'],
+  ['Chicago', 'America/Chicago'], ['Los Ángeles', 'America/Los_Angeles'], ['Londres', 'Europe/London'],
+  ['Madrid', 'Europe/Madrid'], ['Tokio', 'Asia/Tokyo'], ['Sídney', 'Australia/Sydney'],
+] as const;
+
+function timeNumber(time: unknown) {
+  if (typeof time === 'number') return time;
+  if (time && typeof time === 'object' && 'year' in time && 'month' in time && 'day' in time) {
+    const value = time as { year: number; month: number; day: number };
+    return Date.UTC(value.year, value.month - 1, value.day) / 1000;
+  }
+  return 0;
+}
+
+function timezoneParts(timestamp: number, timezone: string) {
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone: timezone, year: 'numeric', month: '2-digit', day: '2-digit',
+    hour: '2-digit', minute: '2-digit', second: '2-digit', hourCycle: 'h23',
+  }).formatToParts(new Date(timestamp * 1000));
+  return Object.fromEntries(parts.map(part => [part.type, part.value]));
+}
+
+function timestampInTimezone(year: number, month: number, day: number, hour: number, timezone: string) {
+  const target = Date.UTC(year, month - 1, day, hour, 0, 0);
+  let guess = target;
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    const parts = timezoneParts(guess / 1000, timezone);
+    const represented = Date.UTC(Number(parts.year), Number(parts.month) - 1, Number(parts.day), Number(parts.hour), Number(parts.minute), Number(parts.second));
+    guess = target - (represented - guess);
+  }
+  return Math.round(guess / 1000);
+}
 
 function Access() {
   const auth = useAuth();
@@ -38,6 +79,8 @@ function Workspace() {
   const chartRef = useRef<ReturnType<typeof createChart> | null>(null);
   const candlesRef = useRef<ReturnType<ReturnType<typeof createChart>['addSeries']> | null>(null);
   const [symbol, setSymbol] = useState('BTCUSDT');
+  const [timezone, setTimezone] = useState('America/Mexico_City');
+  const [showSessions, setShowSessions] = useState(true);
   const [stageSize, setStageSize] = useState({ width: 1, height: 1 });
   const [tool, setTool] = useState<'line' | 'ruler' | 'long' | 'short' | null>(null);
   const [viewportRevision, setViewportRevision] = useState(0);
@@ -105,6 +148,22 @@ function Workspace() {
     };
   }, [symbol]);
 
+  useEffect(() => {
+    const chart = chartRef.current;
+    if (!chart) return;
+    const formatTime = (time: unknown, detailed: boolean) => {
+      const options: Intl.DateTimeFormatOptions = detailed
+        ? { month: 'short', day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false }
+        : { hour: '2-digit', minute: '2-digit', hour12: false };
+      return new Intl.DateTimeFormat('es-MX', { ...options, timeZone: timezone }).format(new Date(timeNumber(time) * 1000));
+    };
+    chart.applyOptions({
+      localization: { locale: 'es-MX', timeFormatter: (time: Time) => formatTime(time, true) },
+      timeScale: { tickMarkFormatter: (time: Time) => formatTime(time, false) },
+    });
+    setViewportRevision(value => value + 1);
+  }, [timezone]);
+
   function pointFromEvent(event: PointerEvent<HTMLDivElement>) {
     const bounds = event.currentTarget.getBoundingClientRect();
     return { x: event.clientX - bounds.left, y: event.clientY - bounds.top };
@@ -169,6 +228,29 @@ function Workspace() {
       if (handle) return handle;
     }
     return null;
+  }
+
+  function renderSessionIndicator() {
+    if (!showSessions || !chartRef.current) return null;
+    const range = chartRef.current.timeScale().getVisibleRange();
+    if (!range) return null;
+    const from = timeNumber(range.from) - 2 * 86400;
+    const to = timeNumber(range.to) + 2 * 86400;
+    const events: Array<{ x: number; color: string; label: string }> = [];
+    for (let day = new Date(from * 1000); day.getTime() / 1000 <= to; day.setUTCDate(day.getUTCDate() + 1)) {
+      const year = day.getUTCFullYear();
+      const month = day.getUTCMonth() + 1;
+      const date = day.getUTCDate();
+      MARKET_SESSIONS.forEach(session => {
+        [[session.open, 'Open'], [session.close, 'Close']].forEach(([hour, type]) => {
+          if (session.name === 'New York' && type === 'Close') return;
+          const eventTime = timestampInTimezone(year, month, date, Number(hour), SESSION_TIMEZONE);
+          const x = chartRef.current?.timeScale().timeToCoordinate(eventTime as UTCTimestamp);
+          if (x !== null && x !== undefined) events.push({ x, color: session.color, label: `${session.name} ${type}` });
+        });
+      });
+    }
+    return <g className="session-indicator">{events.map((event, index) => <g key={`${event.label}-${event.x}-${index}`}><line x1={event.x} y1="0" x2={event.x} y2={stageSize.height} stroke={event.color} className="session-line" /><text x={event.x + 4} y="18" fill={event.color} className="session-label">{event.label}</text></g>)}</g>;
   }
 
   function drawingAt(point: { x: number; y: number }) {
@@ -332,12 +414,12 @@ function Workspace() {
 
   return <main className="trading-shell"><div className="symbol-bar"><select className="symbol-select" value={symbol} onChange={event => setSymbol(event.target.value)} aria-label="Símbolo">
     {['BTCUSDT', 'ETHUSDT', 'BNBUSDT', 'SOLUSDT', 'XRPUSDT', 'DOGEUSDT'].map(option => <option key={option}>{option}</option>)}
-  </select><span className="chart-source">BINANCE · 1M</span><div className="chart-tools" aria-label="Herramientas del gráfico">
+  </select><select className="timezone-select" value={timezone} onChange={event => setTimezone(event.target.value)} aria-label="Zona horaria">{TIMEZONES.map(([label, value]) => <option key={value} value={value}>{label}</option>)}</select><span className="chart-source">BINANCE · 1M</span><button className={`session-toggle ${showSessions ? 'session-active' : ''}`} onClick={() => setShowSessions(value => !value)} aria-label="Mostrar sesiones" title="Mostrar sesiones">Sesiones</button><div className="chart-tools" aria-label="Herramientas del gráfico">
     <button className={!tool ? 'tool-active' : ''} onClick={() => setTool(null)} aria-label="Seleccionar y navegar" title="Seleccionar y navegar">↖</button>
     {([['line', '╱', 'Línea'], ['ruler', '↔', 'Regla'], ['long', 'L', 'Long'], ['short', 'S', 'Short']] as const).map(([key, icon, label]) => <button key={key} className={tool === key ? 'tool-active' : ''} onClick={() => setTool(tool === key ? null : key)} aria-label={label} title={label}>{icon}</button>)}
     <button onClick={() => setDrawings([])} aria-label="Borrar dibujos" title="Borrar dibujos">×</button>
   </div><button className="logout-button" onClick={() => void auth.logout()} aria-label="Cerrar sesión">Salir</button></div><div ref={chartStage} className={`chart-stage ${tool ? 'drawing-mode' : ''}`} onPointerDownCapture={startDrawing} onPointerMoveCapture={updateDrawing} onPointerUpCapture={finishDrawing} onPointerCancelCapture={() => { setDrawingStart(null); setDrawingEnd(null); setMoveStart(null); setResizeStart(null); }}>
-    <div ref={chartContainer} className="candlestick-chart" /><svg className="drawing-overlay" viewBox={`0 0 ${stageSize.width} ${stageSize.height}`} preserveAspectRatio="none" aria-hidden="true">{drawings.map(renderDrawing)}{tool && drawingStart && drawingEnd && renderDrawing({ type: tool, start: drawingStart, end: drawingEnd }, 'preview')}</svg>
+    <div ref={chartContainer} className="candlestick-chart" /><svg className="drawing-overlay" viewBox={`0 0 ${stageSize.width} ${stageSize.height}`} preserveAspectRatio="none" aria-hidden="true">{renderSessionIndicator()}{drawings.map(renderDrawing)}{tool && drawingStart && drawingEnd && renderDrawing({ type: tool, start: drawingStart, end: drawingEnd }, 'preview')}</svg>
   </div></main>;
 }
 
