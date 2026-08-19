@@ -698,6 +698,7 @@ function Workspace() {
 
   function handleAt(point: { x: number; y: number }, canvas: ChartCanvas = 'entry') {
     for (let index = drawings.length - 1; index >= 0; index -= 1) {
+      if (drawings[index].paper && drawings[index].closed) continue;
       if ((canvas === 'context' && drawings[index].chart !== 'context') || (canvas === 'entry' && drawings[index].chart === 'context')) continue;
       const candidates = drawingHandles(drawings[index], index, canvas).filter(candidate => !drawings[index].paper || candidate.endpoint === 'target' || candidate.endpoint === 'stop');
       const handle = candidates.find(candidate => Math.hypot(candidate.x - point.x, candidate.y - point.y) <= 12);
@@ -709,7 +710,7 @@ function Workspace() {
   function priceLineAt(point: { x: number; y: number }, canvas: ChartCanvas = 'entry') {
     for (let index = drawings.length - 1; index >= 0; index -= 1) {
       const drawing = drawings[index];
-      if (!drawing.paper || (drawing.type !== 'long' && drawing.type !== 'short')) continue;
+      if (!drawing.paper || drawing.closed || (drawing.type !== 'long' && drawing.type !== 'short')) continue;
       if ((canvas === 'context' && drawing.chart !== 'context') || (canvas === 'entry' && drawing.chart === 'context')) continue;
       const { candles } = chartContext(canvas);
       const targetY = drawing.target && candles ? candles.priceToCoordinate(drawing.target.price) : null;
@@ -882,6 +883,27 @@ function Workspace() {
       setDrawings(current => current.map((drawing, index) => index === moveStart.index ? { ...drawing, start: shift(moveStart.drawing.start), end: shift(moveStart.drawing.end), stop: moveStart.drawing.stop ? shift(moveStart.drawing.stop) : undefined } : drawing));
       return;
     }
+    if (resizeStart) {
+      const point = pointFromEvent(event);
+      const { candles } = chartContext(drawingCanvas);
+      const price = candles?.coordinateToPrice(point.y);
+      if (price === null || price === undefined) return;
+      const resize = resizeStart;
+      setDrawings(current => current.map((drawing, index) => {
+        if (index !== resize.index || drawing.closed) return drawing;
+        if (resize.endpoint === 'target' && drawing.paper && drawing.target && drawing.stop) {
+          const boundedPrice = drawing.type === 'long' ? Math.max(price, drawing.stop.price) : Math.min(price, drawing.stop.price);
+          return { ...drawing, target: { ...drawing.target, price: boundedPrice } };
+        }
+        if (resize.endpoint === 'stop' && drawing.stop) {
+          const boundary = drawing.paper && drawing.target ? drawing.target.price : drawing.start.price;
+          const boundedPrice = drawing.type === 'long' ? Math.min(price, boundary) : Math.max(price, boundary);
+          return { ...drawing, stop: { ...drawing.stop, price: boundedPrice } };
+        }
+        return drawing;
+      }));
+      return;
+    }
     if (!tool || !drawingStart || resizeStart) return;
     const point = chartPointFromEvent(event, drawingCanvas);
     if (point) setDrawingEnd(point);
@@ -913,26 +935,7 @@ function Workspace() {
       return;
     }
     if (resizeStart) {
-      const end = chartPointFromEvent(event, drawingCanvas);
-      const resize = resizeStart;
-      if (end) setDrawings(current => current.map((drawing, index) => {
-        if (index !== resize.index) return drawing;
-        if (resize.endpoint === 'target' && drawing.paper && drawing.target && drawing.stop) {
-          const price = drawing.type === 'long' ? Math.max(end.price, drawing.stop.price) : Math.min(end.price, drawing.stop.price);
-          return { ...drawing, target: { ...drawing.target, price, time: end.time } };
-        }
-        if (resize.endpoint === 'end' && drawing.type !== 'line' && drawing.type !== 'ruler') {
-          const price = drawing.type === 'long' ? Math.max(end.price, drawing.start.price) : Math.min(end.price, drawing.start.price);
-          const target = { ...end, price };
-          return { ...drawing, end: target, stop: drawing.stop ? { ...drawing.stop, time: target.time } : undefined };
-        }
-        if (resize.endpoint === 'stop' && drawing.stop) {
-          const boundary = drawing.paper && drawing.target ? drawing.target.price : drawing.start.price;
-          const price = drawing.type === 'long' ? Math.min(end.price, boundary) : Math.max(end.price, boundary);
-          return { ...drawing, stop: { ...end, price } };
-        }
-        return { ...drawing, [resize.endpoint]: end };
-      }));
+      updateDrawing(event);
       setResizeStart(null);
       if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
       return;
