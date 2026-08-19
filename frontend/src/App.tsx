@@ -52,13 +52,12 @@ function timestampInTimezone(year: number, month: number, day: number, hour: num
 
 function sessionDateLabel(timestamp: number, timezone: string) {
   const parts = new Intl.DateTimeFormat('es-MX', {
-    timeZone: timezone, weekday: 'long', day: '2-digit', month: 'short', year: 'numeric',
-    hour: '2-digit', minute: '2-digit', hour12: true,
+    timeZone: timezone, weekday: 'long', day: '2-digit', month: 'short',
+    hour: '2-digit', minute: '2-digit', hour12: false,
   }).formatToParts(new Date(timestamp * 1000));
   const values = Object.fromEntries(parts.map(part => [part.type, part.value]));
-  const capitalize = (value: string) => value ? `${value[0].toUpperCase()}${value.slice(1).replace('.', '')}` : value;
-  const period = (values.dayPeriod ?? '').replace(/\./g, '').replace(/\s/g, '').toLowerCase();
-  return `${capitalize(values.weekday ?? '')} ${values.day ?? ''} ${capitalize(values.month ?? '')} ${values.year ?? ''} ${values.hour ?? ''}:${values.minute ?? ''} ${period}`;
+  const month = (values.month ?? '').replace('.', '').toLowerCase();
+  return `${(values.weekday ?? '').toLowerCase()} ${values.hour ?? ''}:${values.minute ?? ''} ${values.day ?? ''} de ${month}`;
 }
 
 function Access() {
@@ -248,7 +247,7 @@ function Workspace() {
     if (!range) return null;
     const from = timeNumber(range.from) - 2 * 86400;
     const to = timeNumber(range.to) + 2 * 86400;
-    const events: Array<{ x: number; color: string; label: string }> = [];
+    const events: Array<{ x: number; color: string; label: string; date: string }> = [];
     for (let day = new Date(from * 1000); day.getTime() / 1000 <= to; day.setUTCDate(day.getUTCDate() + 1)) {
       const year = day.getUTCFullYear();
       const month = day.getUTCMonth() + 1;
@@ -258,11 +257,11 @@ function Workspace() {
           if (session.name === 'New York' && type === 'Close') return;
           const eventTime = timestampInTimezone(year, month, date, Number(hour), SESSION_TIMEZONE);
           const x = chartRef.current?.timeScale().timeToCoordinate(eventTime as UTCTimestamp);
-          if (x !== null && x !== undefined) events.push({ x, color: session.color, label: `${session.name} ${type} · ${sessionDateLabel(eventTime, timezone)}` });
+          if (x !== null && x !== undefined) events.push({ x, color: session.color, label: `${session.name} ${type}`, date: sessionDateLabel(eventTime, timezone) });
         });
       });
     }
-    return <g className="session-indicator">{events.map((event, index) => <g key={`${event.label}-${event.x}-${index}`}><line x1={event.x} y1="0" x2={event.x} y2={stageSize.height} stroke={event.color} className="session-line" /><text x={event.x + 4} y="18" fill={event.color} className="session-label">{event.label}</text></g>)}</g>;
+    return <g className="session-indicator">{events.map((event, index) => <g key={`${event.label}-${event.x}-${index}`}><line x1={event.x} y1="0" x2={event.x} y2={stageSize.height} stroke={event.color} className="session-line" /><text x={event.x + 4} y="18" fill={event.color} className="session-label"><tspan x={event.x + 4} dy="0">{event.label}</tspan><tspan x={event.x + 4} dy="12">{event.date}</tspan></text></g>)}</g>;
   }
 
   function drawingAt(point: { x: number; y: number }) {
@@ -437,7 +436,7 @@ function Workspace() {
 
 function App() {
   const client = useMemo(() => createAuthClient(apiUrl), []);
-  return <PwaRuntime config={{ appName: 'helloworld', version: '0.1.4', serviceWorkerUrl: '/sw.js?v=0.1.4', updateIntervalMs: 5 * 60 * 1000 }}><AuthProvider client={client}><AuthGuard fallback={<Access />}><Workspace /></AuthGuard></AuthProvider></PwaRuntime>;
+  return <PwaRuntime config={{ appName: 'helloworld', version: '0.1.5', serviceWorkerUrl: '/sw.js?v=0.1.5', updateIntervalMs: 5 * 60 * 1000 }}><AuthProvider client={client}><AuthGuard fallback={<Access />}><Workspace /></AuthGuard></AuthProvider></PwaRuntime>;
 }
 
 export default App;
