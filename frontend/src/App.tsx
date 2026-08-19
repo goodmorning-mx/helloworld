@@ -50,6 +50,13 @@ function timestampInTimezone(year: number, month: number, day: number, hour: num
   return Math.round(guess / 1000);
 }
 
+function chartTimeLabel(time: Time, timezone: string, detailed: boolean) {
+  const options: Intl.DateTimeFormatOptions = detailed
+    ? { month: 'short', day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false }
+    : { hour: '2-digit', minute: '2-digit', hour12: false };
+  return new Intl.DateTimeFormat('es-MX', { ...options, timeZone: timezone }).format(new Date(timeNumber(time) * 1000));
+}
+
 function sessionDateLabel(timestamp: number, timezone: string) {
   const parts = new Intl.DateTimeFormat('es-MX', {
     timeZone: timezone, weekday: 'long', day: '2-digit', month: 'short',
@@ -126,7 +133,8 @@ function Workspace() {
       layout: { background: { color: '#080a0d' }, textColor: '#89909b' },
       grid: { vertLines: { color: '#151a20' }, horzLines: { color: '#151a20' } },
       rightPriceScale: { borderColor: '#252a31' },
-      timeScale: { borderColor: '#252a31', timeVisible: true, secondsVisible: false },
+      localization: { locale: 'es-MX', timeFormatter: (time: Time) => chartTimeLabel(time, timezone, true) },
+      timeScale: { borderColor: '#252a31', timeVisible: true, secondsVisible: false, tickMarkFormatter: (time: Time) => chartTimeLabel(time, timezone, false) },
     });
     const candles = chart.addSeries(CandlestickSeries, { upColor: '#64d39a', downColor: '#f27e7e', borderVisible: false, wickUpColor: '#64d39a', wickDownColor: '#f27e7e' });
     chartRef.current = chart;
@@ -171,15 +179,9 @@ function Workspace() {
   useEffect(() => {
     const chart = chartRef.current;
     if (!chart) return;
-    const formatTime = (time: unknown, detailed: boolean) => {
-      const options: Intl.DateTimeFormatOptions = detailed
-        ? { month: 'short', day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false }
-        : { hour: '2-digit', minute: '2-digit', hour12: false };
-      return new Intl.DateTimeFormat('es-MX', { ...options, timeZone: timezone }).format(new Date(timeNumber(time) * 1000));
-    };
     chart.applyOptions({
-      localization: { locale: 'es-MX', timeFormatter: (time: Time) => formatTime(time, true) },
-      timeScale: { tickMarkFormatter: (time: Time) => formatTime(time, false) },
+      localization: { locale: 'es-MX', timeFormatter: (time: Time) => chartTimeLabel(time, timezone, true) },
+      timeScale: { tickMarkFormatter: (time: Time) => chartTimeLabel(time, timezone, false) },
     });
     setViewportRevision(value => value + 1);
   }, [timezone]);
@@ -461,7 +463,7 @@ function Workspace() {
 
 function App() {
   const client = useMemo(() => createAuthClient(apiUrl), []);
-  return <PwaRuntime config={{ appName: 'helloworld', version: '0.1.9', serviceWorkerUrl: '/sw.js?v=0.1.9', updateIntervalMs: 5 * 60 * 1000 }}><AuthProvider client={client}><AuthGuard fallback={<Access />}><Workspace /></AuthGuard></AuthProvider></PwaRuntime>;
+  return <PwaRuntime config={{ appName: 'helloworld', version: '0.1.10', serviceWorkerUrl: '/sw.js?v=0.1.10', updateIntervalMs: 5 * 60 * 1000 }}><AuthProvider client={client}><AuthGuard fallback={<Access />}><Workspace /></AuthGuard></AuthProvider></PwaRuntime>;
 }
 
 export default App;
