@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from uuid import uuid4
 
-from sqlalchemy import insert, select, update
+from sqlalchemy import delete as sqlalchemy_delete, insert, select, update
 from sqlalchemy.engine import Engine
 from sqlalchemy.sql import column, table
 
@@ -56,6 +56,17 @@ class PaperOperationStore:
                 return None
             row = connection.execute(select(paper_operations_table).where(paper_operations_table.c.id == operation_id, paper_operations_table.c.user_id == user_id)).mappings().one()
         return self._public(dict(row))
+
+    def delete(self, user_id: str, operation_id: str) -> bool:
+        with self._engine.begin() as connection:
+            result = connection.execute(
+                sqlalchemy_delete(paper_operations_table).where(
+                    paper_operations_table.c.id == operation_id,
+                    paper_operations_table.c.user_id == user_id,
+                    paper_operations_table.c.status == "OPEN",
+                )
+            )
+        return result.rowcount > 0
 
     @staticmethod
     def _database_values(values: dict[str, object]) -> dict[str, object]:

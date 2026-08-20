@@ -1012,6 +1012,19 @@ function Workspace() {
     const stop = entry * (1 - direction * stopDistance);
     const intervalSeconds = 60;
     const futureTime = (Number(latest.time) + intervalSeconds * 5) as UTCTimestamp;
+    const previousOpen = drawings.filter(drawing => drawing.paper && drawing.id && !drawing.closed && (drawing.type === 'long' || drawing.type === 'short'));
+    try {
+      await Promise.all(previousOpen.map(async drawing => {
+        const response = await fetch(`${apiUrl}/trading/paper/operations/${drawing.id}`, {
+          method: 'DELETE', headers: { Authorization: `Bearer ${auth.accessToken}` }, credentials: 'include',
+        });
+        if (!response.ok) throw new Error('No se pudo reemplazar la paper operation anterior.');
+      }));
+    } catch (reason) {
+      setPaperSyncError(reason instanceof Error ? reason.message : 'No se pudo reemplazar la paper operation anterior.');
+      return;
+    }
+    if (previousOpen.length) setDrawings(current => current.filter(drawing => !previousOpen.some(previous => previous.id === drawing.id)));
     const response = await fetch(`${apiUrl}/trading/paper/operations`, {
       method: 'POST',
       headers: { Authorization: `Bearer ${auth.accessToken}`, 'Content-Type': 'application/json' },
@@ -1049,7 +1062,7 @@ function Workspace() {
   const displayedPaperPositions = paperPositions.filter(position => paperTab === 'open' ? !position.closed : position.closed);
   const positionsTable = <section className="positions-panel" aria-label="Posiciones abiertas">
     <div className="positions-panel-head"><div><span className="positions-kicker">TRADING</span><h2>Paper operations</h2></div><span className="paper-badge">PAPER</span></div>{paperSyncError && <p className="paper-sync-error" role="status">{paperSyncError}</p>}<div className="paper-tabs" role="tablist" aria-label="Paper operations"><button role="tab" aria-selected={paperTab === 'open'} className={paperTab === 'open' ? 'paper-tab-active' : ''} onClick={() => setPaperTab('open')}>Abiertas <b>{paperPositions.filter(position => !position.closed).length}</b></button><button role="tab" aria-selected={paperTab === 'closed'} className={paperTab === 'closed' ? 'paper-tab-active' : ''} onClick={() => setPaperTab('closed')}>Cerradas <b>{paperPositions.filter(position => position.closed).length}</b></button></div>
-    {displayedPaperPositions.length === 0 ? <p className="positions-empty">{paperTab === 'open' ? 'No hay operaciones abiertas.' : 'No hay operaciones cerradas.'}</p> : <div className="positions-table-scroll"><table className="positions-table"><thead><tr><th>Instrumento</th><th>Lado</th><th>Entrada</th><th>Actual</th><th>Margen</th><th>R:R</th><th>PNL</th><th>ROE</th><th>Estado</th></tr></thead><tbody>{displayedPaperPositions.map((position, index) => {
+    {displayedPaperPositions.length === 0 ? <p className="positions-empty">{paperTab === 'open' ? 'No hay operaciones abiertas.' : 'No hay operaciones cerradas.'}</p> : <div className="positions-table-scroll"><table className="positions-table"><thead><tr><th>Instrumento</th><th>Lado</th><th>Entrada</th><th>Actual</th><th>SL</th><th>TP</th><th>Margen</th><th>R:R</th><th>PNL</th><th>ROE</th><th>Estado</th><th>Acción</th></tr></thead><tbody>{displayedPaperPositions.map((position, index) => {
       const direction = position.type === 'long' ? 1 : -1;
       const margin = 100;
       const leverage = 10;
@@ -1061,7 +1074,8 @@ function Workspace() {
       const rewardDistance = Math.abs(targetPrice - position.start.price);
       const rr = riskDistance > 0 ? rewardDistance / riskDistance : 0;
       const status = position.status ?? (position.closed ? `CLOSED - ${position.closeReason === 'TP' ? 'WIN' : 'FAILED'}` : 'OPEN');
-      return <tr key={`${position.start.time}-${index}`}><td>{position.symbol ?? symbol}</td><td><span className={`position-side ${position.type}`}>{position.type.toUpperCase()}</span></td><td>{position.start.price.toFixed(8)}</td><td>{position.end.price.toFixed(8)}</td><td>{margin.toFixed(2)} USDT</td><td>{rr.toFixed(2)}:1</td><td className={pnl >= 0 ? 'value-positive' : 'value-negative'}>{pnl >= 0 ? '+' : ''}{pnl.toFixed(8)} USDT</td><td className={roe >= 0 ? 'value-positive' : 'value-negative'}>{roe >= 0 ? '+' : ''}{roe.toFixed(8)}%</td><td><span className={`position-status ${position.closed ? (position.status === 'CLOSED - WIN' ? 'position-win' : 'position-failed') : 'position-live'}`}><i />{status}</span></td></tr>;
+      const drawingIndex = drawings.findIndex(drawing => drawing.id === position.id);
+      return <tr key={`${position.start.time}-${index}`}><td>{position.symbol ?? symbol}</td><td><span className={`position-side ${position.type}`}>{position.type.toUpperCase()}</span></td><td>{position.start.price.toFixed(8)}</td><td>{position.end.price.toFixed(8)}</td><td>{position.stop?.price?.toFixed(8) ?? '—'}</td><td>{targetPrice.toFixed(8)}</td><td>{margin.toFixed(2)} USDT</td><td>{rr.toFixed(2)}:1</td><td className={pnl >= 0 ? 'value-positive' : 'value-negative'}>{pnl >= 0 ? '+' : ''}{pnl.toFixed(8)} USDT</td><td className={roe >= 0 ? 'value-positive' : 'value-negative'}>{roe >= 0 ? '+' : ''}{roe.toFixed(8)}%</td><td><span className={`position-status ${position.closed ? (position.status === 'CLOSED - WIN' ? 'position-win' : 'position-failed') : 'position-live'}`}><i />{status}</span></td><td><button className="paper-edit-button" type="button" disabled={position.closed || drawingIndex < 0} onClick={() => { setSelectedDrawing(drawingIndex); setDrawingCanvas(position.chart ?? 'entry'); setVisibleClosedId(position.id ?? null); setViewportRevision(value => value + 1); }}>Editar</button></td></tr>;
     })}</tbody></table></div>}
   </section>;
 
