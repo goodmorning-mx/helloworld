@@ -1,0 +1,104 @@
+import type { MarketBar } from './marketData';
+
+export type LabDirection = 'long' | 'short';
+
+export type LabRow = {
+  slot: number;
+  label: string;
+  samples: number;
+  stop: number;
+  target: number;
+  rr: number;
+  expectancyR: number;
+  winRate: number;
+  leverage: number;
+};
+
+type Sample = { slot: number; time: number; adverse: number; favorable: number; row: number };
+const STOP_PERCENTILES = [75, 80, 85, 90, 95];
+const TARGET_PERCENTILES = [25, 30, 40, 50, 60, 75];
+
+function percentile(values: number[], p: number) {
+  const sorted = [...values].sort((a, b) => a - b);
+  if (!sorted.length) return 0;
+  const position = (p / 100) * (sorted.length - 1);
+  const lower = Math.floor(position);
+  const upper = Math.ceil(position);
+  return lower === upper ? sorted[lower] : sorted[lower] + (sorted[upper] - sorted[lower]) * (position - lower);
+}
+
+function slotOf(time: number) {
+  const date = new Date(time * 1000);
+  return date.getUTCHours() * 12 + Math.floor(date.getUTCMinutes() / 5);
+}
+
+function slotLabel(slot: number) {
+  return `${String(Math.floor(slot / 12)).padStart(2, '0')}:${String(slot % 12 * 5).padStart(2, '0')}`;
+}
+
+function samplesFor(bars: MarketBar[], direction: LabDirection, horizon: number): Sample[] {
+  const samples: Sample[] = [];
+  for (let row = 0; row + horizon <= bars.length; row += 1) {
+    const entry = bars[row].open;
+    if (!entry) continue;
+    let adverse = 0;
+    let favorable = 0;
+    let contiguous = true;
+    for (let offset = 0; offset < horizon; offset += 1) {
+      const bar = bars[row + offset];
+      if (offset > 0 && bar.time - bars[row + offset - 1].time !== 300) { contiguous = false; break; }
+      if (direction === 'long') {
+        adverse = Math.max(adverse, (entry - bar.low) / entry * 100);
+        favorable = Math.max(favorable, (bar.high - entry) / entry * 100);
+      } else {
+        adverse = Math.max(adverse, (bar.high - entry) / entry * 100);
+        favorable = Math.max(favorable, (entry - bar.low) / entry * 100);
+      }
+    }
+    if (contiguous) samples.push({ slot: slotOf(bars[row].time), time: bars[row].time, adverse, favorable, row });
+  }
+  return samples;
+}
+
+function evaluate(bars: MarketBar[], samples: Sample[], stop: number, target: number, direction: LabDirection, horizon: number) {
+  let wins = 0;
+  let total = 0;
+  for (const sample of samples) {
+    const entry = bars[sample.row].open;
+    let stopHit = Infinity;
+    let targetHit = Infinity;
+    for (let offset = 0; offset < horizon; offset += 1) {
+      const bar = bars[sample.row + offset];
+      const adverse = direction === 'long' ? (entry - bar.low) / entry * 100 : (bar.high - entry) / entry * 100;
+      const favorable = direction === 'long' ? (bar.high - entry) / entry * 100 : (entry - bar.low) / entry * 100;
+      if (!Number.isFinite(stopHit) && adverse >= stop) stopHit = offset;
+      if (!Number.isFinite(targetHit) && favorable >= target) targetHit = offset;
+    }
+    if (targetHit < stopHit) { wins += 1; total += target / stop; }
+    else if (stopHit < targetHit || Number.isFinite(stopHit)) total -= 1;
+    else {
+      const close = bars[sample.row + horizon - 1].close;
+      const terminal = direction === 'long' ? (close - entry) / entry * 100 : (entry - close) / entry * 100;
+      total += terminal / stop;
+    }
+  }
+  return { expectancyR: samples.length ? total / samples.length : 0, winRate: samples.length ? wins / samples.length * 100 : 0 };
+}
+
+export function analyzeLab(bars: MarketBar[], direction: LabDirection, horizon: number, riskFraction: number): LabRow[] {
+  const samples = samplesFor(bars, direction, Math.max(1, Math.floor(horizon)));
+  const bySlot = new Map<number, Sample[]>();
+  for (const sample of samples) bySlot.set(sample.slot, [...(bySlot.get(sample.slot) ?? []), sample]);
+  return [...bySlot.entries()].map(([slot, slotSamples]) => {
+    let best: LabRow | null = null;
+    const stopValues = STOP_PERCENTILES.map(p => percentile(slotSamples.map(sample => sample.adverse), p));
+    const targetValues = TARGET_PERCENTILES.map(p => percentile(slotSamples.map(sample => sample.favorable), p));
+    for (const stop of stopValues) for (const target of targetValues) {
+      if (stop <= 0 || target <= 0) continue;
+      const result = evaluate(bars, slotSamples, stop, target, direction, horizon);
+      const candidate: LabRow = { slot, label: slotLabel(slot), samples: slotSamples.length, stop, target, rr: target / stop, expectancyR: result.expectancyR, winRate: result.winRate, leverage: riskFraction / (stop / 100) };
+      if (!best || candidate.expectancyR > best.expectancyR || (candidate.expectancyR === best.expectancyR && candidate.rr > best.rr)) best = candidate;
+    }
+    return best;
+  }).filter((row): row is LabRow => row !== null).sort((left, right) => right.expectancyR - left.expectancyR);
+}

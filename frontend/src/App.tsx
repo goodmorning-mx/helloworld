@@ -2,6 +2,8 @@ import { useEffect, useMemo, useRef, useState, type FormEvent, type PointerEvent
 import { AuthGuard, AuthProvider, createAuthClient, useAuth } from '@goodmorning/gm-auth';
 import { PwaRuntime } from '@goodmorning/gm-pwa';
 import { CandlestickSeries, createChart, type IPriceLine, type Time, type UTCTimestamp } from 'lightweight-charts';
+import LabWindow from './LabWindow';
+import { cacheBars } from './marketData';
 import './styles.css';
 
 const configuredApiUrl = import.meta.env.VITE_API_URL ?? 'http://localhost:8000';
@@ -462,6 +464,7 @@ function Workspace() {
               if (!active || older.length === 0) return;
               candleBarsRef.current = [...older, ...candleBarsRef.current].filter((bar, index, all) => index === 0 || bar.time !== all[index - 1].time);
               candleBarsRef.current = candleBarsRef.current.filter(bar => Number(bar.time) >= sevenDaysAgo);
+              void cacheBars(symbol, entryInterval, candleBarsRef.current);
               candleDataRef.current = candleBarsRef.current.map(({ time, close }) => ({ time, close }));
               candles.setData(candleBarsRef.current);
               chart.timeScale().setVisibleLogicalRange({ from: previousRange.from + older.length, to: previousRange.to + older.length });
@@ -484,6 +487,7 @@ function Workspace() {
         if (!active || !Array.isArray(rows)) return;
         const parsed = rows.map(row => ({ time: Math.floor(Number(row[0]) / 1000) as UTCTimestamp, open: Number(row[1]), high: Number(row[2]), low: Number(row[3]), close: Number(row[4]) }));
         candleBarsRef.current = parsed;
+        void cacheBars(symbol, entryInterval, parsed);
         candleDataRef.current = parsed.map(({ time, close }) => ({ time, close }));
         candles.setData(parsed);
         chart.timeScale().fitContent();
@@ -495,6 +499,7 @@ function Workspace() {
       const candle = JSON.parse(event.data).k;
       const next = { time: Math.floor(candle.t / 1000) as UTCTimestamp, open: Number(candle.o), high: Number(candle.h), low: Number(candle.l), close: Number(candle.c) };
       candleBarsRef.current = [...candleBarsRef.current.filter(value => value.time !== next.time), next].sort((left, right) => Number(left.time) - Number(right.time));
+      void cacheBars(symbol, entryInterval, [next]);
       candleDataRef.current = candleBarsRef.current.map(({ time, close }) => ({ time, close }));
       candles.update(next);
       setDrawings(current => {
@@ -589,6 +594,7 @@ function Workspace() {
       void loadDay().then(older => {
         if (!active || older.length === 0) return;
         overviewBarsRef.current = [...older, ...overviewBarsRef.current].filter((bar, index, all) => index === 0 || bar.time !== all[index - 1].time).filter(bar => Number(bar.time) >= sevenDaysAgo);
+        void cacheBars(symbol, interval, overviewBarsRef.current);
         overviewCandleDataRef.current = overviewBarsRef.current.map(({ time, close }) => ({ time, close }));
         candles.setData(overviewBarsRef.current);
         chart.timeScale().setVisibleLogicalRange({ from: previousRange.from + older.length, to: previousRange.to + older.length });
@@ -605,6 +611,7 @@ function Workspace() {
         if (!active || !Array.isArray(rows)) return;
         const parsed = rows.map(row => ({ time: Math.floor(Number(row[0]) / 1000) as UTCTimestamp, open: Number(row[1]), high: Number(row[2]), low: Number(row[3]), close: Number(row[4]) }));
         overviewBarsRef.current = parsed;
+        void cacheBars(symbol, interval, parsed);
         overviewCandleDataRef.current = parsed.map(({ time, close }) => ({ time, close }));
         candles.setData(parsed);
         chart.timeScale().fitContent();
@@ -614,6 +621,7 @@ function Workspace() {
       const candle = JSON.parse(event.data).k;
       const next = { time: Math.floor(candle.t / 1000) as UTCTimestamp, open: Number(candle.o), high: Number(candle.h), low: Number(candle.l), close: Number(candle.c) };
       overviewBarsRef.current = [...overviewBarsRef.current.filter(value => value.time !== next.time), next].sort((left, right) => Number(left.time) - Number(right.time));
+      void cacheBars(symbol, interval, [next]);
       overviewCandleDataRef.current = [...overviewCandleDataRef.current.filter(value => value.time !== next.time), { time: next.time, close: next.close }];
       candles.update(next);
     };
@@ -1065,6 +1073,9 @@ function Workspace() {
     const startY = candles.priceToCoordinate(drawing.start.price);
     const endY = candles.priceToCoordinate(drawing.end.price);
     if (startX === null || endX === null || startY === null || endY === null) return null;
+    // Paper operations use native chart price lines for TP and SL. Keep their
+    // SVG overlay empty so the map only shows those two lines.
+    if (drawing.paper) return null;
     const start = { x: startX, y: startY };
     const end = { x: endX, y: endY };
     const handles = drawingHandles(drawing, typeof index === 'number' ? index : -1, canvas);
@@ -1116,10 +1127,11 @@ function Workspace() {
 
   const avatarLabel = (auth.identity?.name ?? auth.identity?.email ?? 'U').slice(0, 1).toUpperCase();
   const profileButton = <button className="profile-avatar" onClick={() => setShowProfile(true)} aria-label="Abrir perfil" title="Perfil">{avatarLabel}</button>;
+  const labButton = <button className="lab-open-button" onClick={() => window.open('/lab', 'goodmorning-lab', 'width=1440,height=1000,resizable=yes,scrollbars=yes')} aria-label="Abrir GoodMorning Lab">Lab</button>;
   const desktopHeader = <div className="symbol-bar"><select className="symbol-select" value={symbol} onChange={event => setSymbol(event.target.value)} aria-label="Símbolo">
     {['BTCUSDT', 'ETHUSDT', 'BNBUSDT', 'SOLUSDT', 'XRPUSDT', 'DOGEUSDT'].map(option => <option key={option}>{option}</option>)}
   </select><select className="interval-select" value={interval} onChange={event => setInterval(event.target.value as typeof interval)} aria-label="Intervalo de contexto">{(['1s', '1m', '3m', '5m', '15m'] as const).map(value => <option key={value} value={value}>{value}</option>)}</select><span className="chart-source">BINANCE · {entryInterval.toUpperCase()} ENTRADA · {interval.toUpperCase()} CONTEXTO</span><button className={`session-toggle ${showSessions ? 'session-active' : ''}`} onClick={() => setShowSessions(value => !value)} aria-label="Mostrar sesiones" title="Mostrar sesiones">Sesiones</button><div className="chart-tools" aria-label="Herramientas del gráfico">
-    <button className={!tool ? 'tool-active' : ''} onClick={() => setTool(null)} aria-label="Seleccionar y navegar" title="Seleccionar y navegar">↖</button>
+    {labButton}<button className={!tool ? 'tool-active' : ''} onClick={() => setTool(null)} aria-label="Seleccionar y navegar" title="Seleccionar y navegar">↖</button>
     {([['line', '╱', 'Línea'], ['ruler', '▥', 'Regla'], ['long', 'L', 'Long'], ['short', 'S', 'Short']] as const).map(([key, icon, label]) => <button key={key} className={tool === key ? 'tool-active' : ''} onClick={() => chooseTool(key)} aria-label={label} title={label}>{icon}</button>)}
     <button onClick={() => setDrawings(current => current.filter(drawing => drawing.paper))} aria-label="Borrar dibujos" title="Borrar dibujos">×</button>
   </div>{profileButton}<button className="logout-button" onClick={() => void auth.logout()} aria-label="Cerrar sesión">Salir</button></div>;
@@ -1139,7 +1151,8 @@ function Workspace() {
 
 function App() {
   const client = useMemo(() => createAuthClient(apiUrl), []);
-  return <PwaRuntime config={{ appName: 'helloworld', version: '0.1.10', serviceWorkerUrl: '/sw.js?v=0.1.10', updateIntervalMs: 5 * 60 * 1000 }}><AuthProvider client={client}><AuthGuard fallback={<Access />}><Workspace /></AuthGuard></AuthProvider></PwaRuntime>;
+  const labRoute = window.location.pathname === '/lab';
+  return <PwaRuntime config={{ appName: 'helloworld', version: '0.1.11', serviceWorkerUrl: '/sw.js?v=0.1.11', updateIntervalMs: 5 * 60 * 1000 }}><AuthProvider client={client}><AuthGuard fallback={<Access />}>{labRoute ? <LabWindow /> : <Workspace />}</AuthGuard></AuthProvider></PwaRuntime>;
 }
 
 export default App;
