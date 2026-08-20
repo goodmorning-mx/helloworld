@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState, type FormEvent, type PointerEvent, type ReactNode } from 'react';
-import { AuthGuard, AuthProvider, createAuthClient, useAuth } from '@goodmorning/gm-auth';
+import { AuthGuard, AuthProvider, createAuthClient, useAuth, type AuthClient } from '@goodmorning/gm-auth';
 import { PwaRuntime } from '@goodmorning/gm-pwa';
 import { CandlestickSeries, createChart, type IPriceLine, type Time, type UTCTimestamp } from 'lightweight-charts';
 import LabWindow from './LabWindow';
@@ -201,7 +201,7 @@ function Access() {
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
-  const [remember, setRemember] = useState(false);
+  const [remember, setRemember] = useState(true);
 
   async function login(event: FormEvent) {
     event.preventDefault();
@@ -216,6 +216,58 @@ function Access() {
     {auth.error && <p className="login-error" role="alert">{auth.error}</p>}
     <button type="submit" disabled={auth.loading}>{auth.loading ? 'Entrando…' : 'Entrar'}</button>
   </form></main>;
+}
+
+function storedAuthTokens() {
+  const local = localStorage.getItem('gm-auth-tokens');
+  const session = sessionStorage.getItem('gm-auth-tokens');
+  const raw = local ?? session;
+  if (!raw) return null;
+  try {
+    const tokens = JSON.parse(raw) as { access_token: string; refresh_token: string };
+    if (!local) localStorage.setItem('gm-auth-tokens', JSON.stringify(tokens));
+    return { tokens, storage: localStorage };
+  } catch {
+    return null;
+  }
+}
+
+function accessTokenExpiresAt(token: string) {
+  try {
+    const encoded = token.split('.')[1]?.replace(/-/g, '+').replace(/_/g, '/');
+    if (!encoded) return null;
+    const payload = JSON.parse(atob(encoded.padEnd(encoded.length + (4 - encoded.length % 4) % 4, '='))) as { exp?: number };
+    return payload.exp ?? null;
+  } catch {
+    return null;
+  }
+}
+
+function AuthSessionKeeper({ client }: { client: AuthClient }) {
+  const auth = useAuth();
+  const refreshing = useRef(false);
+  useEffect(() => {
+    if (!auth.accessToken) return;
+    const check = async () => {
+      const stored = storedAuthTokens();
+      const expiresAt = stored ? accessTokenExpiresAt(stored.tokens.access_token) : null;
+      if (!stored || !expiresAt || expiresAt - Date.now() / 1000 > 120 || refreshing.current) return;
+      refreshing.current = true;
+      try {
+        const next = await client.refresh(stored.tokens.refresh_token);
+        stored.storage.setItem('gm-auth-tokens', JSON.stringify(next));
+        window.location.reload();
+      } catch {
+        // Keep the current session visible and retry on the next interval.
+      } finally {
+        refreshing.current = false;
+      }
+    };
+    void check();
+    const timer = window.setInterval(() => void check(), 60_000);
+    return () => window.clearInterval(timer);
+  }, [auth.accessToken, client]);
+  return null;
 }
 
 function Workspace() {
@@ -1114,25 +1166,19 @@ function Workspace() {
     const targetPrice = drawing.target?.price ?? drawing.end.price;
     const targetPoint = drawing.target ? screenPoint(drawing.target, canvas) : end;
     if (!targetPoint) return null;
-    const currentPnlPercent = pricePercent * (drawing.type === 'long' ? 1 : -1);
     const targetPercent = ((targetPrice - drawing.start.price) / drawing.start.price) * 100 * (drawing.type === 'long' ? 1 : -1);
     const riskPercent = ((stopPrice - drawing.start.price) / drawing.start.price) * 100 * (drawing.type === 'long' ? 1 : -1);
-    const maxTargetPercent = targetPercent;
     const riskDistance = Math.abs(drawing.start.price - stopPrice);
     const rewardDistance = Math.abs((drawing.target?.price ?? drawing.end.price) - drawing.start.price);
     const rr = riskDistance > 0 ? rewardDistance / riskDistance : 0;
-    const targetLabel = drawing.paper
-      ? `${drawing.closed && drawing.closeReason === 'TP' ? 'Max TP alcanzado' : 'Max TP'} ${maxTargetPercent >= 0 ? '+' : ''}${maxTargetPercent.toFixed(8)}%`
-      : `${targetPercent >= 0 ? '+' : ''}${targetPercent.toFixed(8)}%`;
+    const targetLabel = `${targetPercent >= 0 ? '+' : ''}${targetPercent.toFixed(8)}%`;
     const riskLabel = `${riskPercent >= 0 ? '+' : ''}${riskPercent.toFixed(8)}%`;
     const targetTop = Math.min(start.y, targetPoint.y);
     const targetHeight = Math.abs(start.y - targetPoint.y);
     const stopTop = Math.min(start.y, stop.y);
     const stopHeight = Math.abs(start.y - stop.y);
     const paperClass = drawing.paper ? `paper-position ${drawing.type === 'long' ? 'paper-long' : 'paper-short'}` : '';
-    const paperLabel = drawing.paper ? <text x={left + 8} y={Math.max(18, Math.min(targetTop, stopTop) - 10)} className="paper-operation-label"><tspan x={left + 8} dy="0">Paper Operation · {drawing.type.toUpperCase()}</tspan>{drawing.status && <tspan x={left + 8} dy="16">{drawing.status}</tspan>}</text> : null;
-    const pnlLabel = drawing.paper ? <text x={left + width + 8} y={end.y + 4} className="paper-pnl-label">PNL {currentPnlPercent >= 0 ? '+' : ''}{currentPnlPercent.toFixed(8)}%</text> : null;
-    return <g key={index} className={`${selectedClass ?? ''} ${paperClass}`}><rect x={left} y={targetTop} width={width} height={targetHeight} className={targetPercent >= 0 ? 'position-profit' : 'position-risk'} /><rect x={left} y={stopTop} width={width} height={stopHeight} className={riskPercent <= 0 ? 'position-risk' : 'position-profit'} /><line x1={left} y1={start.y} x2={left + width} y2={start.y} className="position-entry" /><line x1={left} y1={end.y} x2={left + width} y2={end.y} className="paper-current-price" /><text x={left + 8} y={targetTop + 18} className="position-label">{drawing.paper ? targetLabel : `TP ${targetLabel}`}</text><text x={left + 8} y={stopTop + 18} className="position-label">SL {riskLabel}</text><text x={left + 8} y={Math.max(targetTop, stopTop) + 34} className="position-label">R:R {rr.toFixed(2)}:1</text>{paperLabel}{pnlLabel}{drawing.paper ? handleNodes : null}{drawing.paper ? null : handleNodes}</g>;
+    return <g key={index} className={`${selectedClass ?? ''} ${paperClass}`}><rect x={left} y={targetTop} width={width} height={targetHeight} className={targetPercent >= 0 ? 'position-profit' : 'position-risk'} /><rect x={left} y={stopTop} width={width} height={stopHeight} className={riskPercent <= 0 ? 'position-risk' : 'position-profit'} /><line x1={left} y1={start.y} x2={left + width} y2={start.y} className="position-entry" /><line x1={left} y1={end.y} x2={left + width} y2={end.y} className="paper-current-price" />{!drawing.paper && <><text x={left + 8} y={targetTop + 18} className="position-label">TP {targetLabel}</text><text x={left + 8} y={stopTop + 18} className="position-label">SL {riskLabel}</text><text x={left + 8} y={Math.max(targetTop, stopTop) + 34} className="position-label">R:R {rr.toFixed(2)}:1</text></>}{drawing.paper ? handleNodes : null}{drawing.paper ? null : handleNodes}</g>;
   };
 
   const chartStageView = <div ref={chartStage} className={`chart-stage ${tool ? 'drawing-mode' : ''}`} onPointerDownCapture={startDrawing} onPointerMoveCapture={updateDrawing} onPointerUpCapture={finishDrawing} onPointerCancelCapture={() => { setDrawingStart(null); setDrawingEnd(null); setMoveStart(null); setResizeStart(null); }}>
@@ -1167,7 +1213,7 @@ function Workspace() {
 function App() {
   const client = useMemo(() => createAuthClient(apiUrl), []);
   const labRoute = window.location.pathname === '/lab';
-  return <PwaRuntime config={{ appName: 'helloworld', version: '0.1.11', serviceWorkerUrl: '/sw.js?v=0.1.11', updateIntervalMs: 5 * 60 * 1000 }}><AuthProvider client={client}><AuthGuard fallback={<Access />}>{labRoute ? <LabWindow /> : <Workspace />}</AuthGuard></AuthProvider></PwaRuntime>;
+  return <PwaRuntime config={{ appName: 'helloworld', version: '0.1.12', serviceWorkerUrl: '/sw.js?v=0.1.12', updateIntervalMs: 60_000 }}><AuthProvider client={client}><AuthSessionKeeper client={client} /><AuthGuard fallback={<Access />}>{labRoute ? <LabWindow /> : <Workspace />}</AuthGuard></AuthProvider></PwaRuntime>;
 }
 
 export default App;
