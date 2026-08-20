@@ -209,6 +209,13 @@ def update_paper_operation(operation_id: str, payload: PaperOperationInput, iden
     return operation
 
 
+@app.delete("/trading/paper/operations/{operation_id}")
+def delete_paper_operation(operation_id: str, identity: AuthIdentity = Depends(identity_dependency(auth_service))) -> dict[str, bool]:
+    if not paper_operation_store.delete(identity.user_id, operation_id):
+        raise HTTPException(status_code=404, detail="Open paper operation not found.")
+    return {"deleted": True}
+
+
 @app.get("/trading/binance")
 def binance_account(identity: AuthIdentity = Depends(identity_dependency(auth_service))) -> dict[str, object]:
     if not settings.binance_account_monitor_enabled:
