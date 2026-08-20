@@ -1,6 +1,8 @@
 import type { MarketBar } from './marketData';
 
 export type LabDirection = 'long' | 'short';
+export type LabResolution = 1 | 5;
+export type LabCapitalModel = 'compound' | 'simple';
 
 export type LabRow = {
   slot: number;
@@ -12,6 +14,7 @@ export type LabRow = {
   expectancyR: number;
   winRate: number;
   leverage: number;
+  capitalFactor: number;
 };
 
 type Sample = { slot: number; time: number; adverse: number; favorable: number; row: number };
@@ -27,16 +30,16 @@ function percentile(values: number[], p: number) {
   return lower === upper ? sorted[lower] : sorted[lower] + (sorted[upper] - sorted[lower]) * (position - lower);
 }
 
-function slotOf(time: number) {
+function slotOf(time: number, resolution: LabResolution) {
   const date = new Date(time * 1000);
-  return date.getUTCHours() * 12 + Math.floor(date.getUTCMinutes() / 5);
+  return date.getUTCHours() * (60 / resolution) + Math.floor(date.getUTCMinutes() / resolution);
 }
 
-function slotLabel(slot: number) {
-  return `${String(Math.floor(slot / 12)).padStart(2, '0')}:${String(slot % 12 * 5).padStart(2, '0')}`;
+function slotLabel(slot: number, resolution: LabResolution) {
+  return `${String(Math.floor(slot / (60 / resolution))).padStart(2, '0')}:${String(slot % (60 / resolution) * resolution).padStart(2, '0')}`;
 }
 
-function samplesFor(bars: MarketBar[], direction: LabDirection, horizon: number): Sample[] {
+function samplesFor(bars: MarketBar[], direction: LabDirection, horizon: number, resolution: LabResolution): Sample[] {
   const samples: Sample[] = [];
   for (let row = 0; row + horizon <= bars.length; row += 1) {
     const entry = bars[row].open;
@@ -46,7 +49,7 @@ function samplesFor(bars: MarketBar[], direction: LabDirection, horizon: number)
     let contiguous = true;
     for (let offset = 0; offset < horizon; offset += 1) {
       const bar = bars[row + offset];
-      if (offset > 0 && bar.time - bars[row + offset - 1].time !== 300) { contiguous = false; break; }
+      if (offset > 0 && bar.time - bars[row + offset - 1].time !== resolution * 60) { contiguous = false; break; }
       if (direction === 'long') {
         adverse = Math.max(adverse, (entry - bar.low) / entry * 100);
         favorable = Math.max(favorable, (bar.high - entry) / entry * 100);
@@ -55,7 +58,7 @@ function samplesFor(bars: MarketBar[], direction: LabDirection, horizon: number)
         favorable = Math.max(favorable, (entry - bar.low) / entry * 100);
       }
     }
-    if (contiguous) samples.push({ slot: slotOf(bars[row].time), time: bars[row].time, adverse, favorable, row });
+    if (contiguous) samples.push({ slot: slotOf(bars[row].time, resolution), time: bars[row].time, adverse, favorable, row });
   }
   return samples;
 }
@@ -85,8 +88,11 @@ function evaluate(bars: MarketBar[], samples: Sample[], stop: number, target: nu
   return { expectancyR: samples.length ? total / samples.length : 0, winRate: samples.length ? wins / samples.length * 100 : 0 };
 }
 
-export function analyzeLab(bars: MarketBar[], direction: LabDirection, horizon: number, riskFraction: number): LabRow[] {
-  const samples = samplesFor(bars, direction, Math.max(1, Math.floor(horizon)));
+export function analyzeLab(
+  bars: MarketBar[], direction: LabDirection, horizon: number, riskFraction: number,
+  resolution: LabResolution, capitalModel: LabCapitalModel,
+): LabRow[] {
+  const samples = samplesFor(bars, direction, Math.max(1, Math.floor(horizon)), resolution);
   const bySlot = new Map<number, Sample[]>();
   for (const sample of samples) bySlot.set(sample.slot, [...(bySlot.get(sample.slot) ?? []), sample]);
   return [...bySlot.entries()].map(([slot, slotSamples]) => {
@@ -96,7 +102,11 @@ export function analyzeLab(bars: MarketBar[], direction: LabDirection, horizon: 
     for (const stop of stopValues) for (const target of targetValues) {
       if (stop <= 0 || target <= 0) continue;
       const result = evaluate(bars, slotSamples, stop, target, direction, horizon);
-      const candidate: LabRow = { slot, label: slotLabel(slot), samples: slotSamples.length, stop, target, rr: target / stop, expectancyR: result.expectancyR, winRate: result.winRate, leverage: riskFraction / (stop / 100) };
+      const perTradeFactor = 1 + result.expectancyR * riskFraction;
+      const capitalFactor = capitalModel === 'compound'
+        ? Math.max(0, perTradeFactor) ** slotSamples.length
+        : 1 + result.expectancyR * riskFraction * slotSamples.length;
+      const candidate: LabRow = { slot, label: slotLabel(slot, resolution), samples: slotSamples.length, stop, target, rr: target / stop, expectancyR: result.expectancyR, winRate: result.winRate, leverage: riskFraction / (stop / 100), capitalFactor };
       if (!best || candidate.expectancyR > best.expectancyR || (candidate.expectancyR === best.expectancyR && candidate.rr > best.rr)) best = candidate;
     }
     return best;
