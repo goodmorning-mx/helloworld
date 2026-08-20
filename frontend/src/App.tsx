@@ -104,7 +104,7 @@ type BinanceAccount = {
   enabled?: boolean; healthy?: boolean; stream_connected?: boolean;
   last_update?: string; last_event?: string; error?: string | null;
   error_kind?: string | null; error_title?: string | null; error_message?: string | null; error_action?: string | null;
-  wallet_balance?: string | null; available_balance?: string | null;
+  wallet_balance?: string | null; futures_balance?: string | number | null; available_balance?: string | null;
   total_unrealized_pnl?: string | null; positions?: BinancePosition[];
   events?: Array<{ time?: string; type?: string; symbol?: string; status?: string }>;
 };
@@ -188,7 +188,7 @@ function BinanceAccountPanel({ revision = 0 }: { revision?: number }) {
   return <section className="binance-account-panel" aria-label="Estado de Binance">
     <div className="binance-panel-head"><div><span className="positions-kicker">BINANCE · CUENTA</span><h2>Estado de Binance</h2></div><span className={`stream-badge ${online ? 'stream-good' : 'stream-bad'}`}>{loading ? 'Consultando…' : online ? 'Saludable · User Stream' : 'Sin conexión'}</span></div>
     {account?.error && <div className="binance-error" role="status"><strong>{account.error_title ?? 'Binance no está disponible'}</strong><span>{account.error_message ?? account.error}</span>{account.error_action && <small>Qué hacer: {account.error_action}</small>}<em>El monitor seguirá reintentando automáticamente.</em></div>}
-    <div className="binance-metrics"><div><small>Saldo wallet</small><strong>{account?.wallet_balance ?? '—'}</strong></div><div><small>Disponible</small><strong>{account?.available_balance ?? '—'}</strong></div><div><small>PNL no realizado</small><strong>{account?.total_unrealized_pnl ?? '—'}</strong></div><div><small>Última actualización</small><strong>{account?.last_update ? new Date(account.last_update).toLocaleTimeString() : '—'}</strong></div></div>
+    <div className="binance-metrics"><div><small>Saldo Futures</small><strong>{account?.futures_balance ?? '—'}</strong></div><div><small>Wallet</small><strong>{account?.wallet_balance ?? '—'}</strong></div><div><small>Disponible</small><strong>{account?.available_balance ?? '—'}</strong></div><div><small>PNL no realizado</small><strong>{account?.total_unrealized_pnl ?? '—'}</strong></div><div><small>Última actualización</small><strong>{account?.last_update ? new Date(account.last_update).toLocaleTimeString() : '—'}</strong></div></div>
     <h3>Posiciones de Binance</h3>
     <div className="positions-table-scroll"><table className="positions-table binance-table"><thead><tr><th>Símbolo</th><th>Lado</th><th>Cantidad</th><th>Entrada</th><th>Mark</th><th>UPNL</th></tr></thead><tbody>{account?.positions?.length ? account.positions.map((position, index) => <tr key={`${position.symbol}-${index}`}><td>{position.symbol ?? '—'}</td><td className={position.side === 'LONG' ? 'value-positive' : 'value-negative'}>{position.side ?? '—'}</td><td>{position.quantity ?? '—'}</td><td>{position.entry_price ?? '—'}</td><td>{position.mark_price ?? '—'}</td><td>{position.unrealized_pnl ?? '—'}</td></tr>) : <tr><td colSpan={6}>Sin posiciones abiertas</td></tr>}</tbody></table></div>
     <h3>Últimos eventos del User Stream</h3>
@@ -1074,9 +1074,6 @@ function Workspace() {
     const startY = candles.priceToCoordinate(drawing.start.price);
     const endY = candles.priceToCoordinate(drawing.end.price);
     if (startX === null || endX === null || startY === null || endY === null) return null;
-    // Paper operations use native chart price lines for TP and SL. Keep their
-    // SVG overlay empty so the map only shows those two lines.
-    if (drawing.paper) return null;
     const start = { x: startX, y: startY };
     const end = { x: endX, y: endY };
     const handles = drawingHandles(drawing, typeof index === 'number' ? index : -1, canvas);
@@ -1100,10 +1097,13 @@ function Workspace() {
     const stopPrice = drawing.stop?.price ?? drawing.start.price - (drawing.end.price - drawing.start.price) / 4;
     const stop = screenPoint(drawing.stop ?? { time: drawing.end.time, price: stopPrice }, canvas);
     if (!stop) return null;
-    const targetPercent = pricePercent * (drawing.type === 'long' ? 1 : -1);
+    const targetPrice = drawing.target?.price ?? drawing.end.price;
+    const targetPoint = drawing.target ? screenPoint(drawing.target, canvas) : end;
+    if (!targetPoint) return null;
+    const currentPnlPercent = pricePercent * (drawing.type === 'long' ? 1 : -1);
+    const targetPercent = ((targetPrice - drawing.start.price) / drawing.start.price) * 100 * (drawing.type === 'long' ? 1 : -1);
     const riskPercent = ((stopPrice - drawing.start.price) / drawing.start.price) * 100 * (drawing.type === 'long' ? 1 : -1);
-    const currentPnlPercent = targetPercent;
-    const maxTargetPercent = drawing.target ? ((drawing.target.price - drawing.start.price) / drawing.start.price) * 100 * (drawing.type === 'long' ? 1 : -1) : targetPercent;
+    const maxTargetPercent = targetPercent;
     const riskDistance = Math.abs(drawing.start.price - stopPrice);
     const rewardDistance = Math.abs((drawing.target?.price ?? drawing.end.price) - drawing.start.price);
     const rr = riskDistance > 0 ? rewardDistance / riskDistance : 0;
@@ -1111,8 +1111,8 @@ function Workspace() {
       ? `${drawing.closed && drawing.closeReason === 'TP' ? 'Max TP alcanzado' : 'Max TP'} ${maxTargetPercent >= 0 ? '+' : ''}${maxTargetPercent.toFixed(8)}%`
       : `${targetPercent >= 0 ? '+' : ''}${targetPercent.toFixed(8)}%`;
     const riskLabel = `${riskPercent >= 0 ? '+' : ''}${riskPercent.toFixed(8)}%`;
-    const targetTop = Math.min(start.y, end.y);
-    const targetHeight = Math.abs(start.y - end.y);
+    const targetTop = Math.min(start.y, targetPoint.y);
+    const targetHeight = Math.abs(start.y - targetPoint.y);
     const stopTop = Math.min(start.y, stop.y);
     const stopHeight = Math.abs(start.y - stop.y);
     const paperClass = drawing.paper ? `paper-position ${drawing.type === 'long' ? 'paper-long' : 'paper-short'}` : '';

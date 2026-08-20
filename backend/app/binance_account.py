@@ -46,7 +46,7 @@ class BinanceAccountMonitor:
             "enabled": True, "healthy": False, "stream_connected": False,
             "last_update": None, "last_event": None, "error": None,
             "error_kind": None, "error_title": None, "error_message": None, "error_action": None,
-            "wallet_balance": None, "available_balance": None,
+            "wallet_balance": None, "futures_balance": None, "available_balance": None,
             "total_unrealized_pnl": None, "positions": [], "events": [],
         }
 
@@ -102,6 +102,7 @@ class BinanceAccountMonitor:
         self._set(
             healthy=True,
             wallet_balance=account.get("totalWalletBalance"),
+            futures_balance=account.get("totalMarginBalance"),
             available_balance=account.get("availableBalance"),
             total_unrealized_pnl=account.get("totalUnrealizedProfit"),
             positions=active, last_update=self._now(), error=None,
@@ -114,7 +115,9 @@ class BinanceAccountMonitor:
             usdt = next((row for row in account.get("B", []) if row.get("a") == "USDT"), {})
             positions = [self._position(row) for row in account.get("P", []) if float(row.get("pa", 0)) != 0]
             self._set(
-                wallet_balance=usdt.get("wb"), available_balance=usdt.get("cw"),
+                wallet_balance=usdt.get("wb"),
+                futures_balance=float(usdt.get("wb", 0)) + sum(float(row.get("up", 0)) for row in account.get("P", [])),
+                available_balance=usdt.get("cw"),
                 total_unrealized_pnl=sum(float(row.get("up", 0)) for row in account.get("P", [])),
                 positions=positions, last_update=self._now(), last_event=event_type,
             )

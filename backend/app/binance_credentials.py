@@ -95,7 +95,7 @@ def not_configured_snapshot() -> dict[str, object]:
         "error_kind": "NOT_CONFIGURED", "error_title": "Configura tu cuenta de Binance",
         "error_message": "Todavía no has agregado una API key y API secret para este usuario.",
         "error_action": "Abre tu avatar → Perfil → Binance y guarda tus credenciales.",
-        "wallet_balance": None, "available_balance": None, "total_unrealized_pnl": None,
+        "wallet_balance": None, "futures_balance": None, "available_balance": None, "total_unrealized_pnl": None,
         "positions": [], "events": [],
     }
 
