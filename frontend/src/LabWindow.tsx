@@ -2,7 +2,7 @@ import { useMemo, useState } from 'react';
 import { aggregateBars, loadThirtyDays, type MarketBar } from './marketData';
 import { analyzeLab, type LabDirection, type LabRow } from './labEngine';
 
-export default function LabWindow({ initialSymbol = 'BTCUSDT' }: { initialSymbol?: string }) {
+export default function LabWindow({ initialSymbol = 'BTCUSDT', onClose }: { initialSymbol?: string; onClose?: () => void }) {
   const [symbol, setSymbol] = useState(initialSymbol);
   const [direction, setDirection] = useState<LabDirection>('long');
   const [horizon, setHorizon] = useState(48);
@@ -33,9 +33,10 @@ export default function LabWindow({ initialSymbol = 'BTCUSDT' }: { initialSymbol
     }
   }
 
-  return <main className="lab-window">
+  const content = <main className={`lab-window${onClose ? ' lab-window-modal' : ''}`}>
     <header className="lab-window-header">
       <div><span className="lab-kicker">GOODMORNING RESEARCH</span><h1>MAE · MFE Lab</h1><p>TP, SL y leverage por momento de entrada.</p></div>
+      {onClose && <button className="lab-close-button" onClick={onClose} aria-label="Cerrar Lab">×</button>}
       <button className="lab-load-button" onClick={() => void run()} disabled={loading}>{loading ? 'Analizando…' : 'Cargar 30 días'}</button>
     </header>
     <section className="lab-controls" aria-label="Parámetros del estudio">
@@ -49,4 +50,5 @@ export default function LabWindow({ initialSymbol = 'BTCUSDT' }: { initialSymbol
     <section className="lab-table-card"><div className="lab-table-title"><div><span className="lab-kicker">OPTIMIZACIÓN POR SLOT</span><h2>TP / SL y leverage recomendado</h2></div><span>{rows.length ? `${rows.length} slots` : 'Sin resultados'}</span></div>{rows.length ? <div className="lab-table-scroll"><table className="lab-table"><thead><tr><th>Momento</th><th>Muestras</th><th>SL MAE</th><th>TP MFE</th><th>RR</th><th>Win rate</th><th>Expectancy</th><th>Leverage</th></tr></thead><tbody>{rows.slice(0, 96).map(row => <tr key={row.slot}><td>{row.label} UTC</td><td>{row.samples}</td><td>{row.stop.toFixed(4)}%</td><td>{row.target.toFixed(4)}%</td><td>{row.rr.toFixed(2)}:1</td><td>{row.winRate.toFixed(1)}%</td><td className={row.expectancyR > 0 ? 'lab-positive' : 'lab-negative'}>{row.expectancyR.toFixed(3)}R</td><td>{Math.min(row.leverage, 999).toFixed(1)}x</td></tr>)}</tbody></table></div> : <div className="lab-empty">El estudio permanece inactivo para no descargar datos hasta que lo solicites.</div>}</section>
     <footer className="lab-footnote">Fuente: cache OHLC del terminal · gráfico operativo limitado a 7 días · investigación cargada bajo demanda hasta 30 días · {fiveMinuteBars.length ? `${fiveMinuteBars.length.toLocaleString('es-MX')} velas 5m en memoria` : 'sin dataset cargado'}.</footer>
   </main>;
+  return onClose ? <div className="lab-modal-backdrop" role="presentation" onClick={onClose}><section className="lab-modal" role="dialog" aria-modal="true" aria-label="GoodMorning Lab" onClick={event => event.stopPropagation()}>{content}</section></div> : content;
 }
