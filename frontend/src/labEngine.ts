@@ -4,6 +4,13 @@ export type LabDirection = 'long' | 'short';
 export type LabResolution = 1 | 5;
 export type LabCapitalModel = 'compound' | 'simple';
 
+export type LabSeriesPoint = {
+  slot: number;
+  label: string;
+  mae: number;
+  mfe: number;
+};
+
 export type LabRow = {
   slot: number;
   label: string;
@@ -32,11 +39,18 @@ function percentile(values: number[], p: number) {
 
 function slotOf(time: number, resolution: LabResolution) {
   const date = new Date(time * 1000);
-  return date.getUTCHours() * (60 / resolution) + Math.floor(date.getUTCMinutes() / resolution);
+  const weekday = (date.getUTCDay() + 6) % 7;
+  const slotsPerDay = 1440 / resolution;
+  return weekday * slotsPerDay + date.getUTCHours() * (60 / resolution) + Math.floor(date.getUTCMinutes() / resolution);
 }
 
 function slotLabel(slot: number, resolution: LabResolution) {
-  return `${String(Math.floor(slot / (60 / resolution))).padStart(2, '0')}:${String(slot % (60 / resolution) * resolution).padStart(2, '0')}`;
+  const weekdays = ['MON', 'TUE', 'WED', 'THU', 'FRI', 'SAT', 'SUN'];
+  const slotsPerDay = 1440 / resolution;
+  const day = Math.floor(slot / slotsPerDay);
+  const withinDay = slot % slotsPerDay;
+  const totalMinutes = withinDay * resolution;
+  return `${weekdays[day] ?? 'DAY'} ${String(Math.floor(totalMinutes / 60)).padStart(2, '0')}:${String(totalMinutes % 60).padStart(2, '0')}`;
 }
 
 function samplesFor(bars: MarketBar[], direction: LabDirection, horizon: number, resolution: LabResolution): Sample[] {
@@ -61,6 +75,18 @@ function samplesFor(bars: MarketBar[], direction: LabDirection, horizon: number,
     if (contiguous) samples.push({ slot: slotOf(bars[row].time, resolution), time: bars[row].time, adverse, favorable, row });
   }
   return samples;
+}
+
+export function buildLabSeries(
+  bars: MarketBar[], direction: LabDirection, horizon: number, resolution: LabResolution,
+): LabSeriesPoint[] {
+  return samplesFor(bars, direction, Math.max(1, Math.floor(horizon)), resolution)
+    .map(sample => ({
+      slot: sample.slot,
+      label: slotLabel(sample.slot, resolution),
+      mae: sample.adverse,
+      mfe: sample.favorable,
+    }));
 }
 
 function evaluate(bars: MarketBar[], samples: Sample[], stop: number, target: number, direction: LabDirection, horizon: number) {
