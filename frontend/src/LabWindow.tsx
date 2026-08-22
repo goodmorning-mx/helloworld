@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { aggregateBars, loadThirtyDays, readCachedBars, type MarketBar } from './marketData';
 import { analyzeLab, buildLabSeries, type LabCapitalModel, type LabDirection, type LabResolution, type LabRow, type LabSeriesPoint } from './labEngine';
 
@@ -55,6 +55,7 @@ export default function LabWindow({ initialSymbol = 'BTCUSDT', initialBars = [],
   const [rows, setRows] = useState<LabRow[]>([]);
   const [loading, setLoading] = useState(false);
   const [message, setMessage] = useState('Carga 30 días para iniciar el estudio.');
+  const autoLoadStarted = useRef(false);
 
   const best = rows[0];
   const fiveMinuteBars = useMemo(() => aggregateBars(bars, 5), [bars]);
@@ -70,11 +71,16 @@ export default function LabWindow({ initialSymbol = 'BTCUSDT', initialBars = [],
     if (loadedThirtyDays) return;
     void readCachedBars(symbol, '1m').then(cached => {
       const available = initialBars.length > 0 && symbol === initialSymbol ? initialBars : cached;
-      if (available.length === 0) return;
-      setBars(available);
-      const normalized = resolution === 5 ? aggregateBars(available, 5) : available;
-      setRows(analyzeLab(normalized, direction, horizon, riskFraction, resolution, capitalModel));
-      setMessage(`Cache del gráfico: ${new Date(available[0].time * 1000).toLocaleDateString('es-MX')} → ${new Date(available[available.length - 1].time * 1000).toLocaleDateString('es-MX')}.`);
+      if (available.length > 0) {
+        setBars(available);
+        const normalized = resolution === 5 ? aggregateBars(available, 5) : available;
+        setRows(analyzeLab(normalized, direction, horizon, riskFraction, resolution, capitalModel));
+        setMessage(`Cache del gráfico: ${new Date(available[0].time * 1000).toLocaleDateString('es-MX')} → ${new Date(available[available.length - 1].time * 1000).toLocaleDateString('es-MX')}. Completando perfil semanal…`);
+      }
+      if (!autoLoadStarted.current) {
+        autoLoadStarted.current = true;
+        void run();
+      }
     });
   }, [capitalModel, direction, horizon, initialBars, initialSymbol, loadedThirtyDays, resolution, riskFraction, symbol]);
 
@@ -102,7 +108,7 @@ export default function LabWindow({ initialSymbol = 'BTCUSDT', initialBars = [],
       <button className={`lab-load-button${loadedThirtyDays ? ' lab-load-complete' : ''}`} onClick={() => void run()} disabled={loading}>{loading ? 'Analizando…' : loadedThirtyDays ? '30 días cargados' : 'Cargar 30 días'}</button>
     </header>
     <section className="lab-controls" aria-label="Parámetros del estudio">
-      <label>Símbolo<select value={symbol} onChange={event => { setLoadedThirtyDays(false); setBars([]); setRows([]); setSymbol(event.target.value); }}>{['BTCUSDT', 'ETHUSDT', 'BNBUSDT', 'SOLUSDT', 'XRPUSDT', 'DOGEUSDT'].map(value => <option key={value}>{value}</option>)}</select></label>
+      <label>Símbolo<select value={symbol} onChange={event => { autoLoadStarted.current = false; setLoadedThirtyDays(false); setBars([]); setRows([]); setSymbol(event.target.value); }}>{['BTCUSDT', 'ETHUSDT', 'BNBUSDT', 'SOLUSDT', 'XRPUSDT', 'DOGEUSDT'].map(value => <option key={value}>{value}</option>)}</select></label>
       <label>Dirección<select value={direction} onChange={event => setDirection(event.target.value as LabDirection)}><option value="long">Long</option><option value="short">Short</option></select></label>
       <label>Horizonte (velas {resolution}m)<input type="number" min="1" max="576" value={horizon} onChange={event => setHorizon(Math.max(1, Math.min(576, Number(event.target.value) || 1)))} /></label>
       <label>Riesgo sobre margen<input type="number" min="0.05" max="1" step="0.05" value={riskFraction} onChange={event => setRiskFraction(Math.max(.05, Math.min(1, Number(event.target.value) || .05)))} /></label>
