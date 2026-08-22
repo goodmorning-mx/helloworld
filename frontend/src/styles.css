@@ -122,3 +122,16 @@
 .lab-table-card { overflow: hidden; }.lab-table-title { align-items: center; padding: 1rem 1.1rem; border-bottom: 1px solid #252a31; }.lab-table-title h2 { margin: .3rem 0 0; font-size: 1rem; }.lab-table-title > span { color: #69717e; font: .7rem 'DM Mono', monospace; }.lab-table-scroll { overflow: auto; max-height: calc(100vh - 360px); }.lab-table { width: 100%; border-collapse: collapse; font: .7rem 'DM Mono', monospace; }.lab-table th { position: sticky; top: 0; padding: .7rem; background: #171c22; color: #69717e; font-weight: 500; text-align: left; }.lab-table td { padding: .65rem .7rem; border-top: 1px solid #20252d; white-space: nowrap; }.lab-positive { color: #64d39a; }.lab-negative { color: #f27e7e; }.lab-empty { padding: 3rem 1rem; color: #69717e; text-align: center; font: .75rem 'DM Mono', monospace; }.lab-footnote { max-width: 1200px; margin: .8rem auto; color: #59616d; font: .62rem/1.5 'DM Mono', monospace; }
 @media (max-width: 760px) { .lab-window { padding: 1rem .7rem 2rem; }.lab-window-header { align-items: stretch; flex-direction: column; }.lab-load-button { width: 100%; }.lab-controls { grid-template-columns: 1fr 1fr; }.lab-summary { grid-template-columns: 1fr 1fr; }.lab-table-scroll { max-height: none; } }
 @media (max-width: 760px) { .binance-metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+
+.lab-chart { cursor: crosshair; }
+.lab-chart-hover-line { stroke: #89909b; stroke-width: 1; stroke-dasharray: 4 4; }
+.lab-chart-hover-mae { fill: #f27e7e; stroke: #fff; stroke-width: 1.5; }
+.lab-chart-hover-mfe { fill: #64d39a; stroke: #fff; stroke-width: 1.5; }
+.lab-chart-tooltip { fill: #0b0e12; stroke: #69717e; stroke-width: 1; }
+.lab-chart-tooltip-text, .lab-chart-tooltip-mae, .lab-chart-tooltip-mfe { font: 600 10px 'DM Mono', monospace; }
+.lab-chart-tooltip-text { fill: #e5e7eb; }
+.lab-chart-tooltip-mae { fill: #f27e7e; }
+.lab-chart-tooltip-mfe { fill: #64d39a; }
+.lab-message { padding: .7rem .9rem; border: 1px solid #303640; border-radius: 8px; background: #11151a; color: #c4cad4; font-size: .95rem; font-weight: 700; line-height: 1.4; }
+.lab-sort-button { border: 0; padding: .35rem 0; background: transparent; color: inherit; cursor: pointer; font: inherit; white-space: nowrap; }
+.lab-sort-button:hover, .lab-sort-button:focus-visible { color: #f5b84b; outline: none; }
