@@ -28,13 +28,15 @@ def _worker(high_queue: Any, low_queue: Any, response_queue: Any, host: str, por
     from ctrader_open_api.messages.OpenApiMessages_pb2 import (
         ProtoOAAccountAuthReq, ProtoOAApplicationAuthReq,
         ProtoOAGetAccountListByAccessTokenReq, ProtoOAGetTrendbarsReq,
-        ProtoOASymbolsListReq, ProtoOASpotEvent, ProtoOASubscribeSpotsReq,
+        ProtoOATraderReq,
+        ProtoOASymbolsListReq, ProtoOASpotEvent, ProtoOATraderUpdatedEvent, ProtoOASubscribeSpotsReq,
         ProtoOASubscribeLiveTrendbarReq,
         ProtoOANewOrderReq, ProtoOAClosePositionReq, ProtoOAAmendPositionSLTPReq,
     )
     from twisted.internet import reactor
 
     state = {"connected": False, "ready": False, "account_id": account_id, "accounts": [], "symbols": {},
+             "balance": None, "money_digits": None, "broker": None,
              "subscribed_spots": set(), "subscribed_trendbars": set()}
     client = Client(host, port, TcpProtocol)
 
@@ -103,6 +105,24 @@ def _worker(high_queue: Any, low_queue: Any, response_queue: Any, host: str, por
             return
         state["ready"] = True
         emit({"type": "STATUS", "connected": True, "ready": True, "account_id": account_id})
+        trader_request = ProtoOATraderReq()
+        trader_request.ctidTraderAccountId = account_id
+        client.send(trader_request).addCallbacks(on_trader, fail)
+
+    def on_trader(message: object) -> None:
+        payload = Protobuf.extract(message)
+        if hasattr(payload, "errorCode"):
+            emit({"type": "ERROR", "error": getattr(payload, "description", getattr(payload, "errorCode", "cTrader balance query failed"))})
+            return
+        trader = getattr(payload, "trader", None)
+        if trader is None:
+            return
+        money_digits = int(getattr(trader, "moneyDigits", 0) or 0)
+        balance = float(getattr(trader, "balance", 0) or 0) / (10 ** money_digits)
+        broker = str(getattr(trader, "brokerName", "") or "")
+        state.update({"balance": balance, "money_digits": money_digits, "broker": broker})
+        emit({"type": "STATUS", "connected": True, "ready": True, "account_id": account_id,
+              "balance": balance, "money_digits": money_digits, "broker": broker})
 
     def on_message(_client: object, message: object) -> None:
         try:
@@ -122,6 +142,14 @@ def _worker(high_queue: Any, low_queue: Any, response_queue: Any, host: str, por
                     divider = 100000
                     emit({"type": "TICK", "symbol": symbol, "price": float(bar.low + bar.deltaClose) / divider,
                           "time": int(bar.utcTimestampInMinutes) * 60})
+            if isinstance(payload, ProtoOATraderUpdatedEvent):
+                trader = payload.trader
+                money_digits = int(getattr(trader, "moneyDigits", 0) or 0)
+                balance = float(getattr(trader, "balance", 0) or 0) / (10 ** money_digits)
+                broker = str(getattr(trader, "brokerName", "") or "")
+                state.update({"balance": balance, "money_digits": money_digits, "broker": broker})
+                emit({"type": "STATUS", "connected": True, "ready": True, "account_id": account_id,
+                      "balance": balance, "money_digits": money_digits, "broker": broker})
         except Exception as exc:
             fail(exc)
 
@@ -268,7 +296,8 @@ class CTraderSession:
         self._process = None
         self._pending: deque[dict[str, object]] = deque()
         self._lock = threading.RLock()
-        self._status = {"connected": False, "ready": False, "error": None, "symbols": {}, "last_tick": None}
+        self._status = {"connected": False, "ready": False, "error": None, "symbols": {}, "last_tick": None,
+                        "balance": None, "money_digits": None, "broker": None}
         self._symbols_cache: dict[str, int] = {}
         self._symbols_cached_at = 0.0
 
@@ -294,7 +323,8 @@ class CTraderSession:
             self._process.join(1)
         self._process.close()
         self._process = None
-        self._status = {"connected": False, "ready": False, "error": None, "symbols": {}, "last_tick": None}
+        self._status = {"connected": False, "ready": False, "error": None, "symbols": {}, "last_tick": None,
+                        "balance": None, "money_digits": None, "broker": None}
         self._symbols_cache = {}
         self._symbols_cached_at = 0.0
 
