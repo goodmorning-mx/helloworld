@@ -32,7 +32,8 @@ def _worker(high_queue: Any, low_queue: Any, response_queue: Any, host: str, por
     )
     from twisted.internet import reactor
 
-    state = {"connected": False, "ready": False, "account_id": account_id, "symbols": {}}
+    state = {"connected": False, "ready": False, "account_id": account_id, "symbols": {},
+             "subscribed_spots": set(), "subscribed_trendbars": set()}
     client = Client(host, port, TcpProtocol)
 
     def emit(payload: dict[str, object]) -> None:
@@ -65,6 +66,8 @@ def _worker(high_queue: Any, low_queue: Any, response_queue: Any, host: str, por
     def on_disconnected(_client: object, reason: object) -> None:
         state["connected"] = False
         state["ready"] = False
+        state["subscribed_spots"].clear()
+        state["subscribed_trendbars"].clear()
         emit({"type": "STATUS", "connected": False, "ready": False, "error": str(reason)})
 
     def on_accounts(message: object) -> None:
@@ -161,16 +164,22 @@ def _worker(high_queue: Any, low_queue: Any, response_queue: Any, host: str, por
             lambda message: emit({"type": "ORDER", "request_id": request_id, "data": _message_dict(message)}), fail)
 
     def get_candles(command: dict[str, object]) -> None:
-        spot_request = ProtoOASubscribeSpotsReq()
-        spot_request.ctidTraderAccountId = account_id
-        spot_request.symbolId.append(int(command["symbol_id"]))
-        spot_request.subscribeToSpotTimestamp = True
-        client.send(spot_request).addErrback(fail)
-        live_request = ProtoOASubscribeLiveTrendbarReq()
-        live_request.ctidTraderAccountId = account_id
-        live_request.symbolId = int(command["symbol_id"])
-        live_request.period = _period(str(command["interval"]))
-        client.send(live_request).addErrback(fail)
+        symbol_id = int(command["symbol_id"])
+        if symbol_id not in state["subscribed_spots"]:
+            state["subscribed_spots"].add(symbol_id)
+            spot_request = ProtoOASubscribeSpotsReq()
+            spot_request.ctidTraderAccountId = account_id
+            spot_request.symbolId.append(symbol_id)
+            spot_request.subscribeToSpotTimestamp = True
+            client.send(spot_request).addErrback(lambda reason: emit({"type": "STREAM_ERROR", "error": str(reason)}))
+        trendbar_key = (symbol_id, _period(str(command["interval"])))
+        if trendbar_key not in state["subscribed_trendbars"]:
+            state["subscribed_trendbars"].add(trendbar_key)
+            live_request = ProtoOASubscribeLiveTrendbarReq()
+            live_request.ctidTraderAccountId = account_id
+            live_request.symbolId = symbol_id
+            live_request.period = trendbar_key[1]
+            client.send(live_request).addErrback(lambda reason: emit({"type": "STREAM_ERROR", "error": str(reason)}))
         request = ProtoOAGetTrendbarsReq()
         request.ctidTraderAccountId = account_id
         request.symbolId = int(command["symbol_id"])
@@ -271,6 +280,8 @@ class CTraderSession:
         self._process.close()
         self._process = None
         self._status = {"connected": False, "ready": False, "error": None, "symbols": {}, "last_tick": None}
+        self._symbols_cache = {}
+        self._symbols_cached_at = 0.0
 
     def is_alive(self) -> bool:
         return self._process is not None and self._process.is_alive()
@@ -360,7 +371,8 @@ class CTraderManager:
                 session.start()
         status = session.snapshot()
         healthy = bool(status.get("ready") and status.get("process_alive"))
-        return {**base, **status, "configured": True, "healthy": healthy, "stream_connected": healthy,
+        public_status = {**status, "symbols": list((status.get("symbols") or {}).keys())}
+        return {**base, **public_status, "configured": True, "healthy": healthy, "stream_connected": healthy,
                 "error_kind": None if healthy else "CONNECTING", "error_title": None if healthy else "Conectando con cTrader",
                 "error_message": None if healthy else (status.get("error") or "La sesión cTrader está autenticando."),
                 "error_action": None if healthy else "Mantén abierto el perfil y verifica el token si no conecta."}
