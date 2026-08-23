@@ -274,7 +274,6 @@ function Workspace() {
   const auth = useAuth();
   const mobilePwa = useMobilePwa();
   const [showProfile, setShowProfile] = useState(false);
-  const [showLab, setShowLab] = useState(false);
   const [profileRevision, setProfileRevision] = useState(0);
   const chartContainer = useRef<HTMLDivElement>(null);
   const overviewChartContainer = useRef<HTMLDivElement>(null);
@@ -285,6 +284,7 @@ function Workspace() {
   const overviewLoadingOlderRef = useRef(false);
   const overviewStage = useRef<HTMLDivElement>(null);
   const chartStage = useRef<HTMLDivElement>(null);
+  const labSection = useRef<HTMLElement>(null);
   const chartRef = useRef<ReturnType<typeof createChart> | null>(null);
   const candlesRef = useRef<ReturnType<ReturnType<typeof createChart>['addSeries']> | null>(null);
   const candleBarsRef = useRef<Array<{ time: UTCTimestamp; open: number; high: number; low: number; close: number }>>([]);
@@ -1189,7 +1189,7 @@ function Workspace() {
 
   const avatarLabel = (auth.identity?.name ?? auth.identity?.email ?? 'U').slice(0, 1).toUpperCase();
   const profileButton = <button className="profile-avatar" onClick={() => setShowProfile(true)} aria-label="Abrir perfil" title="Perfil">{avatarLabel}</button>;
-  const labButton = <button className="lab-open-button" onClick={() => setShowLab(true)} aria-label="Abrir GoodMorning Lab">Lab</button>;
+  const labButton = <button className="lab-open-button" onClick={() => labSection.current?.scrollIntoView({ behavior: 'smooth', block: 'start' })} aria-label="Ir a GoodMorning Lab">Lab</button>;
   const desktopHeader = <div className="symbol-bar"><select className="symbol-select" value={symbol} onChange={event => setSymbol(event.target.value)} aria-label="Símbolo">
     {['BTCUSDT', 'ETHUSDT', 'BNBUSDT', 'SOLUSDT', 'XRPUSDT', 'DOGEUSDT'].map(option => <option key={option}>{option}</option>)}
   </select><select className="interval-select" value={interval} onChange={event => setInterval(event.target.value as typeof interval)} aria-label="Intervalo de contexto">{(['1s', '1m', '3m', '5m', '15m'] as const).map(value => <option key={value} value={value}>{value}</option>)}</select><span className="chart-source">BINANCE · {entryInterval.toUpperCase()} ENTRADA · {interval.toUpperCase()} CONTEXTO</span><button className={`session-toggle ${showSessions ? 'session-active' : ''}`} onClick={() => setShowSessions(value => !value)} aria-label="Mostrar sesiones" title="Mostrar sesiones">Sesiones</button><div className="chart-tools" aria-label="Herramientas del gráfico">
@@ -1208,7 +1208,7 @@ function Workspace() {
     {mobileSheet === 'indicators' && <MobileSheet title="Indicadores" onClose={() => setMobileSheet(null)}><button className={`mobile-option ${showSessions ? 'option-active' : ''}`} onClick={() => setShowSessions(value => !value)}><span><b>Sesiones de mercado</b><small>Tokyo, Londres, Nueva York y Sydney</small></span><i>{showSessions ? '✓' : ''}</i></button><label className="mobile-field">Intervalo<select value={interval} onChange={event => setInterval(event.target.value as typeof interval)}>{(['1s', '1m', '3m', '5m', '15m'] as const).map(value => <option key={value}>{value}</option>)}</select></label><label className="mobile-field">Zona horaria<select value={timezone} onChange={event => setTimezone(event.target.value)}>{TIMEZONES.map(([label, value]) => <option key={value} value={value}>{label}</option>)}</select></label></MobileSheet>}
     {mobileSheet === 'tools' && <MobileSheet title="Herramientas" onClose={() => setMobileSheet(null)}><div className="mobile-tool-grid"><button className={!tool ? 'option-active' : ''} onClick={() => { setTool(null); setMobileSheet(null); }}>↖<span>Seleccionar</span></button>{toolOptions.map(([key, icon, label]) => <button key={key} className={tool === key ? 'option-active' : ''} onClick={() => { chooseTool(key); setMobileSheet(null); }}>{icon}<span>{label}</span></button>)}<button onClick={() => { setDrawings(current => current.filter(drawing => drawing.paper)); activePositionIndexRef.current = null; setActivePositionIndex(null); }}>×<span>Borrar dibujos</span></button></div></MobileSheet>}
     {showProfile && <ProfileModal onClose={() => setShowProfile(false)} onSaved={() => setProfileRevision(value => value + 1)} />}
-  </main> : <main className="trading-shell">{desktopHeader}{chartsRow}<BinanceAccountPanel revision={profileRevision} />{positionsTable}{showProfile && <ProfileModal onClose={() => setShowProfile(false)} onSaved={() => setProfileRevision(value => value + 1)} />}{showLab && <LabWindow initialSymbol={symbol} initialBars={candleBarsRef.current} onClose={() => setShowLab(false)} />}</main>;
+  </main> : <main className="trading-shell">{desktopHeader}{chartsRow}<BinanceAccountPanel revision={profileRevision} />{positionsTable}<section ref={labSection} className="lab-layout-section"><LabWindow initialSymbol={symbol} initialBars={candleBarsRef.current} /></section>{showProfile && <ProfileModal onClose={() => setShowProfile(false)} onSaved={() => setProfileRevision(value => value + 1)} />}</main>;
 }
 
 function App() {
