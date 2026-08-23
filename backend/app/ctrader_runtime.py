@@ -79,6 +79,7 @@ def _worker(high_queue: Any, low_queue: Any, response_queue: Any, host: str, por
         emit({"type": "STATUS", "connected": False, "ready": False, "error": str(reason)})
 
     def on_accounts(message: object) -> None:
+        nonlocal account_id
         payload = Protobuf.extract(message)
         if hasattr(payload, "errorCode"):
             fail(getattr(payload, "description", getattr(payload, "errorCode", "cTrader auth failed")))
