@@ -34,7 +34,7 @@ def _worker(high_queue: Any, low_queue: Any, response_queue: Any, host: str, por
     )
     from twisted.internet import reactor
 
-    state = {"connected": False, "ready": False, "account_id": account_id, "symbols": {},
+    state = {"connected": False, "ready": False, "account_id": account_id, "accounts": [], "symbols": {},
              "subscribed_spots": set(), "subscribed_trendbars": set()}
     client = Client(host, port, TcpProtocol)
 
@@ -83,7 +83,13 @@ def _worker(high_queue: Any, low_queue: Any, response_queue: Any, host: str, por
         if hasattr(payload, "errorCode"):
             fail(getattr(payload, "description", getattr(payload, "errorCode", "cTrader auth failed")))
             return
-        account_ids = {int(item.ctidTraderAccountId) for item in payload.ctidTraderAccount}
+        accounts = [{"account_id": int(item.ctidTraderAccountId), "broker": str(getattr(item, "brokerName", "") or ""), "is_live": bool(getattr(item, "isLive", False))} for item in payload.ctidTraderAccount]
+        state["accounts"] = accounts
+        emit({"type": "ACCOUNTS", "data": accounts})
+        account_ids = {int(item["account_id"]) for item in accounts}
+        if account_id <= 0 and accounts:
+            account_id = int(accounts[0]["account_id"])
+            state["account_id"] = account_id
         if account_id not in account_ids:
             fail("La cuenta cTrader no pertenece al token del usuario")
             return
@@ -296,7 +302,7 @@ class CTraderSession:
 
     def snapshot(self) -> dict[str, object]:
         self._drain()
-        return {**self._status, "process_alive": self.is_alive(), "account_id": self._credentials["account_id"]}
+        return {**self._status, "process_alive": self.is_alive(), "account_id": self._status.get("account_id") or self._credentials["account_id"]}
 
     def symbols(self, timeout: float = 30) -> dict[str, int]:
         if self._symbols_cache and time.monotonic() - self._symbols_cached_at < 600:
@@ -331,6 +337,8 @@ class CTraderSession:
                 return
             if response.get("type") == "STATUS":
                 self._status.update(response)
+            elif response.get("type") == "ACCOUNTS":
+                self._status["accounts"] = response.get("data", [])
             elif response.get("type") == "ERROR":
                 self._status.update({"error": response.get("error"), "ready": False})
             elif response.get("type") == "TICK":

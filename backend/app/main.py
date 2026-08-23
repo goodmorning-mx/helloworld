@@ -140,7 +140,7 @@ class BinanceCredentialsInput(BaseModel):
 class CTraderCredentialsInput(BaseModel):
     access_token: str = Field(min_length=10, max_length=4096)
     refresh_token: str = Field(min_length=10, max_length=4096)
-    account_id: int = Field(gt=0)
+    account_id: int = Field(default=0, ge=0)
 
 
 class CTraderOrderInput(BaseModel):
@@ -279,8 +279,12 @@ def delete_binance_credentials(identity: AuthIdentity = Depends(identity_depende
 
 @app.get("/trading/ctrader/credentials")
 def ctrader_credentials_status(identity: AuthIdentity = Depends(identity_dependency(auth_service))) -> dict[str, object]:
+    runtime = ctrader_manager.snapshot(identity.user_id)
+    stored = ctrader_credentials.status(identity.user_id)
     return {
-        **ctrader_credentials.status(identity.user_id),
+        **stored,
+        "account_id": runtime.get("account_id") or stored.get("account_id"),
+        "accounts": runtime.get("accounts", []),
         "enabled": settings.ctrader_enabled,
         "broker": "ctrader",
         "symbols": list(settings.ctrader_symbol_list),
