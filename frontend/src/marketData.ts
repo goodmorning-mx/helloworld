@@ -88,11 +88,53 @@ function parseBinanceRows(rows: unknown[]): MarketBar[] {
   }).filter(bar => Number.isFinite(bar.time) && Number.isFinite(bar.open) && Number.isFinite(bar.high) && Number.isFinite(bar.low) && Number.isFinite(bar.close));
 }
 
-export async function loadThirtyDays(symbol: string, interval = '1m'): Promise<MarketBar[]> {
+type LoadMarketDataOptions = {
+  broker?: 'binance' | 'ctrader';
+  apiUrl?: string;
+  accessToken?: string | null;
+};
+
+type CTraderCandleRow = {
+  timestamp: number;
+  low: number;
+  delta_open: number;
+  delta_high: number;
+  delta_close: number;
+};
+
+function parseCTraderRows(rows: unknown[]): MarketBar[] {
+  return rows.map(row => {
+    const value = row as CTraderCandleRow;
+    const low = Number(value.low);
+    return {
+      time: Math.floor(Number(value.timestamp) * 60),
+      open: low + Number(value.delta_open),
+      high: low + Number(value.delta_high),
+      low,
+      close: low + Number(value.delta_close),
+    };
+  }).filter(bar => Number.isFinite(bar.time) && Number.isFinite(bar.open) && Number.isFinite(bar.high) && Number.isFinite(bar.low) && Number.isFinite(bar.close));
+}
+
+export async function loadThirtyDays(symbol: string, interval = '1m', options: LoadMarketDataOptions = {}): Promise<MarketBar[]> {
   const now = Math.floor(Date.now() / 1000);
   const start = now - 30 * 86400;
   const cached = await readCachedBars(symbol, interval);
   if (cached.length > 0 && cached[0].time <= start + 600 && cached[cached.length - 1].time >= now - 600) return cached.filter(bar => bar.time >= start && bar.time <= now);
+
+  if (options.broker === 'ctrader') {
+    if (!options.apiUrl) throw new Error('La API de cTrader no está configurada.');
+    const headers = options.accessToken ? { Authorization: `Bearer ${options.accessToken}` } : undefined;
+    const response = await fetch(`${options.apiUrl}/trading/ctrader/candles/${encodeURIComponent(symbol)}?interval=${encodeURIComponent(interval)}&days=30`, { headers, credentials: 'include' });
+    let payload: { data?: unknown[]; detail?: string } = {};
+    try { payload = await response.json() as typeof payload; } catch { /* use the HTTP status below */ }
+    if (!response.ok) throw new Error(payload.detail ?? `cTrader respondió ${response.status} al cargar 30 días.`);
+    const rows = parseCTraderRows(payload.data ?? []).filter(bar => bar.time >= start && bar.time <= now);
+    if (rows.length === 0) throw new Error(`cTrader no devolvió velas de ${symbol} para los últimos 30 días.`);
+    await cacheBars(symbol, interval, rows);
+    return (await readCachedBars(symbol, interval)).filter(bar => bar.time >= start && bar.time <= now);
+  }
+
   let cursor = now * 1000;
   const rows: MarketBar[] = [];
   while (cursor > start * 1000) {

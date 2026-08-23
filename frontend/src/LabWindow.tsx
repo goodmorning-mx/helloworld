@@ -70,7 +70,7 @@ function LabChart({ points, resolution, mode }: { points: LabSeriesPoint[]; reso
   </div>;
 }
 
-export default function LabWindow({ activeSymbol = 'BTCUSDT', initialBars = [], onClose }: { activeSymbol?: string; initialBars?: MarketBar[]; onClose?: () => void }) {
+export default function LabWindow({ activeSymbol = 'BTCUSDT', broker = 'binance', apiUrl, accessToken, initialBars = [], onClose }: { activeSymbol?: string; broker?: 'binance' | 'ctrader'; apiUrl?: string; accessToken?: string | null; initialBars?: MarketBar[]; onClose?: () => void }) {
   const [direction, setDirection] = useState<LabDirection>('long');
   const [resolution, setResolution] = useState<LabResolution>(5);
   const [capitalModel, setCapitalModel] = useState<LabCapitalModel>('compound');
@@ -140,7 +140,7 @@ export default function LabWindow({ activeSymbol = 'BTCUSDT', initialBars = [], 
     setLoading(true);
     setMessage('Leyendo cache OHLC y completando hasta 30 días…');
     try {
-      const loaded = await loadThirtyDays(activeSymbol, '1m');
+      const loaded = await loadThirtyDays(activeSymbol, '1m', { broker, apiUrl, accessToken });
       setBars(loaded);
       setLoadedThirtyDays(true);
       analyzeLoaded(loaded);
