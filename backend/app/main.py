@@ -179,7 +179,7 @@ class PaperOperationInput(BaseModel):
     target_time: int
     target_price: float
     status: Literal["OPEN", "CLOSED - WIN", "CLOSED - FAILED"] = "OPEN"
-    close_reason: Literal["TP", "SL"] | None = None
+    close_reason: Literal["TP", "SL", "MANUAL"] | None = None
 
 
 @app.on_event("startup")

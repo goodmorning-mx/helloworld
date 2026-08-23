@@ -383,7 +383,7 @@ function Workspace() {
   const [overviewRevision, setOverviewRevision] = useState(0);
   type ChartPoint = { time: UTCTimestamp; price: number };
   type ChartCanvas = 'entry' | 'context';
-  type Drawing = { id?: string; symbol?: string; type: 'line' | 'ruler' | 'long' | 'short'; start: ChartPoint; end: ChartPoint; stop?: ChartPoint; target?: ChartPoint; chart?: ChartCanvas; paper?: boolean; closed?: boolean; closeReason?: 'TP' | 'SL'; status?: 'OPEN' | 'CLOSED - WIN' | 'CLOSED - FAILED' };
+  type Drawing = { id?: string; symbol?: string; type: 'line' | 'ruler' | 'long' | 'short'; start: ChartPoint; end: ChartPoint; stop?: ChartPoint; target?: ChartPoint; chart?: ChartCanvas; paper?: boolean; closed?: boolean; closeReason?: 'TP' | 'SL' | 'MANUAL'; status?: 'OPEN' | 'CLOSED - WIN' | 'CLOSED - FAILED' };
   const [drawings, setDrawings] = useState<Drawing[]>([]);
   const [drawingStart, setDrawingStart] = useState<ChartPoint | null>(null);
   const [drawingEnd, setDrawingEnd] = useState<ChartPoint | null>(null);
@@ -432,7 +432,7 @@ function Workspace() {
         id: string; symbol: string; side: 'long' | 'short'; chart: ChartCanvas;
         entry_time: number; entry_price: number; current_time: number; current_price: number;
         stop_time: number; stop_price: number; target_time: number; target_price: number;
-        status: 'OPEN' | 'CLOSED - WIN' | 'CLOSED - FAILED'; close_reason?: 'TP' | 'SL' | null; updated_at?: string;
+        status: 'OPEN' | 'CLOSED - WIN' | 'CLOSED - FAILED'; close_reason?: 'TP' | 'SL' | 'MANUAL' | null; updated_at?: string;
       }>>;
     }).then(operations => {
       if (!active) return;
@@ -1227,6 +1227,37 @@ function Workspace() {
     setPaperSyncError('');
   }
 
+  async function closePaperPosition(position: Drawing) {
+    if (!position.id || position.closed || !auth.accessToken) return;
+    const direction = position.type === 'long' ? 1 : -1;
+    const priceChange = ((position.end.price - position.start.price) / position.start.price) * direction;
+    const status = priceChange >= 0 ? 'CLOSED - WIN' : 'CLOSED - FAILED';
+    const response = await fetch(`${apiUrl}/trading/paper/operations/${position.id}`, {
+      method: 'PUT',
+      headers: { Authorization: `Bearer ${auth.accessToken}`, 'Content-Type': 'application/json' },
+      credentials: 'include',
+      body: JSON.stringify({
+        symbol: position.symbol ?? symbol,
+        side: position.type,
+        chart: position.chart === 'context' ? 'context' : 'entry',
+        entry_time: Number(position.start.time), entry_price: position.start.price,
+        current_time: Number(position.end.time), current_price: position.end.price,
+        stop_time: Number(position.stop?.time ?? position.end.time), stop_price: position.stop?.price ?? position.start.price,
+        target_time: Number(position.target?.time ?? position.end.time), target_price: position.target?.price ?? position.end.price,
+        status, close_reason: 'MANUAL',
+      }),
+    });
+    if (!response.ok) {
+      setPaperSyncError('No se pudo cerrar la paper position.');
+      return;
+    }
+    setDrawings(current => current.map(drawing => drawing.id === position.id ? { ...drawing, closed: true, status, closeReason: 'MANUAL' } : drawing));
+    setVisibleClosedId(position.id);
+    setActivePositionIndex(null);
+    setSelectedDrawing(null);
+    setPaperTab('closed');
+  }
+
   function chooseTool(key: 'line' | 'ruler' | 'long' | 'short') {
     setTool(tool === key ? null : key);
   }
@@ -1235,7 +1266,7 @@ function Workspace() {
   const displayedPaperPositions = paperPositions.filter(position => paperTab === 'open' ? !position.closed : position.closed);
   const positionsTable = <section className="positions-panel" aria-label="Posiciones abiertas">
     <div className="positions-panel-head"><div><span className="positions-kicker">TRADING</span><h2>Paper operations</h2></div><span className="paper-badge">PAPER</span></div>{paperSyncError && <p className="paper-sync-error" role="status">{paperSyncError}</p>}<div className="paper-tabs" role="tablist" aria-label="Paper operations"><button role="tab" aria-selected={paperTab === 'open'} className={paperTab === 'open' ? 'paper-tab-active' : ''} onClick={() => setPaperTab('open')}>Abiertas <b>{paperPositions.filter(position => !position.closed).length}</b></button><button role="tab" aria-selected={paperTab === 'closed'} className={paperTab === 'closed' ? 'paper-tab-active' : ''} onClick={() => setPaperTab('closed')}>Cerradas <b>{paperPositions.filter(position => position.closed).length}</b></button></div>
-    {displayedPaperPositions.length === 0 ? <p className="positions-empty">{paperTab === 'open' ? 'No hay operaciones abiertas.' : 'No hay operaciones cerradas.'}</p> : <div className="positions-table-scroll"><table className="positions-table"><thead><tr><th>Instrumento</th><th>Lado</th><th>Entrada</th><th>Actual</th><th>SL</th><th>TP</th><th>Margen</th><th>R:R</th><th>PNL</th><th>ROE</th><th>Estado</th><th>Acción</th></tr></thead><tbody>{displayedPaperPositions.map((position, index) => {
+    {displayedPaperPositions.length === 0 ? <p className="positions-empty">{paperTab === 'open' ? 'No hay operaciones abiertas.' : 'No hay operaciones cerradas.'}</p> : <div className="positions-table-scroll"><table className="positions-table"><thead><tr><th>Instrumento</th><th>Lado</th><th>Entrada</th><th>Actual</th><th>SL</th><th>TP</th><th>Margen</th><th>R:R</th><th>PNL</th><th>ROE</th><th>Acción</th></tr></thead><tbody>{displayedPaperPositions.map((position, index) => {
       const direction = position.type === 'long' ? 1 : -1;
       const margin = 100;
       const leverage = 10;
@@ -1246,9 +1277,8 @@ function Workspace() {
       const riskDistance = Math.abs(position.start.price - (position.stop?.price ?? position.start.price));
       const rewardDistance = Math.abs(targetPrice - position.start.price);
       const rr = riskDistance > 0 ? rewardDistance / riskDistance : 0;
-      const status = position.status ?? (position.closed ? `CLOSED - ${position.closeReason === 'TP' ? 'WIN' : 'FAILED'}` : 'OPEN');
       const drawingIndex = drawings.findIndex(drawing => drawing.id === position.id);
-      return <tr key={`${position.start.time}-${index}`}><td>{position.symbol ?? symbol}</td><td><span className={`position-side ${position.type}`}>{position.type.toUpperCase()}</span></td><td>{position.start.price.toFixed(8)}</td><td>{position.end.price.toFixed(8)}</td><td>{position.stop?.price?.toFixed(8) ?? '—'}</td><td>{targetPrice.toFixed(8)}</td><td>{margin.toFixed(2)} USDT</td><td>{rr.toFixed(2)}:1</td><td className={pnl >= 0 ? 'value-positive' : 'value-negative'}>{pnl >= 0 ? '+' : ''}{pnl.toFixed(8)} USDT</td><td className={roe >= 0 ? 'value-positive' : 'value-negative'}>{roe >= 0 ? '+' : ''}{roe.toFixed(8)}%</td><td><span className={`position-status ${position.closed ? (position.status === 'CLOSED - WIN' ? 'position-win' : 'position-failed') : 'position-live'}`}><i />{status}</span></td><td><button className="paper-edit-button" type="button" disabled={position.closed || drawingIndex < 0} onClick={() => { setSelectedDrawing(drawingIndex); setDrawingCanvas(position.chart ?? 'entry'); setVisibleClosedId(position.id ?? null); setViewportRevision(value => value + 1); }}>Editar</button></td></tr>;
+      return <tr key={`${position.start.time}-${index}`}><td>{position.symbol ?? symbol}</td><td><span className={`position-side ${position.type}`}>{position.type.toUpperCase()}</span></td><td>{position.start.price.toFixed(8)}</td><td>{position.end.price.toFixed(8)}</td><td>{position.stop?.price?.toFixed(8) ?? '—'}</td><td>{targetPrice.toFixed(8)}</td><td>{margin.toFixed(2)} USDT</td><td>{rr.toFixed(2)}:1</td><td className={pnl >= 0 ? 'value-positive' : 'value-negative'}>{pnl >= 0 ? '+' : ''}{pnl.toFixed(8)} USDT</td><td className={roe >= 0 ? 'value-positive' : 'value-negative'}>{roe >= 0 ? '+' : ''}{roe.toFixed(8)}%</td><td><button className="paper-edit-button" type="button" disabled={position.closed || drawingIndex < 0} onClick={() => void closePaperPosition(position)}>{position.closed ? 'Cerrada' : 'Cerrar posición'}</button></td></tr>;
     })}</tbody></table></div>}
   </section>;
 
