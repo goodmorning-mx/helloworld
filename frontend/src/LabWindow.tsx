@@ -70,8 +70,7 @@ function LabChart({ points, resolution, mode }: { points: LabSeriesPoint[]; reso
   </div>;
 }
 
-export default function LabWindow({ initialSymbol = 'BTCUSDT', initialBars = [], onClose }: { initialSymbol?: string; initialBars?: MarketBar[]; onClose?: () => void }) {
-  const [symbol, setSymbol] = useState(initialSymbol);
+export default function LabWindow({ activeSymbol = 'BTCUSDT', initialBars = [], onClose }: { activeSymbol?: string; initialBars?: MarketBar[]; onClose?: () => void }) {
   const [direction, setDirection] = useState<LabDirection>('long');
   const [resolution, setResolution] = useState<LabResolution>(5);
   const [capitalModel, setCapitalModel] = useState<LabCapitalModel>('compound');
@@ -107,6 +106,14 @@ export default function LabWindow({ initialSymbol = 'BTCUSDT', initialBars = [],
     </button>;
   }
 
+  useEffect(() => {
+    autoLoadStarted.current = false;
+    setLoadedThirtyDays(false);
+    setBars(initialBars);
+    setRows([]);
+    setMessage(`Preparando el estudio para ${activeSymbol}…`);
+  }, [activeSymbol]);
+
   function analyzeLoaded(nextBars: MarketBar[], nextResolution = resolution, nextModel = capitalModel) {
     const normalized = nextResolution === 5 ? aggregateBars(nextBars, 5) : nextBars;
     setRows(analyzeLab(normalized, direction, horizon, riskFraction, nextResolution, nextModel));
@@ -114,8 +121,8 @@ export default function LabWindow({ initialSymbol = 'BTCUSDT', initialBars = [],
 
   useEffect(() => {
     if (loadedThirtyDays) return;
-    void readCachedBars(symbol, '1m').then(cached => {
-      const available = initialBars.length > 0 && symbol === initialSymbol ? initialBars : cached;
+    void readCachedBars(activeSymbol, '1m').then(cached => {
+      const available = initialBars.length > 0 ? initialBars : cached;
       if (available.length > 0) {
         setBars(available);
         const normalized = resolution === 5 ? aggregateBars(available, 5) : available;
@@ -127,13 +134,13 @@ export default function LabWindow({ initialSymbol = 'BTCUSDT', initialBars = [],
         void run();
       }
     });
-  }, [capitalModel, direction, horizon, initialBars, initialSymbol, loadedThirtyDays, resolution, riskFraction, symbol]);
+  }, [activeSymbol, capitalModel, direction, horizon, initialBars, loadedThirtyDays, resolution, riskFraction]);
 
   async function run() {
     setLoading(true);
     setMessage('Leyendo cache OHLC y completando hasta 30 días…');
     try {
-      const loaded = await loadThirtyDays(symbol, '1m');
+      const loaded = await loadThirtyDays(activeSymbol, '1m');
       setBars(loaded);
       setLoadedThirtyDays(true);
       analyzeLoaded(loaded);
@@ -148,12 +155,11 @@ export default function LabWindow({ initialSymbol = 'BTCUSDT', initialBars = [],
 
   const content = <main className={`lab-window${onClose ? ' lab-window-modal' : ''}`}>
     <header className="lab-window-header">
-      <div><span className="lab-kicker">GOODMORNING RESEARCH</span><h1>MAE · MFE Lab</h1><p>TP, SL y leverage por momento de entrada.</p></div>
+      <div><span className="lab-kicker">GOODMORNING RESEARCH</span><h1>MAE · MFE Lab</h1><p>Asistencia en tiempo real · símbolo activo <strong className="lab-symbol-badge">{activeSymbol}</strong></p></div>
       {onClose && <button className="lab-close-button" onClick={onClose} aria-label="Cerrar Lab">×</button>}
       <button className={`lab-load-button${loadedThirtyDays ? ' lab-load-complete' : ''}`} onClick={() => void run()} disabled={loading}>{loading ? 'Analizando…' : loadedThirtyDays ? '30 días cargados' : 'Cargar 30 días'}</button>
     </header>
     <section className="lab-controls" aria-label="Parámetros del estudio">
-      <label>Símbolo<select value={symbol} onChange={event => { autoLoadStarted.current = false; setLoadedThirtyDays(false); setBars([]); setRows([]); setSymbol(event.target.value); }}>{['BTCUSDT', 'ETHUSDT', 'BNBUSDT', 'SOLUSDT', 'XRPUSDT', 'DOGEUSDT'].map(value => <option key={value}>{value}</option>)}</select></label>
       <label>Dirección<select value={direction} onChange={event => setDirection(event.target.value as LabDirection)}><option value="long">Long</option><option value="short">Short</option></select></label>
       <label>Horizonte (velas {resolution}m)<input type="number" min="1" max="576" value={horizon} onChange={event => setHorizon(Math.max(1, Math.min(576, Number(event.target.value) || 1)))} /></label>
       <label>Riesgo sobre margen<input type="number" min="0.05" max="1" step="0.05" value={riskFraction} onChange={event => setRiskFraction(Math.max(.05, Math.min(1, Number(event.target.value) || .05)))} /></label>
