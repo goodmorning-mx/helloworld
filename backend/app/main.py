@@ -18,6 +18,8 @@ from gm_mcp import Permission, RequestContext, ToolRegistry, tool
 from app.config import get_settings
 from app.database import create_database_engine
 from app.binance_credentials import BinanceCredentialStore, BinanceMonitorManager
+from app.ctrader_credentials import CTraderCredentialStore
+from app.ctrader_runtime import CTraderManager
 from app.paper_operations import PaperOperationStore
 
 settings = get_settings()
@@ -31,6 +33,8 @@ conversations: dict[str, Conversation] = {}
 paper_orders: list[dict[str, object]] = []
 binance_credentials = BinanceCredentialStore(engine, settings)
 binance_manager = BinanceMonitorManager(binance_credentials, settings)
+ctrader_credentials = CTraderCredentialStore(engine, settings)
+ctrader_manager = CTraderManager(settings, ctrader_credentials)
 paper_operation_store = PaperOperationStore(engine)
 
 
@@ -133,6 +137,35 @@ class BinanceCredentialsInput(BaseModel):
     api_secret: str = Field(min_length=10, max_length=256)
 
 
+class CTraderCredentialsInput(BaseModel):
+    access_token: str = Field(min_length=10, max_length=4096)
+    refresh_token: str = Field(min_length=10, max_length=4096)
+    account_id: int = Field(gt=0)
+
+
+class CTraderOrderInput(BaseModel):
+    symbol: str = Field(min_length=3, max_length=32)
+    side: Literal["BUY", "SELL"]
+    volume: int = Field(gt=0, le=2_000_000_000)
+    stop_loss: float | None = Field(default=None, gt=0)
+    take_profit: float | None = Field(default=None, gt=0)
+    comment: str = Field(default="helloworld", max_length=50)
+    confirmed: bool = False
+
+
+class CTraderCloseInput(BaseModel):
+    position_id: int = Field(gt=0)
+    volume: int = Field(gt=0, le=2_000_000_000)
+    confirmed: bool = False
+
+
+class CTraderAmendInput(BaseModel):
+    position_id: int = Field(gt=0)
+    stop_loss: float | None = Field(default=None, gt=0)
+    take_profit: float | None = Field(default=None, gt=0)
+    confirmed: bool = False
+
+
 class PaperOperationInput(BaseModel):
     symbol: str = Field(min_length=1, max_length=32)
     side: Literal["long", "short"]
@@ -157,6 +190,7 @@ def initialize_auth_schema() -> None:
 @app.on_event("shutdown")
 def stop_binance_monitor() -> None:
     binance_manager.stop_all()
+    ctrader_manager.stop_all()
 
 
 @app.post("/auth/register")
@@ -240,6 +274,91 @@ def save_binance_credentials(payload: BinanceCredentialsInput, identity: AuthIde
 def delete_binance_credentials(identity: AuthIdentity = Depends(identity_dependency(auth_service))) -> dict[str, object]:
     binance_manager.delete(identity.user_id)
     return {"configured": False, "message": "Credenciales de Binance eliminadas."}
+
+
+@app.get("/trading/ctrader/credentials")
+def ctrader_credentials_status(identity: AuthIdentity = Depends(identity_dependency(auth_service))) -> dict[str, object]:
+    return {
+        **ctrader_credentials.status(identity.user_id),
+        "enabled": settings.ctrader_enabled,
+        "broker": "ctrader",
+        "symbols": list(settings.ctrader_symbol_list),
+    }
+
+
+@app.put("/trading/ctrader/credentials")
+def save_ctrader_credentials(payload: CTraderCredentialsInput, identity: AuthIdentity = Depends(identity_dependency(auth_service))) -> dict[str, object]:
+    if not settings.ctrader_enabled:
+        raise HTTPException(status_code=503, detail="El broker cTrader no está habilitado en este entorno.")
+    return {
+        **ctrader_credentials.save(identity.user_id, payload.access_token, payload.refresh_token, payload.account_id),
+        "enabled": settings.ctrader_enabled,
+        "broker": "ctrader",
+        "symbols": list(settings.ctrader_symbol_list),
+        "message": "Credenciales cTrader guardadas de forma segura.",
+    }
+
+
+@app.delete("/trading/ctrader/credentials")
+def delete_ctrader_credentials(identity: AuthIdentity = Depends(identity_dependency(auth_service))) -> dict[str, object]:
+    ctrader_credentials.delete(identity.user_id)
+    ctrader_manager.stop_user(identity.user_id)
+    return {"configured": False, "broker": "ctrader", "message": "Credenciales cTrader eliminadas."}
+
+
+@app.get("/trading/ctrader")
+def ctrader_account(identity: AuthIdentity = Depends(identity_dependency(auth_service))) -> dict[str, object]:
+    return ctrader_manager.snapshot(identity.user_id)
+
+
+@app.get("/trading/ctrader/candles/{symbol}")
+def ctrader_candles(symbol: str, interval: str = "1m", days: int = 1, identity: AuthIdentity = Depends(identity_dependency(auth_service))) -> dict[str, object]:
+    if interval not in {"1m", "5m", "15m", "30m", "1h"}:
+        raise HTTPException(status_code=400, detail="Intervalo cTrader no soportado.")
+    if not 1 <= days <= 30:
+        raise HTTPException(status_code=400, detail="days debe estar entre 1 y 30.")
+    status = ctrader_manager.snapshot(identity.user_id)
+    session = ctrader_manager.session(identity.user_id)
+    if session is None or not status.get("healthy"):
+        raise HTTPException(status_code=503, detail=status.get("error_message") or "cTrader no está conectado.")
+    now_ms = int(__import__("time").time() * 1000)
+    rows = session.candles(symbol, interval, now_ms - days * 86400000, now_ms)
+    return {"broker": "ctrader", "symbol": symbol.upper(), "interval": interval, "data": rows}
+
+
+@app.post("/trading/ctrader/orders")
+def place_ctrader_order(payload: CTraderOrderInput, identity: AuthIdentity = Depends(identity_dependency(auth_service))) -> dict[str, object]:
+    if not payload.confirmed:
+        raise HTTPException(status_code=409, detail="Confirma explícitamente la operación real antes de enviarla a cTrader.")
+    try:
+        result = ctrader_manager.execute(identity.user_id, payload.model_dump(exclude={"confirmed"}))
+    except (RuntimeError, ValueError, TimeoutError) as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    return {"broker": "ctrader", "mode": "real", **result}
+
+
+@app.post("/trading/ctrader/positions/close")
+def close_ctrader_position(payload: CTraderCloseInput, identity: AuthIdentity = Depends(identity_dependency(auth_service))) -> dict[str, object]:
+    if not payload.confirmed:
+        raise HTTPException(status_code=409, detail="Confirma explícitamente el cierre real antes de enviarlo a cTrader.")
+    try:
+        result = ctrader_manager.execute_raw(identity.user_id, {"type": "CLOSE_POSITION", **payload.model_dump(exclude={"confirmed"})})
+    except (RuntimeError, ValueError, TimeoutError) as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    return {"broker": "ctrader", "mode": "real", **result}
+
+
+@app.post("/trading/ctrader/positions/amend")
+def amend_ctrader_position(payload: CTraderAmendInput, identity: AuthIdentity = Depends(identity_dependency(auth_service))) -> dict[str, object]:
+    if not payload.confirmed:
+        raise HTTPException(status_code=409, detail="Confirma explícitamente el cambio real antes de enviarlo a cTrader.")
+    if payload.stop_loss is None and payload.take_profit is None:
+        raise HTTPException(status_code=400, detail="Indica stop loss o take profit.")
+    try:
+        result = ctrader_manager.execute_raw(identity.user_id, {"type": "AMEND_POSITION", **payload.model_dump(exclude={"confirmed"})})
+    except (RuntimeError, ValueError, TimeoutError) as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    return {"broker": "ctrader", "mode": "real", **result}
 
 
 @app.post("/agent/chat")

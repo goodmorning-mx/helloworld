@@ -11,6 +11,19 @@ const apiUrl = configuredApiUrl === '/api' && window.location.hostname === 'dev.
   ? 'https://api.dev.helloworld.goodmorning.mx'
   : configuredApiUrl;
 
+type CTraderCandleRow = { timestamp: number; low: number; delta_open: number; delta_high: number; delta_close: number };
+function parseCTraderCandles(payload: unknown): Array<{ time: UTCTimestamp; open: number; high: number; low: number; close: number }> {
+  const rows = (payload as { data?: CTraderCandleRow[] })?.data;
+  if (!Array.isArray(rows)) return [];
+  return rows.map(row => ({
+    time: Math.floor(Number(row.timestamp) * 60) as UTCTimestamp,
+    low: Number(row.low),
+    open: Number(row.low) + Number(row.delta_open),
+    high: Number(row.low) + Number(row.delta_high),
+    close: Number(row.low) + Number(row.delta_close),
+  })).filter(row => Number.isFinite(Number(row.time)) && Number.isFinite(row.open) && Number.isFinite(row.high) && Number.isFinite(row.low) && Number.isFinite(row.close));
+}
+
 const SESSION_TIMEZONE = 'America/Mexico_City';
 const MARKET_SESSIONS = [
   { name: 'Tokyo', open: 18, close: 3, color: '#f59e0b' },
@@ -108,12 +121,22 @@ type BinanceAccount = {
   total_unrealized_pnl?: string | null; positions?: BinancePosition[];
   events?: Array<{ time?: string; type?: string; symbol?: string; status?: string }>;
 };
+type CTraderAccount = {
+  enabled?: boolean; configured?: boolean; healthy?: boolean; stream_connected?: boolean;
+  account_id?: number | string | null; symbols?: string[]; error_kind?: string | null;
+  error_title?: string | null; error_message?: string | null; error_action?: string | null;
+  last_tick?: { symbol?: string; bid?: number; ask?: number; price?: number; time?: number } | null;
+};
 
 function ProfileModal({ onClose, onSaved }: { onClose: () => void; onSaved: () => void }) {
   const auth = useAuth();
   const [apiKey, setApiKey] = useState('');
   const [apiSecret, setApiSecret] = useState('');
   const [status, setStatus] = useState<{ configured: boolean; masked_api_key?: string | null; updated_at?: string | null } | null>(null);
+  const [ctraderAccessToken, setCtraderAccessToken] = useState('');
+  const [ctraderRefreshToken, setCtraderRefreshToken] = useState('');
+  const [ctraderAccountId, setCtraderAccountId] = useState('');
+  const [ctraderStatus, setCtraderStatus] = useState<{ configured: boolean; enabled?: boolean; account_id?: string | null; updated_at?: string | null } | null>(null);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [removing, setRemoving] = useState(false);
@@ -128,6 +151,10 @@ function ProfileModal({ onClose, onSaved }: { onClose: () => void; onSaved: () =
       .then(payload => { if (active) setStatus(payload); })
       .catch(reason => { if (active) setError(reason instanceof Error ? reason.message : 'No se pudo consultar tu perfil.'); })
       .finally(() => { if (active) setLoading(false); });
+    fetch(`${apiUrl}/trading/ctrader/credentials`, { headers, credentials: 'include' })
+      .then(async response => { if (!response.ok) throw new Error('No se pudo consultar cTrader.'); return response.json() as Promise<typeof ctraderStatus>; })
+      .then(payload => { if (active) setCtraderStatus(payload); })
+      .catch(() => undefined);
     return () => { active = false; };
   }, [auth.accessToken]);
 
@@ -152,12 +179,35 @@ function ProfileModal({ onClose, onSaved }: { onClose: () => void; onSaved: () =
     finally { setRemoving(false); }
   }
 
+  async function saveCtrader(event: FormEvent) {
+    event.preventDefault(); setSaving(true); setError(''); setMessage('');
+    try {
+      const response = await fetch(`${apiUrl}/trading/ctrader/credentials`, { method: 'PUT', headers: { ...headers, 'Content-Type': 'application/json' }, credentials: 'include', body: JSON.stringify({ access_token: ctraderAccessToken, refresh_token: ctraderRefreshToken, account_id: Number(ctraderAccountId) }) });
+      const payload = await response.json() as { detail?: string; message?: string; configured?: boolean; account_id?: string };
+      if (!response.ok) throw new Error(payload.detail ?? 'No se pudieron guardar las credenciales cTrader.');
+      setCtraderStatus(payload as typeof ctraderStatus); setCtraderAccessToken(''); setCtraderRefreshToken(''); setCtraderAccountId(''); setMessage(payload.message ?? 'Credenciales cTrader guardadas.'); onSaved();
+    } catch (reason) { setError(reason instanceof Error ? reason.message : 'No se pudieron guardar las credenciales cTrader.'); }
+    finally { setSaving(false); }
+  }
+
+  async function removeCtrader() {
+    setRemoving(true); setError(''); setMessage('');
+    try {
+      const response = await fetch(`${apiUrl}/trading/ctrader/credentials`, { method: 'DELETE', headers, credentials: 'include' });
+      if (!response.ok) throw new Error('No se pudieron eliminar las credenciales cTrader.');
+      setCtraderStatus({ configured: false }); setMessage('Credenciales cTrader eliminadas.'); onSaved();
+    } catch (reason) { setError(reason instanceof Error ? reason.message : 'No se pudieron eliminar las credenciales cTrader.'); }
+    finally { setRemoving(false); }
+  }
+
   return <div className="profile-modal-backdrop" role="presentation" onClick={onClose}>
     <section className="profile-modal" role="dialog" aria-modal="true" aria-labelledby="profile-title" onClick={event => event.stopPropagation()}>
       <div className="profile-modal-head"><div><span className="positions-kicker">CUENTA</span><h2 id="profile-title">Perfil</h2></div><button onClick={onClose} aria-label="Cerrar">×</button></div>
       <div className="profile-identity"><span className="profile-avatar profile-avatar-large">{(auth.identity?.name ?? auth.identity?.email ?? 'U').slice(0, 1).toUpperCase()}</span><div><strong>{auth.identity?.name ?? 'Usuario'}</strong><small>{auth.identity?.email ?? ''}</small></div></div>
       <div className="profile-section"><span className="positions-kicker">BINANCE · FUTURES</span><p className="profile-note">Tus claves son por usuario, se cifran en el backend y nunca se muestran de nuevo. Usa una key sin permisos de retiro y limita su IP.</p>{loading ? <p className="profile-muted">Consultando configuración…</p> : status?.configured ? <p className="profile-configured">Configurada · {status.masked_api_key}</p> : <p className="profile-muted">Aún no hay credenciales configuradas.</p>}</div>
       <form className="profile-form" onSubmit={save}><label className="profile-field"><span>API key</span><input type="text" value={apiKey} onChange={event => setApiKey(event.target.value)} autoComplete="off" placeholder={status?.configured ? 'Reemplazar API key' : 'Pega tu API key'} required /></label><label className="profile-field"><span>API secret</span><input type="password" value={apiSecret} onChange={event => setApiSecret(event.target.value)} autoComplete="new-password" placeholder="Pega tu API secret" required /></label>{error && <p className="profile-error" role="alert">{error}</p>}{message && <p className="profile-success" role="status">{message}</p>}<div className="profile-actions"><button className="profile-save" type="submit" disabled={saving || removing}>{saving ? 'Guardando…' : 'Guardar credenciales'}</button>{status?.configured && <button className="profile-remove" type="button" onClick={() => void remove()} disabled={saving || removing}>{removing ? 'Eliminando…' : 'Eliminar claves'}</button>}</div></form>
+      <div className="profile-section profile-broker-section"><span className="positions-kicker">cTRADER · FOREX</span><p className="profile-note">El client ID y secreto de la aplicación permanecen en el backend. Aquí sólo se guardan tus tokens OAuth y el account ID, cifrados por usuario.</p>{!ctraderStatus?.enabled ? <p className="profile-muted">cTrader aún no está habilitado en este entorno.</p> : ctraderStatus.configured ? <p className="profile-configured">Configurada · cuenta {ctraderStatus.account_id ?? '—'}</p> : <p className="profile-muted">Aún no hay una cuenta cTrader configurada.</p>}</div>
+      <form className="profile-form" onSubmit={saveCtrader}><label className="profile-field"><span>Access token</span><input type="password" value={ctraderAccessToken} onChange={event => setCtraderAccessToken(event.target.value)} autoComplete="off" placeholder="Pega tu access token" required /></label><label className="profile-field"><span>Refresh token</span><input type="password" value={ctraderRefreshToken} onChange={event => setCtraderRefreshToken(event.target.value)} autoComplete="off" placeholder="Pega tu refresh token" required /></label><label className="profile-field"><span>Account ID</span><input type="number" value={ctraderAccountId} onChange={event => setCtraderAccountId(event.target.value)} placeholder="Ej. 1234567" required /></label>{error && <p className="profile-error" role="alert">{error}</p>}{message && <p className="profile-success" role="status">{message}</p>}<div className="profile-actions"><button className="profile-save" type="submit" disabled={saving || removing || !ctraderStatus?.enabled}>{saving ? 'Guardando…' : 'Guardar cTrader'}</button>{ctraderStatus?.configured && <button className="profile-remove" type="button" onClick={() => void removeCtrader()} disabled={saving || removing}>{removing ? 'Eliminando…' : 'Eliminar cTrader'}</button>}</div></form>
     </section>
   </div>;
 }
@@ -193,6 +243,35 @@ function BinanceAccountPanel({ revision = 0 }: { revision?: number }) {
     <div className="positions-table-scroll"><table className="positions-table binance-table"><thead><tr><th>Símbolo</th><th>Lado</th><th>Cantidad</th><th>Entrada</th><th>Mark</th><th>UPNL</th></tr></thead><tbody>{account?.positions?.length ? account.positions.map((position, index) => <tr key={`${position.symbol}-${index}`}><td>{position.symbol ?? '—'}</td><td className={position.side === 'LONG' ? 'value-positive' : 'value-negative'}>{position.side ?? '—'}</td><td>{position.quantity ?? '—'}</td><td>{position.entry_price ?? '—'}</td><td>{position.mark_price ?? '—'}</td><td>{position.unrealized_pnl ?? '—'}</td></tr>) : <tr><td colSpan={6}>Sin posiciones abiertas</td></tr>}</tbody></table></div>
     <h3>Últimos eventos del User Stream</h3>
     <div className="binance-events">{account?.events?.length ? account.events.slice(-5).reverse().map((event, index) => <div key={`${event.time}-${index}`}><span>{event.time ? new Date(event.time).toLocaleTimeString() : '—'}</span>{event.type ?? 'evento'} · {event.symbol ?? ''} · {event.status ?? ''}</div>) : 'Sin eventos recientes'}</div>
+  </section>;
+}
+
+function CTraderAccountPanel({ revision = 0 }: { revision?: number }) {
+  const auth = useAuth();
+  const [account, setAccount] = useState<CTraderAccount | null>(null);
+  const [loading, setLoading] = useState(true);
+  useEffect(() => {
+    let active = true;
+    const load = async () => {
+      try {
+        const response = await fetch(`${apiUrl}/trading/ctrader`, { headers: auth.accessToken ? { Authorization: `Bearer ${auth.accessToken}` } : {}, credentials: 'include' });
+        if (!response.ok) throw new Error(`cTrader ${response.status}`);
+        const payload = await response.json() as CTraderAccount;
+        if (active) setAccount(payload);
+      } catch {
+        if (active) setAccount({ enabled: true, healthy: false, error_kind: 'UNAVAILABLE', error_title: 'cTrader no está disponible', error_message: 'No fue posible consultar el monitor cTrader.' });
+      } finally { if (active) setLoading(false); }
+    };
+    void load();
+    const timer = window.setInterval(() => void load(), 10_000);
+    return () => { active = false; window.clearInterval(timer); };
+  }, [auth.accessToken, revision]);
+  const online = Boolean(account?.healthy && account?.stream_connected);
+  return <section className="binance-account-panel ctrader-account-panel" aria-label="Estado de cTrader">
+    <div className="binance-panel-head"><div><span className="positions-kicker">cTRADER · FOREX</span><h2>Estado de cTrader</h2></div><span className={`stream-badge ${online ? 'stream-good' : 'stream-bad'}`}>{loading ? 'Consultando…' : online ? 'Saludable · Stream' : 'Sin conexión'}</span></div>
+    {account?.error_message && <div className="binance-error" role="status"><strong>{account.error_title ?? 'cTrader no está disponible'}</strong><span>{account.error_message}</span>{account.error_action && <small>Qué hacer: {account.error_action}</small>}<em>El monitor seguirá reintentando automáticamente.</em></div>}
+    <div className="binance-metrics"><div><small>Cuenta</small><strong>{account?.account_id ?? '—'}</strong></div><div><small>Símbolos cTrader</small><strong>{account?.symbols?.length ?? 0}</strong></div><div><small>Bid / Ask</small><strong>{account?.last_tick ? `${account.last_tick.bid?.toFixed(5)} / ${account.last_tick.ask?.toFixed(5)}` : '—'}</strong></div><div><small>Stream</small><strong>{online ? 'Activo' : '—'}</strong></div></div>
+    <h3>Símbolos forex disponibles</h3><div className="binance-events">{account?.symbols?.length ? account.symbols.join(' · ') : 'Configura una cuenta cTrader desde Perfil.'}</div>
   </section>;
 }
 
@@ -291,8 +370,10 @@ function Workspace() {
   const loadingOlderRef = useRef(false);
   const candleDataRef = useRef<Array<{ time: UTCTimestamp; close: number }>>([]);
   const [symbol, setSymbol] = useState('BTCUSDT');
+  const [broker, setBroker] = useState<'binance' | 'ctrader'>('binance');
   const [interval, setInterval] = useState<'1s' | '1m' | '3m' | '5m' | '15m'>('5m');
   const entryInterval = '1m' as const;
+  const brokerSymbols = broker === 'ctrader' ? ['AUDUSD', 'XAUUSD', 'XAGUSD'] : ['BTCUSDT', 'ETHUSDT', 'BNBUSDT', 'SOLUSDT', 'XRPUSDT', 'DOGEUSDT'];
   const [timezone, setTimezone] = useState('America/Mexico_City');
   const [showSessions, setShowSessions] = useState(true);
   const [stageSize, setStageSize] = useState({ width: 1, height: 1 });
@@ -533,6 +614,26 @@ function Workspace() {
     chart.timeScale().subscribeVisibleLogicalRangeChange(refreshDrawings);
     candleDataRef.current = [];
     candleBarsRef.current = [];
+    if (broker === 'ctrader') {
+      let polling = 0;
+      const loadCTrader = () => fetch(`${apiUrl}/trading/ctrader/candles/${encodeURIComponent(symbol)}?interval=${entryInterval}&days=1`, { headers: auth.accessToken ? { Authorization: `Bearer ${auth.accessToken}` } : {}, credentials: 'include' })
+        .then(response => response.ok ? response.json() : Promise.reject(new Error(`cTrader ${response.status}`)))
+        .then(payload => {
+          if (!active) return;
+          const parsed = parseCTraderCandles(payload);
+          if (!parsed.length) return;
+          candleBarsRef.current = parsed;
+          candleDataRef.current = parsed.map(({ time, close }) => ({ time, close }));
+          candles.setData(parsed);
+          if (!polling) chart.timeScale().fitContent();
+          polling += 1;
+          setViewportRevision(value => value + 1);
+        })
+        .catch(() => undefined);
+      void loadCTrader();
+      const timer = window.setInterval(() => void loadCTrader(), 5_000);
+      return () => { active = false; window.clearInterval(timer); chart.timeScale().unsubscribeVisibleTimeRangeChange(refreshDrawings); chart.timeScale().unsubscribeVisibleLogicalRangeChange(refreshDrawings); chartRef.current = null; candlesRef.current = null; candleDataRef.current = []; candleBarsRef.current = []; loadingOlderRef.current = false; chart.remove(); };
+    }
     const stream = new WebSocket(`wss://stream.binance.com:9443/ws/${symbol.toLowerCase()}@kline_${entryInterval}`);
     fetch(`https://api.binance.com/api/v3/klines?symbol=${symbol}&interval=${entryInterval}&limit=500`)
       .then(response => response.json())
@@ -604,7 +705,7 @@ function Workspace() {
       loadingOlderRef.current = false;
       chart.remove();
     };
-  }, [symbol]);
+  }, [auth.accessToken, broker, symbol]);
 
   useEffect(() => {
     if (mobilePwa || !overviewChartContainer.current) return;
@@ -657,6 +758,26 @@ function Workspace() {
     chart.timeScale().subscribeVisibleTimeRangeChange(refreshOverview);
     chart.timeScale().subscribeVisibleLogicalRangeChange(refreshOverview);
     let active = true;
+    if (broker === 'ctrader') {
+      let polling = 0;
+      const loadCTrader = () => fetch(`${apiUrl}/trading/ctrader/candles/${encodeURIComponent(symbol)}?interval=${interval === '1s' ? '1m' : interval}&days=7`, { headers: auth.accessToken ? { Authorization: `Bearer ${auth.accessToken}` } : {}, credentials: 'include' })
+        .then(response => response.ok ? response.json() : Promise.reject(new Error(`cTrader ${response.status}`)))
+        .then(payload => {
+          if (!active) return;
+          const parsed = parseCTraderCandles(payload);
+          if (!parsed.length) return;
+          overviewBarsRef.current = parsed;
+          overviewCandleDataRef.current = parsed.map(({ time, close }) => ({ time, close }));
+          candles.setData(parsed);
+          if (!polling) chart.timeScale().fitContent();
+          polling += 1;
+          setOverviewRevision(value => value + 1);
+        })
+        .catch(() => undefined);
+      void loadCTrader();
+      const timer = window.setInterval(() => void loadCTrader(), 5_000);
+      return () => { active = false; window.clearInterval(timer); chart.timeScale().unsubscribeVisibleTimeRangeChange(refreshOverview); chart.timeScale().unsubscribeVisibleLogicalRangeChange(refreshOverview); overviewChartRef.current = null; overviewCandlesRef.current = null; overviewCandleDataRef.current = []; overviewBarsRef.current = []; overviewLoadingOlderRef.current = false; chart.remove(); };
+    }
     const stream = new WebSocket(`wss://stream.binance.com:9443/ws/${symbol.toLowerCase()}@kline_${interval}`);
     fetch(`https://api.binance.com/api/v3/klines?symbol=${symbol}&interval=${interval}&limit=300`)
       .then(response => response.json())
@@ -679,7 +800,7 @@ function Workspace() {
       candles.update(next);
     };
     return () => { active = false; stream.close(); chart.timeScale().unsubscribeVisibleTimeRangeChange(refreshOverview); chart.timeScale().unsubscribeVisibleLogicalRangeChange(refreshOverview); overviewChartRef.current = null; overviewCandlesRef.current = null; overviewCandleDataRef.current = []; overviewBarsRef.current = []; overviewLoadingOlderRef.current = false; chart.remove(); };
-  }, [symbol, interval, timezone, mobilePwa]);
+  }, [auth.accessToken, broker, symbol, interval, timezone, mobilePwa]);
 
   useEffect(() => {
     const chart = chartRef.current;
@@ -1190,9 +1311,9 @@ function Workspace() {
   const avatarLabel = (auth.identity?.name ?? auth.identity?.email ?? 'U').slice(0, 1).toUpperCase();
   const profileButton = <button className="profile-avatar" onClick={() => setShowProfile(true)} aria-label="Abrir perfil" title="Perfil">{avatarLabel}</button>;
   const labButton = <button className="lab-open-button" onClick={() => labSection.current?.scrollIntoView({ behavior: 'smooth', block: 'start' })} aria-label="Ir a GoodMorning Lab">Lab</button>;
-  const desktopHeader = <div className="symbol-bar"><select className="symbol-select" value={symbol} onChange={event => setSymbol(event.target.value)} aria-label="Símbolo">
-    {['BTCUSDT', 'ETHUSDT', 'BNBUSDT', 'SOLUSDT', 'XRPUSDT', 'DOGEUSDT'].map(option => <option key={option}>{option}</option>)}
-  </select><select className="interval-select" value={interval} onChange={event => setInterval(event.target.value as typeof interval)} aria-label="Intervalo de contexto">{(['1s', '1m', '3m', '5m', '15m'] as const).map(value => <option key={value} value={value}>{value}</option>)}</select><span className="chart-source">BINANCE · {entryInterval.toUpperCase()} ENTRADA · {interval.toUpperCase()} CONTEXTO</span><button className={`session-toggle ${showSessions ? 'session-active' : ''}`} onClick={() => setShowSessions(value => !value)} aria-label="Mostrar sesiones" title="Mostrar sesiones">Sesiones</button><div className="chart-tools" aria-label="Herramientas del gráfico">
+  const desktopHeader = <div className="symbol-bar"><select className="broker-select" value={broker} onChange={event => { const next = event.target.value as 'binance' | 'ctrader'; setBroker(next); setSymbol(next === 'ctrader' ? 'AUDUSD' : 'BTCUSDT'); }} aria-label="Broker"><option value="binance">Binance</option><option value="ctrader">cTrader</option></select><select className="symbol-select" value={symbol} onChange={event => setSymbol(event.target.value)} aria-label="Símbolo">
+    {brokerSymbols.map(option => <option key={option}>{option}</option>)}
+  </select><select className="interval-select" value={interval} onChange={event => setInterval(event.target.value as typeof interval)} aria-label="Intervalo de contexto">{(['1s', '1m', '3m', '5m', '15m'] as const).map(value => <option key={value} value={value}>{value}</option>)}</select><span className="chart-source">{broker.toUpperCase()} · {entryInterval.toUpperCase()} ENTRADA · {interval.toUpperCase()} CONTEXTO</span><button className={`session-toggle ${showSessions ? 'session-active' : ''}`} onClick={() => setShowSessions(value => !value)} aria-label="Mostrar sesiones" title="Mostrar sesiones">Sesiones</button><div className="chart-tools" aria-label="Herramientas del gráfico">
     {labButton}<button className={!tool ? 'tool-active' : ''} onClick={() => setTool(null)} aria-label="Seleccionar y navegar" title="Seleccionar y navegar">↖</button>
     {([['line', '╱', 'Línea'], ['ruler', '▥', 'Regla'], ['long', 'L', 'Long'], ['short', 'S', 'Short']] as const).map(([key, icon, label]) => <button key={key} className={tool === key ? 'tool-active' : ''} onClick={() => chooseTool(key)} aria-label={label} title={label}>{icon}</button>)}
     <button onClick={() => setDrawings(current => current.filter(drawing => drawing.paper))} aria-label="Borrar dibujos" title="Borrar dibujos">×</button>
@@ -1202,13 +1323,13 @@ function Workspace() {
   const chartsRow = <div className="charts-row"><section ref={overviewStage} className={`secondary-chart ${tool ? 'drawing-mode' : ''}`} onPointerDownCapture={event => startDrawing(event, 'context')} onPointerMoveCapture={updateDrawing} onPointerUpCapture={finishDrawing} onPointerCancelCapture={() => { setDrawingStart(null); setDrawingEnd(null); setMoveStart(null); setResizeStart(null); setLassoStart(null); setLassoEnd(null); }}><div className="chart-panel-label">5M · CONTEXTO · BTCUSDT</div><div ref={overviewChartContainer} className="overview-chart" /><svg className="overview-overlay" viewBox={`0 0 ${overviewSize.width} ${overviewSize.height}`} preserveAspectRatio="none" aria-hidden="true">{renderOverviewSessions()}{renderOverviewInterestMarkers()}{renderPriceLineHitAreas('context')}{drawings.map((drawing, index) => (!drawing.paper || !drawing.closed || drawing.id === visibleClosedId) && drawing.chart === 'context' ? renderDrawing(drawing, index, 'context') : null)}{tool && drawingStart && drawingEnd && drawingCanvas === 'context' && renderDrawing({ type: tool, chart: 'context', start: drawingStart, end: drawingEnd }, 'preview', 'context')}{lassoStart && lassoEnd && drawingCanvas === 'context' && <rect x={Math.min(lassoStart.x, lassoEnd.x)} y={Math.min(lassoStart.y, lassoEnd.y)} width={Math.abs(lassoEnd.x - lassoStart.x)} height={Math.abs(lassoEnd.y - lassoStart.y)} className="selection-lasso" />}</svg></section><section className="primary-chart"><div className="chart-panel-label">1M · AJUSTE DE ENTRADA</div>{chartStageView}</section></div>;
 
   return mobilePwa ? <main className="trading-shell pwa-shell">
-    <header className="pwa-mobile-header"><div><span className="pwa-brand">helloworld</span><span className="pwa-market">BINANCE · {entryInterval.toUpperCase()} ENTRADA · {interval.toUpperCase()} CONTEXTO</span></div><select className="pwa-symbol-select" value={symbol} onChange={event => setSymbol(event.target.value)} aria-label="Símbolo">{['BTCUSDT', 'ETHUSDT', 'BNBUSDT', 'SOLUSDT', 'XRPUSDT', 'DOGEUSDT'].map(option => <option key={option}>{option}</option>)}</select>{profileButton}</header>
-    <section className="pwa-chart-wrap">{chartStageView}</section><BinanceAccountPanel revision={profileRevision} />{positionsTable}
+    <header className="pwa-mobile-header"><div><span className="pwa-brand">helloworld</span><span className="pwa-market">{broker.toUpperCase()} · {entryInterval.toUpperCase()} ENTRADA · {interval.toUpperCase()} CONTEXTO</span></div><select className="pwa-symbol-select" value={broker} onChange={event => { const next = event.target.value as 'binance' | 'ctrader'; setBroker(next); setSymbol(next === 'ctrader' ? 'AUDUSD' : 'BTCUSDT'); }} aria-label="Broker"><option value="binance">Binance</option><option value="ctrader">cTrader</option></select><select className="pwa-symbol-select" value={symbol} onChange={event => setSymbol(event.target.value)} aria-label="Símbolo">{brokerSymbols.map(option => <option key={option}>{option}</option>)}</select>{profileButton}</header>
+    <section className="pwa-chart-wrap">{chartStageView}</section><BinanceAccountPanel revision={profileRevision} /><CTraderAccountPanel revision={profileRevision} />{positionsTable}
     <nav className="pwa-bottom-nav" aria-label="Controles PWA"><button onClick={() => setTool(null)} className={!tool ? 'pwa-nav-active' : ''}>↖<span>Seleccionar</span></button><button onClick={() => setMobileSheet('indicators')} className={showSessions ? 'pwa-nav-active' : ''}>◉<span>Indicadores</span></button><button onClick={() => setMobileSheet('tools')} className={tool ? 'pwa-nav-active' : ''}>⌁<span>Herramientas</span></button><button onClick={() => void auth.logout()}>⇥<span>Salir</span></button></nav>
     {mobileSheet === 'indicators' && <MobileSheet title="Indicadores" onClose={() => setMobileSheet(null)}><button className={`mobile-option ${showSessions ? 'option-active' : ''}`} onClick={() => setShowSessions(value => !value)}><span><b>Sesiones de mercado</b><small>Tokyo, Londres, Nueva York y Sydney</small></span><i>{showSessions ? '✓' : ''}</i></button><label className="mobile-field">Intervalo<select value={interval} onChange={event => setInterval(event.target.value as typeof interval)}>{(['1s', '1m', '3m', '5m', '15m'] as const).map(value => <option key={value}>{value}</option>)}</select></label><label className="mobile-field">Zona horaria<select value={timezone} onChange={event => setTimezone(event.target.value)}>{TIMEZONES.map(([label, value]) => <option key={value} value={value}>{label}</option>)}</select></label></MobileSheet>}
     {mobileSheet === 'tools' && <MobileSheet title="Herramientas" onClose={() => setMobileSheet(null)}><div className="mobile-tool-grid"><button className={!tool ? 'option-active' : ''} onClick={() => { setTool(null); setMobileSheet(null); }}>↖<span>Seleccionar</span></button>{toolOptions.map(([key, icon, label]) => <button key={key} className={tool === key ? 'option-active' : ''} onClick={() => { chooseTool(key); setMobileSheet(null); }}>{icon}<span>{label}</span></button>)}<button onClick={() => { setDrawings(current => current.filter(drawing => drawing.paper)); activePositionIndexRef.current = null; setActivePositionIndex(null); }}>×<span>Borrar dibujos</span></button></div></MobileSheet>}
     {showProfile && <ProfileModal onClose={() => setShowProfile(false)} onSaved={() => setProfileRevision(value => value + 1)} />}
-  </main> : <main className="trading-shell">{desktopHeader}{chartsRow}<BinanceAccountPanel revision={profileRevision} />{positionsTable}<section ref={labSection} className="lab-layout-section"><LabWindow initialSymbol={symbol} initialBars={candleBarsRef.current} /></section>{showProfile && <ProfileModal onClose={() => setShowProfile(false)} onSaved={() => setProfileRevision(value => value + 1)} />}</main>;
+  </main> : <main className="trading-shell">{desktopHeader}{chartsRow}<BinanceAccountPanel revision={profileRevision} /><CTraderAccountPanel revision={profileRevision} />{positionsTable}<section ref={labSection} className="lab-layout-section"><LabWindow initialSymbol={symbol} initialBars={candleBarsRef.current} /></section>{showProfile && <ProfileModal onClose={() => setShowProfile(false)} onSaved={() => setProfileRevision(value => value + 1)} />}</main>;
 }
 
 function App() {

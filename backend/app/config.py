@@ -22,6 +22,12 @@ class Settings(BaseSettings):
     binance_base_url: str = Field(default="https://fapi.binance.com", alias="BINANCE_BASE_URL")
     binance_account_monitor_enabled: bool = Field(default=True, alias="BINANCE_ACCOUNT_MONITOR_ENABLED")
     binance_credentials_encryption_key: str = Field(default="", alias="BINANCE_CREDENTIALS_ENCRYPTION_KEY")
+    ctrader_enabled: bool = Field(default=False, alias="CTRADER_ENABLED")
+    ctrader_client_id: str = Field(default="", alias="CTRADER_CLIENT_ID")
+    ctrader_client_secret: str = Field(default="", alias="CTRADER_CLIENT_SECRET")
+    ctrader_host: str = Field(default="demo.ctraderapi.com", alias="CTRADER_HOST")
+    ctrader_port: int = Field(default=5035, alias="CTRADER_PORT")
+    ctrader_symbols: str = Field(default="AUDUSD,XAUUSD,XAGUSD", alias="CTRADER_SYMBOLS")
 
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
@@ -31,6 +37,10 @@ class Settings(BaseSettings):
         if self.app_env in {"local", "dev", "development"}:
             origins.append("https://dev.helloworld.goodmorning.mx")
         return list(dict.fromkeys(origins))
+
+    @property
+    def ctrader_symbol_list(self) -> tuple[str, ...]:
+        return tuple(symbol.strip().upper() for symbol in self.ctrader_symbols.split(",") if symbol.strip())
 
 
 @lru_cache
