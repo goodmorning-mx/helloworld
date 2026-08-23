@@ -27,6 +27,7 @@ def _worker(high_queue: Any, low_queue: Any, response_queue: Any, host: str, por
         ProtoOAAccountAuthReq, ProtoOAApplicationAuthReq,
         ProtoOAGetAccountListByAccessTokenReq, ProtoOAGetTrendbarsReq,
         ProtoOASymbolsListReq, ProtoOASpotEvent, ProtoOASubscribeSpotsReq,
+        ProtoOASubscribeLiveTrendbarReq,
         ProtoOANewOrderReq, ProtoOAClosePositionReq, ProtoOAAmendPositionSLTPReq,
     )
     from twisted.internet import reactor
@@ -117,7 +118,7 @@ def _worker(high_queue: Any, low_queue: Any, response_queue: Any, host: str, por
         if hasattr(payload, "errorCode"):
             fail(getattr(payload, "description", getattr(payload, "errorCode", "symbols unavailable")))
             return
-        symbols = {str(item.symbolName): int(item.symbolId) for item in payload.symbol}
+        symbols = {str(item.symbolName).upper(): int(item.symbolId) for item in payload.symbol}
         state["symbols"] = {symbol_id: name for name, symbol_id in symbols.items()}
         emit({"type": "SYMBOLS", "data": symbols})
 
@@ -162,9 +163,14 @@ def _worker(high_queue: Any, low_queue: Any, response_queue: Any, host: str, por
     def get_candles(command: dict[str, object]) -> None:
         spot_request = ProtoOASubscribeSpotsReq()
         spot_request.ctidTraderAccountId = account_id
-        spot_request.symbolId = int(command["symbol_id"])
+        spot_request.symbolId.append(int(command["symbol_id"]))
         spot_request.subscribeToSpotTimestamp = True
         client.send(spot_request).addErrback(fail)
+        live_request = ProtoOASubscribeLiveTrendbarReq()
+        live_request.ctidTraderAccountId = account_id
+        live_request.symbolId = int(command["symbol_id"])
+        live_request.period = _period(str(command["interval"]))
+        client.send(live_request).addErrback(fail)
         request = ProtoOAGetTrendbarsReq()
         request.ctidTraderAccountId = account_id
         request.symbolId = int(command["symbol_id"])
@@ -239,6 +245,8 @@ class CTraderSession:
         self._pending: deque[dict[str, object]] = deque()
         self._lock = threading.RLock()
         self._status = {"connected": False, "ready": False, "error": None, "symbols": {}, "last_tick": None}
+        self._symbols_cache: dict[str, int] = {}
+        self._symbols_cached_at = 0.0
 
     def start(self) -> None:
         if self.is_alive():
@@ -272,11 +280,15 @@ class CTraderSession:
         return {**self._status, "process_alive": self.is_alive(), "account_id": self._credentials["account_id"]}
 
     def symbols(self, timeout: float = 30) -> dict[str, int]:
+        if self._symbols_cache and time.monotonic() - self._symbols_cached_at < 600:
+            return dict(self._symbols_cache)
         self._low.put({"type": "GET_SYMBOLS"})
         response = self._wait("SYMBOLS", timeout)
         symbols = response.get("data", {})
-        self._status["symbols"] = symbols
-        return symbols
+        self._symbols_cache = {str(name).upper(): int(symbol_id) for name, symbol_id in symbols.items()}
+        self._symbols_cached_at = time.monotonic()
+        self._status["symbols"] = self._symbols_cache
+        return dict(self._symbols_cache)
 
     def candles(self, symbol: str, interval: str, start_ms: int, end_ms: int, timeout: float = 30) -> list[dict[str, object]]:
         symbol_id = self.symbols().get(symbol.upper())
