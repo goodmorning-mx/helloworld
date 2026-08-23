@@ -36,7 +36,7 @@ def _worker(high_queue: Any, low_queue: Any, response_queue: Any, host: str, por
     from twisted.internet import reactor
 
     state = {"connected": False, "ready": False, "account_id": account_id, "accounts": [], "symbols": {},
-             "balance": None, "money_digits": None, "broker": None,
+             "balance": None, "money_digits": None, "broker": None, "trader_login": None,
              "subscribed_spots": set(), "subscribed_trendbars": set()}
     client = Client(host, port, TcpProtocol)
 
@@ -120,9 +120,10 @@ def _worker(high_queue: Any, low_queue: Any, response_queue: Any, host: str, por
         money_digits = int(getattr(trader, "moneyDigits", 0) or 0)
         balance = float(getattr(trader, "balance", 0) or 0) / (10 ** money_digits)
         broker = str(getattr(trader, "brokerName", "") or "")
-        state.update({"balance": balance, "money_digits": money_digits, "broker": broker})
+        trader_login = int(getattr(trader, "traderLogin", 0) or 0)
+        state.update({"balance": balance, "money_digits": money_digits, "broker": broker, "trader_login": trader_login})
         emit({"type": "STATUS", "connected": True, "ready": True, "account_id": account_id,
-              "balance": balance, "money_digits": money_digits, "broker": broker})
+              "balance": balance, "money_digits": money_digits, "broker": broker, "trader_login": trader_login})
 
     def on_message(_client: object, message: object) -> None:
         try:
@@ -147,9 +148,10 @@ def _worker(high_queue: Any, low_queue: Any, response_queue: Any, host: str, por
                 money_digits = int(getattr(trader, "moneyDigits", 0) or 0)
                 balance = float(getattr(trader, "balance", 0) or 0) / (10 ** money_digits)
                 broker = str(getattr(trader, "brokerName", "") or "")
-                state.update({"balance": balance, "money_digits": money_digits, "broker": broker})
+                trader_login = int(getattr(trader, "traderLogin", 0) or 0)
+                state.update({"balance": balance, "money_digits": money_digits, "broker": broker, "trader_login": trader_login})
                 emit({"type": "STATUS", "connected": True, "ready": True, "account_id": account_id,
-                      "balance": balance, "money_digits": money_digits, "broker": broker})
+                      "balance": balance, "money_digits": money_digits, "broker": broker, "trader_login": trader_login})
         except Exception as exc:
             fail(exc)
 
@@ -297,7 +299,7 @@ class CTraderSession:
         self._pending: deque[dict[str, object]] = deque()
         self._lock = threading.RLock()
         self._status = {"connected": False, "ready": False, "error": None, "symbols": {}, "last_tick": None,
-                        "balance": None, "money_digits": None, "broker": None}
+                        "balance": None, "money_digits": None, "broker": None, "trader_login": None}
         self._symbols_cache: dict[str, int] = {}
         self._symbols_cached_at = 0.0
 
@@ -324,7 +326,7 @@ class CTraderSession:
         self._process.close()
         self._process = None
         self._status = {"connected": False, "ready": False, "error": None, "symbols": {}, "last_tick": None,
-                        "balance": None, "money_digits": None, "broker": None}
+                        "balance": None, "money_digits": None, "broker": None, "trader_login": None}
         self._symbols_cache = {}
         self._symbols_cached_at = 0.0
 

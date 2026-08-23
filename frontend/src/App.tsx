@@ -123,7 +123,7 @@ type BinanceAccount = {
 };
 type CTraderAccount = {
   enabled?: boolean; configured?: boolean; healthy?: boolean; stream_connected?: boolean;
-  account_id?: number | string | null; balance?: number | null; money_digits?: number | null; broker?: string | null;
+  account_id?: number | string | null; trader_login?: number | string | null; balance?: number | null; money_digits?: number | null; broker?: string | null;
   symbols?: string[]; error_kind?: string | null;
   accounts?: Array<{ account_id: number; broker?: string; is_live?: boolean }>;
   error_title?: string | null; error_message?: string | null; error_action?: string | null;
@@ -286,7 +286,7 @@ function CTraderAccountPanel({ revision = 0 }: { revision?: number }) {
   return <section className="binance-account-panel ctrader-account-panel" aria-label="Estado de cTrader">
     <div className="binance-panel-head"><div><span className="positions-kicker">cTRADER · FOREX</span><h2>Estado de cTrader</h2></div><span className={`stream-badge ${online ? 'stream-good' : 'stream-bad'}`}>{loading ? 'Consultando…' : online ? 'Saludable · Stream' : 'Sin conexión'}</span></div>
     {account?.error_message && <div className="binance-error" role="status"><strong>{account.error_title ?? 'cTrader no está disponible'}</strong><span>{account.error_message}</span>{account.error_action && <small>Qué hacer: {account.error_action}</small>}<em>El monitor seguirá reintentando automáticamente.</em></div>}
-    <div className="binance-metrics"><div><small>Cuenta</small><strong>{account?.account_id ?? '—'}</strong></div><div><small>Balance</small><strong>{account?.balance == null ? '—' : `${account.balance.toFixed(account.money_digits ?? 2)} USD`}</strong></div><div><small>Símbolos cTrader</small><strong>{account?.symbols?.length ?? 0}</strong></div><div><small>Bid / Ask</small><strong>{account?.last_tick ? `${account.last_tick.bid?.toFixed(5)} / ${account.last_tick.ask?.toFixed(5)}` : '—'}</strong></div><div><small>Stream</small><strong>{online ? 'Activo' : '—'}</strong></div></div>
+    <div className="binance-metrics"><div><small>Cuenta broker</small><strong>{account?.trader_login ?? '—'}</strong></div><div><small>ID interno cTrader</small><strong>{account?.account_id ?? '—'}</strong></div><div><small>Balance</small><strong>{account?.balance == null ? '—' : `${account.balance.toFixed(account.money_digits ?? 2)} USD`}</strong></div><div><small>Símbolos cTrader</small><strong>{account?.symbols?.length ?? 0}</strong></div><div><small>Stream</small><strong>{online ? 'Activo' : '—'}</strong></div></div>
     <h3>Símbolos forex disponibles</h3><div className="binance-events">{account?.symbols?.length ? account.symbols.join(' · ') : 'Configura una cuenta cTrader desde Perfil.'}</div>
   </section>;
 }
