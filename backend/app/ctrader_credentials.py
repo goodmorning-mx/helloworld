@@ -79,6 +79,17 @@ class CTraderCredentialStore:
                 connection.execute(insert(credentials_table).values(**values))
         return self.status(user_id)
 
+    def update_tokens(self, user_id: str, access_token: str, refresh_token: str) -> None:
+        """Persist rotated OAuth tokens without exposing them to the client."""
+        now = datetime.now(timezone.utc)
+        values = {
+            "encrypted_access_token": self._cipher.encrypt(access_token.strip()),
+            "encrypted_refresh_token": self._cipher.encrypt(refresh_token.strip()),
+            "updated_at": now,
+        }
+        with self._engine.begin() as connection:
+            connection.execute(update(credentials_table).where(credentials_table.c.user_id == user_id).values(**values))
+
     def delete(self, user_id: str) -> None:
         with self._engine.begin() as connection:
             connection.execute(delete(credentials_table).where(credentials_table.c.user_id == user_id))

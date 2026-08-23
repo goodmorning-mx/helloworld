@@ -15,6 +15,8 @@ from queue import Empty
 from typing import Any
 from uuid import uuid4
 
+import httpx
+
 
 def _period(interval: str) -> int:
     return {"1m": 1, "5m": 5, "15m": 15, "30m": 30, "1h": 60}.get(interval, 1)
@@ -40,7 +42,13 @@ def _worker(high_queue: Any, low_queue: Any, response_queue: Any, host: str, por
         response_queue.put(payload)
 
     def fail(reason: object) -> None:
-        emit({"type": "ERROR", "error": str(reason)})
+        value = getattr(reason, "value", reason)
+        name = type(value).__name__
+        if "TimeoutError" in name:
+            error = "cTrader no respondió a tiempo durante la autenticación o consulta."
+        else:
+            error = str(value)
+        emit({"type": "ERROR", "error": error})
 
     def auth_account() -> None:
         request = ProtoOAAccountAuthReq()
@@ -378,6 +386,35 @@ class CTraderManager:
         if session:
             session.stop()
 
+    def _refresh_credentials(self, user_id: str, credentials: dict[str, object]) -> dict[str, object]:
+        refresh_token = str(credentials.get("refresh_token") or "").strip()
+        if not refresh_token or not self._settings.ctrader_client_id or not self._settings.ctrader_client_secret:
+            return credentials
+        try:
+            response = httpx.get(
+                "https://openapi.ctrader.com/apps/token",
+                params={
+                    "grant_type": "refresh_token",
+                    "refresh_token": refresh_token,
+                    "client_id": self._settings.ctrader_client_id,
+                    "client_secret": self._settings.ctrader_client_secret,
+                },
+                headers={"Accept": "application/json"},
+                timeout=10,
+            )
+            payload = response.json()
+            access_token = str(payload.get("accessToken") or "").strip()
+            rotated_refresh_token = str(payload.get("refreshToken") or refresh_token).strip()
+            if not response.is_success or not access_token:
+                return credentials
+            refreshed = {**credentials, "access_token": access_token, "refresh_token": rotated_refresh_token}
+            self._store.update_tokens(user_id, access_token, rotated_refresh_token)
+            return refreshed
+        except Exception:
+            # Keep the existing token so a temporary OAuth outage does not
+            # prevent the worker from attempting the normal connection.
+            return credentials
+
     def start_user(self, user_id: str, credentials: dict[str, object] | None = None) -> CTraderSession:
         credentials = credentials or self._store.get(user_id)
         if credentials is None:
@@ -385,6 +422,7 @@ class CTraderManager:
         with self._lock:
             session = self._sessions.get(user_id)
             if session is None:
+                credentials = self._refresh_credentials(user_id, credentials)
                 session = CTraderSession(self._settings, credentials)
                 self._sessions[user_id] = session
                 session.start()
