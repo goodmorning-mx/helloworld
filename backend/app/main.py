@@ -185,6 +185,7 @@ class PaperOperationInput(BaseModel):
 @app.on_event("startup")
 def initialize_auth_schema() -> None:
     auth_service.create_schema()
+    ctrader_manager.start_configured()
 
 
 @app.on_event("shutdown")
@@ -290,8 +291,10 @@ def ctrader_credentials_status(identity: AuthIdentity = Depends(identity_depende
 def save_ctrader_credentials(payload: CTraderCredentialsInput, identity: AuthIdentity = Depends(identity_dependency(auth_service))) -> dict[str, object]:
     if not settings.ctrader_enabled:
         raise HTTPException(status_code=503, detail="El broker cTrader no está habilitado en este entorno.")
+    saved = ctrader_credentials.save(identity.user_id, payload.access_token, payload.refresh_token, payload.account_id)
+    ctrader_manager.start_user(identity.user_id)
     return {
-        **ctrader_credentials.save(identity.user_id, payload.access_token, payload.refresh_token, payload.account_id),
+        **saved,
         "enabled": settings.ctrader_enabled,
         "broker": "ctrader",
         "symbols": list(settings.ctrader_symbol_list),

@@ -40,6 +40,11 @@ class CTraderCredentialStore:
             "account_id": row.account_id,
         }
 
+    def user_ids(self) -> list[str]:
+        with self._engine.connect() as connection:
+            rows = connection.execute(select(credentials_table.c.user_id)).all()
+        return [str(row.user_id) for row in rows]
+
     def status(self, user_id: str) -> dict[str, object]:
         query = select(credentials_table.c.account_id, credentials_table.c.updated_at).where(credentials_table.c.user_id == user_id)
         with self._engine.connect() as connection:
@@ -77,4 +82,3 @@ class CTraderCredentialStore:
     def delete(self, user_id: str) -> None:
         with self._engine.begin() as connection:
             connection.execute(delete(credentials_table).where(credentials_table.c.user_id == user_id))
-

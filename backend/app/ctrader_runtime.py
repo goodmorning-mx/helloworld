@@ -363,12 +363,7 @@ class CTraderManager:
                     "error_kind": "NOT_CONFIGURED", "error_title": "Configura tu cuenta cTrader",
                     "error_message": "Agrega tu access token, refresh token y account ID desde Perfil → cTrader.",
                     "error_action": "Abre tu avatar → Perfil → cTrader."}
-        with self._lock:
-            session = self._sessions.get(user_id)
-            if session is None:
-                session = CTraderSession(self._settings, credentials)
-                self._sessions[user_id] = session
-                session.start()
+        session = self.start_user(user_id, credentials)
         status = session.snapshot()
         healthy = bool(status.get("ready") and status.get("process_alive"))
         public_status = {**status, "symbols": list((status.get("symbols") or {}).keys())}
@@ -382,6 +377,29 @@ class CTraderManager:
             session = self._sessions.pop(user_id, None)
         if session:
             session.stop()
+
+    def start_user(self, user_id: str, credentials: dict[str, object] | None = None) -> CTraderSession:
+        credentials = credentials or self._store.get(user_id)
+        if credentials is None:
+            raise ValueError("No hay credenciales cTrader para el usuario")
+        with self._lock:
+            session = self._sessions.get(user_id)
+            if session is None:
+                session = CTraderSession(self._settings, credentials)
+                self._sessions[user_id] = session
+                session.start()
+            return session
+
+    def start_configured(self) -> None:
+        if not self._settings.ctrader_enabled:
+            return
+        for user_id in self._store.user_ids():
+            try:
+                self.start_user(user_id)
+            except Exception:
+                # A single user's expired or invalid credentials must not
+                # prevent other users' workers from starting.
+                continue
 
     def stop_all(self) -> None:
         with self._lock:
