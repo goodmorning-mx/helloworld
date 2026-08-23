@@ -616,7 +616,10 @@ function Workspace() {
     candleBarsRef.current = [];
     if (broker === 'ctrader') {
       let polling = 0;
-      const loadCTrader = () => fetch(`${apiUrl}/trading/ctrader/candles/${encodeURIComponent(symbol)}?interval=${entryInterval}&days=1`, { headers: auth.accessToken ? { Authorization: `Bearer ${auth.accessToken}` } : {}, credentials: 'include' })
+      // A cTrader weekend can contain no candles in the last 24 hours. Keep
+      // the entry chart useful without making the worker request an oversized
+      // history window.
+      const loadCTrader = () => fetch(`${apiUrl}/trading/ctrader/candles/${encodeURIComponent(symbol)}?interval=${entryInterval}&days=3`, { headers: auth.accessToken ? { Authorization: `Bearer ${auth.accessToken}` } : {}, credentials: 'include' })
         .then(response => response.ok ? response.json() : Promise.reject(new Error(`cTrader ${response.status}`)))
         .then(payload => {
           if (!active) return;
