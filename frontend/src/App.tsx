@@ -201,6 +201,19 @@ function ProfileModal({ onClose, onSaved }: { onClose: () => void; onSaved: () =
     finally { setRemoving(false); }
   }
 
+  async function connectCtrader() {
+    setSaving(true); setError('');
+    try {
+      const response = await fetch(`${apiUrl}/trading/ctrader/oauth/url`, { headers, credentials: 'include' });
+      const payload = await response.json() as { url?: string; detail?: string };
+      if (!response.ok || !payload.url) throw new Error(payload.detail ?? 'No se pudo iniciar la autorización cTrader.');
+      window.location.assign(payload.url);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : 'No se pudo iniciar la autorización cTrader.');
+      setSaving(false);
+    }
+  }
+
   return <div className="profile-modal-backdrop" role="presentation" onClick={onClose}>
     <section className="profile-modal" role="dialog" aria-modal="true" aria-labelledby="profile-title" onClick={event => event.stopPropagation()}>
       <div className="profile-modal-head"><div><span className="positions-kicker">CUENTA</span><h2 id="profile-title">Perfil</h2></div><button onClick={onClose} aria-label="Cerrar">×</button></div>
@@ -208,7 +221,8 @@ function ProfileModal({ onClose, onSaved }: { onClose: () => void; onSaved: () =
       <div className="profile-section"><span className="positions-kicker">BINANCE · FUTURES</span><p className="profile-note">Tus claves son por usuario, se cifran en el backend y nunca se muestran de nuevo. Usa una key sin permisos de retiro y limita su IP.</p>{loading ? <p className="profile-muted">Consultando configuración…</p> : status?.configured ? <p className="profile-configured">Configurada · {status.masked_api_key}</p> : <p className="profile-muted">Aún no hay credenciales configuradas.</p>}</div>
       <form className="profile-form" onSubmit={save}><label className="profile-field"><span>API key</span><input type="text" value={apiKey} onChange={event => setApiKey(event.target.value)} autoComplete="off" placeholder={status?.configured ? 'Reemplazar API key' : 'Pega tu API key'} required /></label><label className="profile-field"><span>API secret</span><input type="password" value={apiSecret} onChange={event => setApiSecret(event.target.value)} autoComplete="new-password" placeholder="Pega tu API secret" required /></label>{error && <p className="profile-error" role="alert">{error}</p>}{message && <p className="profile-success" role="status">{message}</p>}<div className="profile-actions"><button className="profile-save" type="submit" disabled={saving || removing}>{saving ? 'Guardando…' : 'Guardar credenciales'}</button>{status?.configured && <button className="profile-remove" type="button" onClick={() => void remove()} disabled={saving || removing}>{removing ? 'Eliminando…' : 'Eliminar claves'}</button>}</div></form>
       <div className="profile-section profile-broker-section"><span className="positions-kicker">cTRADER · FOREX</span><p className="profile-note">El client ID y secreto de la aplicación permanecen en el backend. Aquí sólo se guardan tus tokens OAuth y el account ID, cifrados por usuario.</p>{!ctraderStatus?.enabled ? <p className="profile-muted">cTrader aún no está habilitado en este entorno.</p> : ctraderStatus.configured ? <p className="profile-configured">Configurada · cuenta {ctraderStatus.account_id ?? '—'}</p> : <p className="profile-muted">Aún no hay una cuenta cTrader configurada.</p>}</div>
-      <form className="profile-form" onSubmit={saveCtrader}><label className="profile-field"><span>Access token</span><input type="password" value={ctraderAccessToken} onChange={event => setCtraderAccessToken(event.target.value)} autoComplete="off" placeholder="Pega tu access token" required /></label><label className="profile-field"><span>Refresh token</span><input type="password" value={ctraderRefreshToken} onChange={event => setCtraderRefreshToken(event.target.value)} autoComplete="off" placeholder="Pega tu refresh token" required /></label><label className="profile-field"><span>Account ID <small>(opcional; se autodetecta)</small></span><input type="number" value={ctraderAccountId} onChange={event => setCtraderAccountId(event.target.value)} placeholder="Se seleccionará la primera cuenta autorizada" /></label>{ctraderStatus?.accounts?.length ? <p className="profile-configured">Cuentas detectadas: {ctraderStatus.accounts.map(account => `${account.broker || 'cTrader'} · ${account.is_live ? 'Live' : 'Demo'} · ${account.account_id}`).join(' · ')}</p> : null}{error && <p className="profile-error" role="alert">{error}</p>}{message && <p className="profile-success" role="status">{message}</p>}<div className="profile-actions"><button className="profile-save" type="submit" disabled={saving || removing || !ctraderStatus?.enabled}>{saving ? 'Guardando…' : 'Guardar cTrader'}</button>{ctraderStatus?.configured && <button className="profile-remove" type="button" onClick={() => void removeCtrader()} disabled={saving || removing}>{removing ? 'Eliminando…' : 'Eliminar cTrader'}</button>}</div></form>
+      <div className="profile-actions"><button className="profile-save" type="button" onClick={() => void connectCtrader()} disabled={saving || removing || !ctraderStatus?.enabled}>{saving ? 'Abriendo cTrader…' : 'Conectar con cTrader'}</button></div>
+      <p className="profile-note">También puedes pegar tokens manualmente:</p><form className="profile-form" onSubmit={saveCtrader}><label className="profile-field"><span>Access token</span><input type="password" value={ctraderAccessToken} onChange={event => setCtraderAccessToken(event.target.value)} autoComplete="off" placeholder="Pega tu access token" /></label><label className="profile-field"><span>Refresh token</span><input type="password" value={ctraderRefreshToken} onChange={event => setCtraderRefreshToken(event.target.value)} autoComplete="off" placeholder="Pega tu refresh token" /></label><label className="profile-field"><span>Account ID <small>(opcional; se autodetecta)</small></span><input type="number" value={ctraderAccountId} onChange={event => setCtraderAccountId(event.target.value)} placeholder="Se seleccionará la primera cuenta autorizada" /></label>{ctraderStatus?.accounts?.length ? <p className="profile-configured">Cuentas detectadas: {ctraderStatus.accounts.map(account => `${account.broker || 'cTrader'} · ${account.is_live ? 'Live' : 'Demo'} · ${account.account_id}`).join(' · ')}</p> : null}{error && <p className="profile-error" role="alert">{error}</p>}{message && <p className="profile-success" role="status">{message}</p>}<div className="profile-actions"><button className="profile-save" type="submit" disabled={saving || removing || !ctraderStatus?.enabled}>{saving ? 'Guardando…' : 'Guardar tokens manualmente'}</button>{ctraderStatus?.configured && <button className="profile-remove" type="button" onClick={() => void removeCtrader()} disabled={saving || removing}>{removing ? 'Eliminando…' : 'Eliminar cTrader'}</button>}</div></form>
     </section>
   </div>;
 }
@@ -348,6 +362,20 @@ function AuthSessionKeeper({ client }: { client: AuthClient }) {
     return () => window.clearInterval(timer);
   }, [auth.accessToken, client]);
   return null;
+}
+
+function CTraderOAuthCallback() {
+  const auth = useAuth();
+  const [message, setMessage] = useState('Completando autorización cTrader…');
+  useEffect(() => {
+    const code = new URLSearchParams(window.location.search).get('code');
+    if (!code) { setMessage('cTrader no devolvió un código de autorización.'); return; }
+    fetch(`${apiUrl}/trading/ctrader/oauth/exchange`, { method: 'POST', headers: { ...(auth.accessToken ? { Authorization: `Bearer ${auth.accessToken}` } : {}), 'Content-Type': 'application/json' }, credentials: 'include', body: JSON.stringify({ code }) })
+      .then(async response => { const payload = await response.json() as { detail?: string; message?: string }; if (!response.ok) throw new Error(payload.detail ?? 'No se pudo completar la autorización cTrader.'); return payload; })
+      .then(payload => { setMessage(payload.message ?? 'cTrader autorizado. Detectando cuentas…'); window.setTimeout(() => window.location.assign('/'), 1200); })
+      .catch(reason => setMessage(reason instanceof Error ? reason.message : 'No se pudo completar la autorización cTrader.'));
+  }, [auth.accessToken]);
+  return <main className="access-shell"><section className="login-card"><h1>helloworld</h1><p className="profile-success">{message}</p></section></main>;
 }
 
 function Workspace() {
@@ -1369,7 +1397,8 @@ function Workspace() {
 function App() {
   const client = useMemo(() => createAuthClient(apiUrl), []);
   const labRoute = window.location.pathname === '/lab';
-  return <PwaRuntime config={{ appName: 'helloworld', version: '0.1.12', serviceWorkerUrl: '/sw.js?v=0.1.12', updateIntervalMs: 60_000 }}><AuthProvider client={client}><AuthSessionKeeper client={client} /><AuthGuard fallback={<Access />}>{labRoute ? <LabWindow /> : <Workspace />}</AuthGuard></AuthProvider></PwaRuntime>;
+  const ctraderCallbackRoute = window.location.pathname === '/ctrader/callback';
+  return <PwaRuntime config={{ appName: 'helloworld', version: '0.1.12', serviceWorkerUrl: '/sw.js?v=0.1.12', updateIntervalMs: 60_000 }}><AuthProvider client={client}><AuthSessionKeeper client={client} /><AuthGuard fallback={<Access />}>{ctraderCallbackRoute ? <CTraderOAuthCallback /> : labRoute ? <LabWindow /> : <Workspace />}</AuthGuard></AuthProvider></PwaRuntime>;
 }
 
 export default App;

@@ -28,6 +28,7 @@ class Settings(BaseSettings):
     ctrader_host: str = Field(default="demo.ctraderapi.com", alias="CTRADER_HOST")
     ctrader_port: int = Field(default=5035, alias="CTRADER_PORT")
     ctrader_symbols: str = Field(default="AUDUSD,XAUUSD,XAGUSD", alias="CTRADER_SYMBOLS")
+    ctrader_redirect_uri: str = Field(default="http://localhost:5173/ctrader/callback", alias="CTRADER_REDIRECT_URI")
 
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 

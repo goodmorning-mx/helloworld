@@ -2,11 +2,13 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from uuid import uuid4
+from urllib.parse import urlencode
 
 from fastapi import Depends, FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 from typing import Literal
+import httpx
 from openai import AsyncOpenAI
 
 from gm_agent import AgentService, Conversation, OpenAIProvider
@@ -141,6 +143,10 @@ class CTraderCredentialsInput(BaseModel):
     access_token: str = Field(min_length=10, max_length=4096)
     refresh_token: str = Field(min_length=10, max_length=4096)
     account_id: int = Field(default=0, ge=0)
+
+
+class CTraderOAuthCodeInput(BaseModel):
+    code: str = Field(min_length=10, max_length=4096)
 
 
 class CTraderOrderInput(BaseModel):
@@ -289,6 +295,42 @@ def ctrader_credentials_status(identity: AuthIdentity = Depends(identity_depende
         "broker": "ctrader",
         "symbols": list(settings.ctrader_symbol_list),
     }
+
+
+@app.get("/trading/ctrader/oauth/url")
+def ctrader_oauth_url(identity: AuthIdentity = Depends(identity_dependency(auth_service))) -> dict[str, str]:
+    del identity
+    if not settings.ctrader_enabled or not settings.ctrader_client_id:
+        raise HTTPException(status_code=503, detail="cTrader OAuth no está configurado en este entorno.")
+    return {"url": "https://id.ctrader.com/my/settings/openapi/grantingaccess/?" + urlencode({
+        "client_id": settings.ctrader_client_id,
+        "redirect_uri": settings.ctrader_redirect_uri,
+        "scope": "trading",
+        "product": "web",
+    })}
+
+
+@app.post("/trading/ctrader/oauth/exchange")
+def ctrader_oauth_exchange(payload: CTraderOAuthCodeInput, identity: AuthIdentity = Depends(identity_dependency(auth_service))) -> dict[str, object]:
+    if not settings.ctrader_enabled:
+        raise HTTPException(status_code=503, detail="cTrader no está habilitado en este entorno.")
+    try:
+        response = httpx.get("https://openapi.ctrader.com/apps/token", params={
+            "grant_type": "authorization_code", "code": payload.code,
+            "client_id": settings.ctrader_client_id, "client_secret": settings.ctrader_client_secret,
+            "redirect_uri": settings.ctrader_redirect_uri,
+        }, headers={"Accept": "application/json"}, timeout=15)
+        token_payload = response.json()
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail="No se pudo contactar el servicio OAuth de cTrader.") from exc
+    access_token = str(token_payload.get("accessToken") or "").strip()
+    refresh_token = str(token_payload.get("refreshToken") or "").strip()
+    if not response.is_success or not access_token or not refresh_token:
+        raise HTTPException(status_code=502, detail=token_payload.get("description") or token_payload.get("errorCode") or "cTrader no entregó tokens válidos.")
+    ctrader_credentials.save(identity.user_id, access_token, refresh_token, 0)
+    ctrader_manager.stop_user(identity.user_id)
+    ctrader_manager.start_user(identity.user_id)
+    return {"configured": True, "broker": "ctrader", "message": "cTrader autorizado. Detectando cuentas…"}
 
 
 @app.put("/trading/ctrader/credentials")
