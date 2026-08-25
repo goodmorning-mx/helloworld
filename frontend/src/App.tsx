@@ -433,6 +433,19 @@ function Workspace() {
   const [paperSyncError, setPaperSyncError] = useState('');
   const [visibleClosedId, setVisibleClosedId] = useState<string | null>(null);
   const [paperTab, setPaperTab] = useState<'open' | 'closed'>('open');
+  const [paperInitialBalance, setPaperInitialBalance] = useState(() => Number(localStorage.getItem('helloworld-paper-balance') ?? 100) || 100);
+  const [paperRiskPercent, setPaperRiskPercent] = useState(() => Number(JSON.parse(localStorage.getItem('helloworld-paper-assist') ?? '{}').riskPercent ?? 1) || 1);
+
+  useEffect(() => {
+    const syncAssist = () => {
+      const balance = Number(localStorage.getItem('helloworld-paper-balance') ?? 100);
+      const raw = JSON.parse(localStorage.getItem('helloworld-paper-assist') ?? '{}') as { riskPercent?: number };
+      if (Number.isFinite(balance) && balance > 0) setPaperInitialBalance(balance);
+      if (Number.isFinite(raw.riskPercent) && (raw.riskPercent ?? 0) > 0) setPaperRiskPercent(raw.riskPercent as number);
+    };
+    window.addEventListener('helloworld-paper-assist-updated', syncAssist);
+    return () => window.removeEventListener('helloworld-paper-assist-updated', syncAssist);
+  }, []);
 
   useEffect(() => {
     const removeSelected = (event: KeyboardEvent) => {
@@ -1212,8 +1225,9 @@ function Workspace() {
     if (!latest) return;
     const entry = latest.close;
     const direction = type === 'long' ? 1 : -1;
-    const stopDistance = 0.00087;
-    const targetDistance = stopDistance * 4;
+    const storedAssist = JSON.parse(localStorage.getItem('helloworld-paper-assist') ?? '{}') as { stopPercent?: number; targetPercent?: number };
+    const stopDistance = Number.isFinite(storedAssist.stopPercent) && (storedAssist.stopPercent ?? 0) > 0 ? (storedAssist.stopPercent as number) / 100 : 0.00087;
+    const targetDistance = Number.isFinite(storedAssist.targetPercent) && (storedAssist.targetPercent ?? 0) > 0 ? (storedAssist.targetPercent as number) / 100 : stopDistance * 4;
     const target = entry * (1 + direction * targetDistance);
     const stop = entry * (1 - direction * stopDistance);
     const intervalSeconds = 60;
@@ -1296,15 +1310,32 @@ function Workspace() {
   }
 
   const paperPositions = drawings.filter(drawing => drawing.paper && (drawing.type === 'long' || drawing.type === 'short'));
+  const assist = JSON.parse(localStorage.getItem('helloworld-paper-assist') ?? '{}') as { leverage?: number };
+  const paperLeverage = Number.isFinite(assist.leverage) && (assist.leverage ?? 0) > 0 ? (assist.leverage as number) : 10;
+  const paperRiskAmount = paperInitialBalance * paperRiskPercent / 100;
+  const paperPnl = (position: Drawing) => {
+    const stopDistance = Math.abs(position.start.price - (position.stop?.price ?? position.start.price));
+    const stopPercent = position.start.price > 0 ? stopDistance / position.start.price : 0;
+    const notional = stopPercent > 0 ? paperRiskAmount / stopPercent : 0;
+    const direction = position.type === 'long' ? 1 : -1;
+    return ((position.end.price - position.start.price) / position.start.price) * direction * notional;
+  };
+  const realizedPnl = paperPositions.filter(position => position.closed).reduce((sum, position) => sum + paperPnl(position), 0);
+  const unrealizedPnl = paperPositions.filter(position => !position.closed).reduce((sum, position) => sum + paperPnl(position), 0);
+  const paperEquity = paperInitialBalance + realizedPnl + unrealizedPnl;
   const displayedPaperPositions = paperPositions.filter(position => paperTab === 'open' ? !position.closed : position.closed);
   const positionsTable = <section className="positions-panel" aria-label="Posiciones abiertas">
     <div className="positions-panel-head"><div><span className="positions-kicker">TRADING</span><h2>Paper operations</h2></div><span className="paper-badge">PAPER</span></div>{paperSyncError && <p className="paper-sync-error" role="status">{paperSyncError}</p>}<div className="paper-tabs" role="tablist" aria-label="Paper operations"><button role="tab" aria-selected={paperTab === 'open'} className={paperTab === 'open' ? 'paper-tab-active' : ''} onClick={() => setPaperTab('open')}>Abiertas <b>{paperPositions.filter(position => !position.closed).length}</b></button><button role="tab" aria-selected={paperTab === 'closed'} className={paperTab === 'closed' ? 'paper-tab-active' : ''} onClick={() => setPaperTab('closed')}>Cerradas <b>{paperPositions.filter(position => position.closed).length}</b></button></div>
+    <div className="paper-balance-grid"><label>Balance inicial<input type="number" min="1" step="1" value={paperInitialBalance} onChange={event => { const value = Math.max(1, Number(event.target.value) || 1); setPaperInitialBalance(value); localStorage.setItem('helloworld-paper-balance', String(value)); }} /></label><label>Riesgo por operación (%)<input type="number" min="0.05" max="10" step="0.05" value={paperRiskPercent} onChange={event => { const value = Math.max(.05, Math.min(10, Number(event.target.value) || .05)); setPaperRiskPercent(value); const current = JSON.parse(localStorage.getItem('helloworld-paper-assist') ?? '{}'); localStorage.setItem('helloworld-paper-assist', JSON.stringify({ ...current, balance: paperInitialBalance, riskPercent: value })); }} /></label><div><small>Equity teórica</small><strong>{paperEquity.toFixed(2)} USD</strong></div><div><small>PNL realizado</small><strong>{realizedPnl.toFixed(2)} USD</strong></div><div><small>PNL abierto</small><strong>{unrealizedPnl.toFixed(2)} USD</strong></div></div>
     {displayedPaperPositions.length === 0 ? <p className="positions-empty">{paperTab === 'open' ? 'No hay operaciones abiertas.' : 'No hay operaciones cerradas.'}</p> : <div className="positions-table-scroll"><table className="positions-table"><thead><tr><th>Instrumento</th><th>Lado</th><th>Entrada</th><th>Actual</th><th>SL</th><th>TP</th><th>Margen</th><th>R:R</th><th>PNL</th><th>ROE</th><th>Acción</th></tr></thead><tbody>{displayedPaperPositions.map((position, index) => {
       const direction = position.type === 'long' ? 1 : -1;
-      const margin = 100;
-      const leverage = 10;
+      const stopDistance = Math.abs(position.start.price - (position.stop?.price ?? position.start.price));
+      const stopPercent = position.start.price > 0 ? stopDistance / position.start.price : 0;
+      const notional = stopPercent > 0 ? paperRiskAmount / stopPercent : 0;
+      const margin = paperLeverage > 0 ? notional / paperLeverage : 0;
+      const leverage = paperLeverage;
       const priceChange = ((position.end.price - position.start.price) / position.start.price) * direction;
-      const pnl = priceChange * margin * leverage;
+      const pnl = priceChange * notional;
       const roe = (pnl / margin) * 100;
       const targetPrice = position.target?.price ?? position.end.price;
       const riskDistance = Math.abs(position.start.price - (position.stop?.price ?? position.start.price));
