@@ -85,6 +85,7 @@ export default function LabWindow({ activeSymbol = 'BTCUSDT', broker = 'binance'
   const [tableSort, setTableSort] = useState<{ key: 'slot' | 'samples' | 'stop' | 'target' | 'rr' | 'winRate' | 'expectancyR' | 'leverage'; direction: 'asc' | 'desc' }>({ key: 'expectancyR', direction: 'desc' });
 
   const best = rows[0];
+  const studyInterval = resolution === 5 ? '5m' : '1m';
   const fiveMinuteBars = useMemo(() => aggregateBars(bars, 5), [bars]);
   const studyBars = useMemo(() => resolution === 5 ? fiveMinuteBars : bars, [bars, fiveMinuteBars, resolution]);
   const series = useMemo(() => buildLabSeries(studyBars, direction, horizon, resolution), [direction, horizon, resolution, studyBars]);
@@ -121,7 +122,7 @@ export default function LabWindow({ activeSymbol = 'BTCUSDT', broker = 'binance'
 
   useEffect(() => {
     if (loadedThirtyDays) return;
-    void readCachedBars(activeSymbol, '1m').then(cached => {
+    void readCachedBars(activeSymbol, studyInterval).then(cached => {
       const available = initialBars.length > 0 ? initialBars : cached;
       if (available.length > 0) {
         setBars(available);
@@ -134,13 +135,13 @@ export default function LabWindow({ activeSymbol = 'BTCUSDT', broker = 'binance'
         void run();
       }
     });
-  }, [activeSymbol, capitalModel, direction, horizon, initialBars, loadedThirtyDays, resolution, riskFraction]);
+  }, [activeSymbol, capitalModel, direction, horizon, initialBars, loadedThirtyDays, resolution, riskFraction, studyInterval]);
 
   async function run() {
     setLoading(true);
     setMessage('Leyendo cache OHLC y completando hasta 30 días…');
     try {
-      const loaded = await loadThirtyDays(activeSymbol, '1m', { broker, apiUrl, accessToken });
+      const loaded = await loadThirtyDays(activeSymbol, studyInterval, { broker, apiUrl, accessToken });
       setBars(loaded);
       setLoadedThirtyDays(true);
       analyzeLoaded(loaded);
@@ -164,7 +165,7 @@ export default function LabWindow({ activeSymbol = 'BTCUSDT', broker = 'binance'
       <label>Horizonte (velas {resolution}m)<input type="number" min="1" max="576" value={horizon} onChange={event => setHorizon(Math.max(1, Math.min(576, Number(event.target.value) || 1)))} /></label>
       <label>Riesgo sobre margen<input type="number" min="0.05" max="1" step="0.05" value={riskFraction} onChange={event => setRiskFraction(Math.max(.05, Math.min(1, Number(event.target.value) || .05)))} /></label>
     </section>
-    <div className="lab-tabs" role="tablist" aria-label="Configuración del Lab"><div><span>Resolución</span><button className={resolution === 1 ? 'lab-tab-active' : ''} onClick={() => { setResolution(1); analyzeLoaded(bars, 1); }}>1m</button><button className={resolution === 5 ? 'lab-tab-active' : ''} onClick={() => { setResolution(5); analyzeLoaded(bars, 5); }}>5m</button></div><div><span>Capital</span><button className={capitalModel === 'compound' ? 'lab-tab-active' : ''} onClick={() => { setCapitalModel('compound'); analyzeLoaded(bars, resolution, 'compound'); }}>Compound</button><button className={capitalModel === 'simple' ? 'lab-tab-active' : ''} onClick={() => { setCapitalModel('simple'); analyzeLoaded(bars, resolution, 'simple'); }}>Simple</button></div></div>
+    <div className="lab-tabs" role="tablist" aria-label="Configuración del Lab"><div><span>Resolución</span><button className={resolution === 1 ? 'lab-tab-active' : ''} onClick={() => { setResolution(1); setLoadedThirtyDays(false); autoLoadStarted.current = false; setRows([]); }}>1m</button><button className={resolution === 5 ? 'lab-tab-active' : ''} onClick={() => { setResolution(5); setLoadedThirtyDays(false); autoLoadStarted.current = false; setRows([]); }}>5m</button></div><div><span>Capital</span><button className={capitalModel === 'compound' ? 'lab-tab-active' : ''} onClick={() => { setCapitalModel('compound'); analyzeLoaded(bars, resolution, 'compound'); }}>Compound</button><button className={capitalModel === 'simple' ? 'lab-tab-active' : ''} onClick={() => { setCapitalModel('simple'); analyzeLoaded(bars, resolution, 'simple'); }}>Simple</button></div></div>
     <p className="lab-message">{message}</p>
     {best && <section className="lab-summary"><div><small>MEJOR MOMENTO</small><strong>{best.label} UTC</strong></div><div><small>EXPECTANCY</small><strong>{best.expectancyR.toFixed(3)}R</strong></div><div><small>TP / SL</small><strong>{best.rr.toFixed(2)}:1</strong></div><div><small>LEVERAGE TEÓRICO</small><strong>{Math.min(best.leverage, 999).toFixed(1)}x</strong></div></section>}
     {series.length > 0 && <section className="lab-charts"><div className="lab-section-label">PERFIL SEMANAL · CADA VELA CONSERVA SU ÍNDICE DE APERTURA</div><LabChart points={series} resolution={resolution} mode="mae" /><LabChart points={series} resolution={resolution} mode="mfe" /><LabChart points={series} resolution={resolution} mode="comparison" /></section>}

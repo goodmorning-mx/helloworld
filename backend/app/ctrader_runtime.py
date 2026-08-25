@@ -238,7 +238,11 @@ def _worker(high_queue: Any, low_queue: Any, response_queue: Any, host: str, por
     def on_candles(message: object, command: dict[str, object]) -> None:
         payload = Protobuf.extract(message)
         if hasattr(payload, "errorCode"):
-            fail(getattr(payload, "description", getattr(payload, "errorCode", "candles unavailable")))
+            # Historical-data errors must be returned to the waiting request,
+            # not treated as a dead socket. Rate limits are transient and the
+            # session may still have a valid account auth, balance and stream.
+            emit({"type": "CANDLES", "request_id": command["request_id"], "data": [],
+                  "error": str(getattr(payload, "description", getattr(payload, "errorCode", "candles unavailable")))})
             return
         rows = []
         for bar in payload.trendbar:
@@ -359,10 +363,24 @@ class CTraderSession:
         step_ms = _period(interval) * 60 * 1000
         previous_oldest_minute: int | None = None
         for _ in range(100):
-            request_id = uuid4().hex
-            self._low.put({"type": "GET_CANDLES", "request_id": request_id, "symbol_id": symbol_id,
-                           "interval": interval, "from_timestamp": start_ms, "to_timestamp": cursor_ms})
-            response = self._wait("CANDLES", timeout, request_id)
+            if all_rows:
+                time.sleep(0.25)
+            response: dict[str, object] | None = None
+            for attempt in range(4):
+                request_id = uuid4().hex
+                self._low.put({"type": "GET_CANDLES", "request_id": request_id, "symbol_id": symbol_id,
+                               "interval": interval, "from_timestamp": start_ms, "to_timestamp": cursor_ms})
+                response = self._wait("CANDLES", timeout, request_id)
+                error = str(response.get("error") or "")
+                if not error:
+                    break
+                if "rate" not in error.lower() and "limit" not in error.lower():
+                    raise RuntimeError(f"cTrader no pudo cargar velas: {error}")
+                if attempt == 3:
+                    raise RuntimeError("cTrader está limitando temporalmente las consultas históricas. Espera unos segundos y vuelve a cargar 30 días.")
+                time.sleep(1.0 * (attempt + 1))
+            if response is None:
+                raise RuntimeError("cTrader no devolvió datos históricos.")
             batch = list(response.get("data", []))
             all_rows.extend(batch)
             if not batch:
