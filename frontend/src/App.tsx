@@ -1436,6 +1436,16 @@ function Workspace() {
     const riskPercent = ((stopPrice - drawing.start.price) / drawing.start.price) * 100 * (drawing.type === 'long' ? 1 : -1);
     const riskDistance = Math.abs(drawing.start.price - stopPrice);
     const rewardDistance = Math.abs((drawing.target?.price ?? drawing.end.price) - drawing.start.price);
+    const stopPercentAbs = drawing.start.price > 0 ? riskDistance / drawing.start.price : 0;
+    const fallbackNotional = stopPercentAbs > 0 ? paperRiskAmount / stopPercentAbs : 0;
+    const paperNotional = drawing.notional && drawing.notional > 0
+      ? drawing.notional
+      : Math.min(fallbackNotional, paperInitialBalance * paperLeverage);
+    const slAmount = riskPercent / 100 * paperNotional;
+    const tpAmount = targetPercent / 100 * paperNotional;
+    const livePnl = drawing.closed && Number.isFinite(drawing.pnl)
+      ? Math.max(-paperRiskAmount, drawing.pnl as number)
+      : Math.max(-paperRiskAmount, ((drawing.end.price - drawing.start.price) / drawing.start.price) * (drawing.type === 'long' ? 1 : -1) * paperNotional);
     const rr = riskDistance > 0 ? rewardDistance / riskDistance : 0;
     const targetLabel = `${targetPercent >= 0 ? '+' : ''}${targetPercent.toFixed(8)}%`;
     const riskLabel = `${riskPercent >= 0 ? '+' : ''}${riskPercent.toFixed(8)}%`;
@@ -1445,7 +1455,7 @@ function Workspace() {
     const stopHeight = Math.abs(start.y - stop.y);
     const paperClass = drawing.paper ? `paper-position ${drawing.type === 'long' ? 'paper-long' : 'paper-short'}` : '';
     const paperStatusLabel = drawing.closed ? (drawing.status === 'CLOSED - WIN' ? 'Closed Win' : 'Closed Failed') : 'Open';
-    return <g key={index} className={`${selectedClass ?? ''} ${paperClass}`}><rect x={left} y={targetTop} width={width} height={targetHeight} className={targetPercent >= 0 ? 'position-profit' : 'position-risk'} /><rect x={left} y={stopTop} width={width} height={stopHeight} className={riskPercent <= 0 ? 'position-risk' : 'position-profit'} /><line x1={left} y1={start.y} x2={left + width} y2={start.y} className="position-entry" /><line x1={left} y1={end.y} x2={left + width} y2={end.y} className="paper-current-price" />{drawing.paper && <text x={left + 8} y={Math.max(14, start.y - 8)} className="paper-operation-label">Paper Operation · {paperStatusLabel}</text>}{!drawing.paper && <><text x={left + 8} y={targetTop + 18} className="position-label">TP {targetLabel}</text><text x={left + 8} y={stopTop + 18} className="position-label">SL {riskLabel}</text><text x={left + 8} y={Math.max(targetTop, stopTop) + 34} className="position-label">R:R {rr.toFixed(2)}:1</text></>}{drawing.paper ? handleNodes : null}{drawing.paper ? null : handleNodes}</g>;
+    return <g key={index} className={`${selectedClass ?? ''} ${paperClass}`}><rect x={left} y={targetTop} width={width} height={targetHeight} className={targetPercent >= 0 ? 'position-profit' : 'position-risk'} /><rect x={left} y={stopTop} width={width} height={stopHeight} className={riskPercent <= 0 ? 'position-risk' : 'position-profit'} /><line x1={left} y1={start.y} x2={left + width} y2={start.y} className="position-entry" /><line x1={left} y1={end.y} x2={left + width} y2={end.y} className="paper-current-price" />{drawing.paper && <><text x={left + 8} y={Math.max(14, start.y - 8)} className="paper-operation-label">Paper Operation · {paperStatusLabel}</text><text x={left + 8} y={targetPoint.y - 10} className="paper-target-label">TP {targetLabel} · +{tpAmount.toFixed(2)} USDT</text><text x={left + 8} y={stop.y + 18} className="paper-stop-label">SL {riskLabel} · {slAmount.toFixed(2)} USDT</text><text x={left + width + 8} y={end.y - 8} className={`paper-current-label ${livePnl >= 0 ? 'paper-current-profit' : 'paper-current-loss'}`}>PNL {livePnl >= 0 ? '+' : ''}{livePnl.toFixed(2)} USDT</text></>}{!drawing.paper && <><text x={left + 8} y={targetTop + 18} className="position-label">TP {targetLabel}</text><text x={left + 8} y={stopTop + 18} className="position-label">SL {riskLabel}</text><text x={left + 8} y={Math.max(targetTop, stopTop) + 34} className="position-label">R:R {rr.toFixed(2)}:1</text></>}{drawing.paper ? handleNodes : null}{drawing.paper ? null : handleNodes}</g>;
   };
 
   const chartStageView = <div ref={chartStage} className={`chart-stage ${tool ? 'drawing-mode' : ''}`} onPointerDownCapture={startDrawing} onPointerMoveCapture={updateDrawing} onPointerUpCapture={finishDrawing} onPointerCancelCapture={() => { setDrawingStart(null); setDrawingEnd(null); setMoveStart(null); setResizeStart(null); }}>
