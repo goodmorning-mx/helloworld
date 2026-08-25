@@ -138,6 +138,15 @@ export default function LabWindow({ activeSymbol = 'BTCUSDT', broker = 'binance'
     setRows(analyzeLab(normalized, direction, horizon, riskFraction, nextResolution, nextModel));
   }
 
+  // Recalculate the complete study when any analysis parameter changes.
+  // The chart series already depends on horizon, but the summary cards and
+  // recommendation must use the same fresh rows as well.
+  useEffect(() => {
+    if (!bars.length) return;
+    const normalized = resolution === 5 ? aggregateBars(bars, 5) : bars;
+    setRows(analyzeLab(normalized, direction, horizon, riskFraction, resolution, capitalModel));
+  }, [bars, capitalModel, direction, horizon, resolution, riskFraction]);
+
   useEffect(() => {
     if (loadedThirtyDays) return;
     void readCachedBars(activeSymbol, studyInterval).then(cached => {
@@ -153,7 +162,7 @@ export default function LabWindow({ activeSymbol = 'BTCUSDT', broker = 'binance'
         void run();
       }
     });
-  }, [activeSymbol, capitalModel, direction, horizon, initialBars, loadedThirtyDays, resolution, riskFraction, studyInterval]);
+  }, [activeSymbol, initialBars, loadedThirtyDays, studyInterval]);
 
   async function run() {
     setLoading(true);
