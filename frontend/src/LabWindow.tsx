@@ -70,11 +70,11 @@ function LabChart({ points, resolution, mode }: { points: LabSeriesPoint[]; reso
   </div>;
 }
 
-export default function LabWindow({ activeSymbol = 'BTCUSDT', broker = 'binance', apiUrl, accessToken, initialBars = [], onClose }: { activeSymbol?: string; broker?: 'binance' | 'ctrader'; apiUrl?: string; accessToken?: string | null; initialBars?: MarketBar[]; onClose?: () => void }) {
+export default function LabWindow({ activeSymbol = 'BTCUSDT', broker = 'binance', apiUrl, accessToken, initialBars = [], paperBalance, onClose }: { activeSymbol?: string; broker?: 'binance' | 'ctrader'; apiUrl?: string; accessToken?: string | null; initialBars?: MarketBar[]; paperBalance?: number; onClose?: () => void }) {
   const [direction, setDirection] = useState<LabDirection>('long');
   const [resolution, setResolution] = useState<LabResolution>(5);
   const [capitalModel, setCapitalModel] = useState<LabCapitalModel>('compound');
-  const [horizon, setHorizon] = useState(48);
+  const [horizon, setHorizon] = useState(5);
   const [riskFraction, setRiskFraction] = useState(1);
   const [startingBalance, setStartingBalance] = useState(() => Number(localStorage.getItem('helloworld-paper-balance') ?? 100) || 100);
   const [bars, setBars] = useState<MarketBar[]>(initialBars);
@@ -84,6 +84,9 @@ export default function LabWindow({ activeSymbol = 'BTCUSDT', broker = 'binance'
   const [message, setMessage] = useState('Carga 30 días para iniciar el estudio.');
   const autoLoadStarted = useRef(false);
   const [tableSort, setTableSort] = useState<{ key: 'slot' | 'samples' | 'stop' | 'target' | 'rr' | 'winRate' | 'expectancyR' | 'leverage'; direction: 'asc' | 'desc' }>({ key: 'expectancyR', direction: 'desc' });
+  useEffect(() => {
+    if (paperBalance != null && Number.isFinite(paperBalance) && paperBalance > 0) setStartingBalance(paperBalance);
+  }, [paperBalance]);
 
   const best = rows[0];
   const recommendation = useMemo(() => {
@@ -183,14 +186,14 @@ export default function LabWindow({ activeSymbol = 'BTCUSDT', broker = 'binance'
 
   const content = <main className={`lab-window${onClose ? ' lab-window-modal' : ''}`}>
     <header className="lab-window-header">
-      <div><span className="lab-kicker">GOODMORNING RESEARCH</span><h1>MAE · MFE Lab</h1><p>Asistencia en tiempo real · símbolo activo <strong className="lab-symbol-badge">{activeSymbol}</strong></p></div>
+      <div><span className="lab-kicker">GOODMORNING RESEARCH</span><h1>MAE·MFE Lab</h1><p>Asistencia en tiempo real · símbolo activo <strong className="lab-symbol-badge">{activeSymbol}</strong></p></div>
       {onClose && <button className="lab-close-button" onClick={onClose} aria-label="Cerrar Lab">×</button>}
       <button className={`lab-load-button${loadedThirtyDays ? ' lab-load-complete' : ''}`} onClick={() => void run()} disabled={loading}>{loading ? 'Analizando…' : loadedThirtyDays ? '30 días cargados' : 'Cargar 30 días'}</button>
     </header>
     <section className="lab-controls" aria-label="Parámetros del estudio">
       <label>Dirección<select value={direction} onChange={event => setDirection(event.target.value as LabDirection)}><option value="long">Long</option><option value="short">Short</option></select></label>
       <label>Horizonte (velas {resolution}m)<input type="number" min="1" max="576" value={horizon} onChange={event => setHorizon(Math.max(1, Math.min(576, Number(event.target.value) || 1)))} /></label>
-      <label>Balance paper<input type="number" min="1" step="1" value={startingBalance} onChange={event => setStartingBalance(Math.max(1, Number(event.target.value) || 1))} /></label><label>Riesgo por operación (%)<input type="number" min="0.05" max="10" step="0.05" value={riskFraction} onChange={event => setRiskFraction(Math.max(.05, Math.min(10, Number(event.target.value) || .05)))} /></label>
+      <label>Balance paper<input type="number" min="1" step="1" value={startingBalance.toFixed(2)} readOnly /></label><label>Riesgo por operación (%)<input type="number" min="0.05" max="10" step="0.05" value={riskFraction} onChange={event => setRiskFraction(Math.max(.05, Math.min(10, Number(event.target.value) || .05)))} /></label>
     </section>
     <div className="lab-tabs" role="tablist" aria-label="Configuración del Lab"><div><span>Resolución</span><button className={resolution === 1 ? 'lab-tab-active' : ''} onClick={() => { setResolution(1); setLoadedThirtyDays(false); autoLoadStarted.current = false; setRows([]); }}>1m</button><button className={resolution === 5 ? 'lab-tab-active' : ''} onClick={() => { setResolution(5); setLoadedThirtyDays(false); autoLoadStarted.current = false; setRows([]); }}>5m</button></div><div><span>Capital</span><button className={capitalModel === 'compound' ? 'lab-tab-active' : ''} onClick={() => { setCapitalModel('compound'); analyzeLoaded(bars, resolution, 'compound'); }}>Compound</button><button className={capitalModel === 'simple' ? 'lab-tab-active' : ''} onClick={() => { setCapitalModel('simple'); analyzeLoaded(bars, resolution, 'simple'); }}>Simple</button></div></div>
     <p className="lab-message">{message}</p>
