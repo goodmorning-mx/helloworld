@@ -727,6 +727,13 @@ function Workspace() {
           const hitStop = bothTouched ? !hitTarget : stopTouched;
           const closeReason: 'TP' | 'SL' | undefined = hitTarget ? 'TP' : hitStop ? 'SL' : undefined;
           const status: Drawing['status'] = closeReason === 'TP' ? 'CLOSED - WIN' : closeReason === 'SL' ? 'CLOSED - FAILED' : 'OPEN';
+          const stopDistance = Math.abs(drawing.start.price - stopPrice);
+          const stopPercent = drawing.start.price > 0 ? stopDistance / drawing.start.price : 0;
+          const fallbackNotional = stopPercent > 0 ? paperRiskAmount / stopPercent : 0;
+          const notional = Number.isFinite(drawing.notional) && (drawing.notional ?? 0) > 0
+            ? drawing.notional as number
+            : Math.min(fallbackNotional, paperInitialBalance * paperLeverage);
+          const realizedPnl = closeReason ? (((next.close - drawing.start.price) / drawing.start.price) * direction * notional) : drawing.pnl;
           if (closeReason && drawing.id) setVisibleClosedId(drawing.id);
           return {
             ...drawing,
@@ -736,6 +743,9 @@ function Workspace() {
             closed: Boolean(closeReason),
             closeReason,
             status,
+            notional,
+            margin: drawing.margin ?? (paperLeverage > 0 ? notional / paperLeverage : 0),
+            pnl: realizedPnl,
           };
         });
         if (!anyOpen) {
