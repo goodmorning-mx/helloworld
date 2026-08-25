@@ -184,6 +184,10 @@ class PaperOperationInput(BaseModel):
     stop_price: float
     target_time: int
     target_price: float
+    risk_percent: float | None = None
+    notional: float | None = None
+    margin: float | None = None
+    pnl: float | None = None
     status: Literal["OPEN", "CLOSED - WIN", "CLOSED - FAILED"] = "OPEN"
     close_reason: Literal["TP", "SL", "MANUAL"] | None = None
 

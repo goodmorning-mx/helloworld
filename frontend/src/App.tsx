@@ -413,7 +413,7 @@ function Workspace() {
   const [overviewRevision, setOverviewRevision] = useState(0);
   type ChartPoint = { time: UTCTimestamp; price: number };
   type ChartCanvas = 'entry' | 'context';
-  type Drawing = { id?: string; symbol?: string; type: 'line' | 'ruler' | 'long' | 'short'; start: ChartPoint; end: ChartPoint; stop?: ChartPoint; target?: ChartPoint; chart?: ChartCanvas; paper?: boolean; closed?: boolean; closeReason?: 'TP' | 'SL' | 'MANUAL'; status?: 'OPEN' | 'CLOSED - WIN' | 'CLOSED - FAILED' };
+  type Drawing = { id?: string; symbol?: string; type: 'line' | 'ruler' | 'long' | 'short'; start: ChartPoint; end: ChartPoint; stop?: ChartPoint; target?: ChartPoint; chart?: ChartCanvas; paper?: boolean; closed?: boolean; closeReason?: 'TP' | 'SL' | 'MANUAL'; status?: 'OPEN' | 'CLOSED - WIN' | 'CLOSED - FAILED'; riskPercent?: number; notional?: number; margin?: number; pnl?: number };
   const [drawings, setDrawings] = useState<Drawing[]>([]);
   const [drawingStart, setDrawingStart] = useState<ChartPoint | null>(null);
   const [drawingEnd, setDrawingEnd] = useState<ChartPoint | null>(null);
@@ -475,6 +475,7 @@ function Workspace() {
         id: string; symbol: string; side: 'long' | 'short'; chart: ChartCanvas;
         entry_time: number; entry_price: number; current_time: number; current_price: number;
         stop_time: number; stop_price: number; target_time: number; target_price: number;
+        risk_percent?: number | null; notional?: number | null; margin?: number | null; pnl?: number | null;
         status: 'OPEN' | 'CLOSED - WIN' | 'CLOSED - FAILED'; close_reason?: 'TP' | 'SL' | 'MANUAL' | null; updated_at?: string;
       }>>;
     }).then(operations => {
@@ -492,6 +493,10 @@ function Workspace() {
         closed: operation.status !== 'OPEN',
         status: operation.status,
         closeReason: operation.close_reason ?? undefined,
+        riskPercent: operation.risk_percent ?? undefined,
+        notional: operation.notional ?? undefined,
+        margin: operation.margin ?? undefined,
+        pnl: operation.pnl ?? undefined,
       } satisfies Drawing));
       setDrawings(current => [...current.filter(drawing => !drawing.paper), ...restored]);
       const activeIndex = restored.findIndex(operation => !operation.closed);
@@ -526,6 +531,8 @@ function Workspace() {
             current_time: Number(drawing.end.time), current_price: drawing.end.price,
             stop_time: Number(drawing.stop?.time ?? drawing.end.time), stop_price: drawing.stop?.price ?? drawing.start.price,
             target_time: Number(drawing.target?.time ?? drawing.end.time), target_price: drawing.target?.price ?? drawing.end.price,
+            risk_percent: drawing.riskPercent ?? null, notional: drawing.notional ?? null,
+            margin: drawing.margin ?? null, pnl: drawing.pnl ?? null,
             status: drawing.status ?? (drawing.closed ? 'CLOSED - FAILED' : 'OPEN'),
             close_reason: drawing.closeReason ?? null,
           }),
@@ -1245,11 +1252,16 @@ function Workspace() {
       return;
     }
     if (previousOpen.length) setDrawings(current => current.filter(drawing => !previousOpen.some(previous => previous.id === drawing.id)));
+    const riskPercent = Number((JSON.parse(localStorage.getItem('helloworld-paper-assist') ?? '{}') as { riskPercent?: number }).riskPercent) || paperRiskPercent;
+    const riskAmount = paperInitialBalance * riskPercent / 100;
+    const stopPercent = Math.abs(entry - stop) / entry;
+    const notional = stopPercent > 0 ? riskAmount / stopPercent : 0;
+    const margin = paperLeverage > 0 ? notional / paperLeverage : 0;
     const response = await fetch(`${apiUrl}/trading/paper/operations`, {
       method: 'POST',
       headers: { Authorization: `Bearer ${auth.accessToken}`, 'Content-Type': 'application/json' },
       credentials: 'include',
-      body: JSON.stringify({ symbol, side: type, chart: 'entry', entry_time: Number(latest.time), entry_price: entry, current_time: Number(latest.time), current_price: entry, stop_time: Number(futureTime), stop_price: stop, target_time: Number(futureTime), target_price: target, status: 'OPEN', close_reason: null }),
+      body: JSON.stringify({ symbol, side: type, chart: 'entry', entry_time: Number(latest.time), entry_price: entry, current_time: Number(latest.time), current_price: entry, stop_time: Number(futureTime), stop_price: stop, target_time: Number(futureTime), target_price: target, risk_percent: riskPercent, notional, margin, pnl: 0, status: 'OPEN', close_reason: null }),
     });
     if (!response.ok) {
       setPaperSyncError('No se pudo guardar la paper operation.');
@@ -1262,6 +1274,7 @@ function Workspace() {
       end: { time: latest.time, price: entry },
       stop: { time: futureTime, price: stop },
       target: { time: futureTime, price: target },
+      riskPercent, notional, margin, pnl: 0,
     };
     setDrawings(current => {
       const next = [...current, position];
@@ -1279,6 +1292,12 @@ function Workspace() {
     const direction = position.type === 'long' ? 1 : -1;
     const priceChange = ((position.end.price - position.start.price) / position.start.price) * direction;
     const status = priceChange >= 0 ? 'CLOSED - WIN' : 'CLOSED - FAILED';
+    const stopDistance = Math.abs(position.start.price - (position.stop?.price ?? position.start.price));
+    const stopPercent = position.start.price > 0 ? stopDistance / position.start.price : 0;
+    const notional = Number.isFinite(position.notional) && (position.notional ?? 0) > 0
+      ? position.notional as number
+      : Math.min(stopPercent > 0 ? paperRiskAmount / stopPercent : 0, paperInitialBalance * paperLeverage);
+    const pnl = priceChange * notional;
     const response = await fetch(`${apiUrl}/trading/paper/operations/${position.id}`, {
       method: 'PUT',
       headers: { Authorization: `Bearer ${auth.accessToken}`, 'Content-Type': 'application/json' },
@@ -1291,6 +1310,7 @@ function Workspace() {
         current_time: Number(position.end.time), current_price: position.end.price,
         stop_time: Number(position.stop?.time ?? position.end.time), stop_price: position.stop?.price ?? position.start.price,
         target_time: Number(position.target?.time ?? position.end.time), target_price: position.target?.price ?? position.end.price,
+        risk_percent: position.riskPercent ?? paperRiskPercent, notional, margin: position.margin ?? (paperLeverage > 0 ? notional / paperLeverage : 0), pnl,
         status, close_reason: 'MANUAL',
       }),
     });
@@ -1298,7 +1318,7 @@ function Workspace() {
       setPaperSyncError('No se pudo cerrar la paper position.');
       return;
     }
-    setDrawings(current => current.map(drawing => drawing.id === position.id ? { ...drawing, closed: true, status, closeReason: 'MANUAL' } : drawing));
+    setDrawings(current => current.map(drawing => drawing.id === position.id ? { ...drawing, closed: true, status, closeReason: 'MANUAL', notional, margin: position.margin ?? (paperLeverage > 0 ? notional / paperLeverage : 0), pnl } : drawing));
     setVisibleClosedId(position.id);
     setActivePositionIndex(null);
     setSelectedDrawing(null);
@@ -1327,9 +1347,13 @@ function Workspace() {
   const paperLeverage = Number.isFinite(assist.leverage) && (assist.leverage ?? 0) > 0 ? (assist.leverage as number) : 10;
   const paperRiskAmount = paperInitialBalance * paperRiskPercent / 100;
   const paperPnl = (position: Drawing) => {
+    if (position.closed && Number.isFinite(position.pnl)) return position.pnl as number;
     const stopDistance = Math.abs(position.start.price - (position.stop?.price ?? position.start.price));
     const stopPercent = position.start.price > 0 ? stopDistance / position.start.price : 0;
-    const notional = stopPercent > 0 ? paperRiskAmount / stopPercent : 0;
+    const calculatedNotional = stopPercent > 0 ? paperRiskAmount / stopPercent : 0;
+    const notional = Number.isFinite(position.notional) && (position.notional ?? 0) > 0
+      ? position.notional as number
+      : Math.min(calculatedNotional, paperInitialBalance * paperLeverage);
     const direction = position.type === 'long' ? 1 : -1;
     return ((position.end.price - position.start.price) / position.start.price) * direction * notional;
   };
@@ -1344,11 +1368,14 @@ function Workspace() {
       const direction = position.type === 'long' ? 1 : -1;
       const stopDistance = Math.abs(position.start.price - (position.stop?.price ?? position.start.price));
       const stopPercent = position.start.price > 0 ? stopDistance / position.start.price : 0;
-      const notional = stopPercent > 0 ? paperRiskAmount / stopPercent : 0;
-      const margin = paperLeverage > 0 ? notional / paperLeverage : 0;
+      const calculatedNotional = stopPercent > 0 ? paperRiskAmount / stopPercent : 0;
+      const notional = Number.isFinite(position.notional) && (position.notional ?? 0) > 0
+        ? position.notional as number
+        : Math.min(calculatedNotional, paperInitialBalance * paperLeverage);
+      const margin = position.margin ?? (paperLeverage > 0 ? notional / paperLeverage : 0);
       const leverage = paperLeverage;
       const priceChange = ((position.end.price - position.start.price) / position.start.price) * direction;
-      const pnl = priceChange * notional;
+      const pnl = position.closed && Number.isFinite(position.pnl) ? position.pnl as number : priceChange * notional;
       const roe = (pnl / margin) * 100;
       const targetPrice = position.target?.price ?? position.end.price;
       const riskDistance = Math.abs(position.start.price - (position.stop?.price ?? position.start.price));

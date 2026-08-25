@@ -15,7 +15,8 @@ paper_operations_table = table(
     column("id"), column("user_id"), column("symbol"), column("side"), column("chart"),
     column("entry_time"), column("entry_price"), column("current_at"), column("current_price"),
     column("stop_time"), column("stop_price"), column("target_time"), column("target_price"),
-    column("status"), column("close_reason"), column("created_at"), column("updated_at"),
+    column("status"), column("close_reason"), column("risk_percent"), column("notional"),
+    column("margin"), column("pnl"), column("created_at"), column("updated_at"),
 )
 
 
@@ -63,7 +64,6 @@ class PaperOperationStore:
                 sqlalchemy_delete(paper_operations_table).where(
                     paper_operations_table.c.id == operation_id,
                     paper_operations_table.c.user_id == user_id,
-                    paper_operations_table.c.status == "OPEN",
                 )
             )
         return result.rowcount > 0
