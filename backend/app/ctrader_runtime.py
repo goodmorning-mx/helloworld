@@ -414,7 +414,15 @@ class CTraderSession:
             elif response.get("type") == "ACCOUNTS":
                 self._status["accounts"] = response.get("data", [])
             elif response.get("type") == "ERROR":
-                self._status.update({"error": response.get("error"), "ready": False})
+                error = str(response.get("error") or "")
+                # cTrader can rate-limit a secondary request while the account
+                # socket remains authenticated. Do not turn a healthy session
+                # into "disconnected" in that case; the next request can
+                # retry after its cooldown.
+                transient = "rate" in error.lower() or "limit" in error.lower()
+                self._status["error"] = error
+                if not transient:
+                    self._status["ready"] = False
             elif response.get("type") == "TICK":
                 self._status["last_tick"] = response
             else:
