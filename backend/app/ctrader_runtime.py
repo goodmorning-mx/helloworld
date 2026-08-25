@@ -37,7 +37,7 @@ def _worker(high_queue: Any, low_queue: Any, response_queue: Any, host: str, por
 
     state = {"connected": False, "ready": False, "account_id": account_id, "accounts": [], "symbols": {},
              "balance": None, "money_digits": None, "broker": None, "trader_login": None,
-             "subscribed_spots": set(), "subscribed_trendbars": set()}
+             "subscribed_spots": set(), "subscribed_trendbars": set(), "auth_retry_count": 0}
     client = Client(host, port, TcpProtocol)
 
     def emit(payload: dict[str, object]) -> None:
@@ -52,26 +52,39 @@ def _worker(high_queue: Any, low_queue: Any, response_queue: Any, host: str, por
             error = str(value)
         emit({"type": "ERROR", "error": error})
 
+    def retry_auth(reason: object, callback: Any) -> None:
+        value = getattr(reason, "value", reason)
+        error = str(value)
+        if "rate" not in error.lower() and "limit" not in error.lower():
+            fail(reason)
+            return
+        state["auth_retry_count"] += 1
+        delay = min(30, 2 ** min(int(state["auth_retry_count"]), 4))
+        emit({"type": "ERROR", "error": f"cTrader limitó temporalmente la autenticación; reintentando en {delay}s."})
+        reactor.callLater(delay, callback)
+
+    def application_auth() -> None:
+        request = ProtoOAApplicationAuthReq()
+        request.clientId = client_id
+        request.clientSecret = client_secret
+        client.send(request).addCallbacks(lambda _message: get_accounts(), lambda reason: retry_auth(reason, application_auth))
+
     def auth_account() -> None:
         request = ProtoOAAccountAuthReq()
         request.ctidTraderAccountId = account_id
         request.accessToken = access_token
         deferred = client.send(request)
-        deferred.addCallbacks(on_account_auth, fail)
+        deferred.addCallbacks(on_account_auth, lambda reason: retry_auth(reason, auth_account))
 
     def get_accounts() -> None:
         request = ProtoOAGetAccountListByAccessTokenReq()
         request.accessToken = access_token
         deferred = client.send(request)
-        deferred.addCallbacks(on_accounts, fail)
+        deferred.addCallbacks(on_accounts, lambda reason: retry_auth(reason, get_accounts))
 
     def on_connected(_client: object) -> None:
         state["connected"] = True
-        request = ProtoOAApplicationAuthReq()
-        request.clientId = client_id
-        request.clientSecret = client_secret
-        deferred = client.send(request)
-        deferred.addCallbacks(lambda _message: get_accounts(), fail)
+        application_auth()
 
     def on_disconnected(_client: object, reason: object) -> None:
         state["connected"] = False
@@ -84,7 +97,7 @@ def _worker(high_queue: Any, low_queue: Any, response_queue: Any, host: str, por
         nonlocal account_id
         payload = Protobuf.extract(message)
         if hasattr(payload, "errorCode"):
-            fail(getattr(payload, "description", getattr(payload, "errorCode", "cTrader auth failed")))
+            retry_auth(getattr(payload, "description", getattr(payload, "errorCode", "cTrader auth failed")), get_accounts)
             return
         accounts = [{"account_id": int(item.ctidTraderAccountId), "broker": str(getattr(item, "brokerName", "") or ""), "is_live": bool(getattr(item, "isLive", False))} for item in payload.ctidTraderAccount]
         state["accounts"] = accounts
@@ -101,9 +114,10 @@ def _worker(high_queue: Any, low_queue: Any, response_queue: Any, host: str, por
     def on_account_auth(message: object) -> None:
         payload = Protobuf.extract(message)
         if hasattr(payload, "errorCode"):
-            fail(getattr(payload, "description", getattr(payload, "errorCode", "cTrader account auth failed")))
+            retry_auth(getattr(payload, "description", getattr(payload, "errorCode", "cTrader account auth failed")), auth_account)
             return
         state["ready"] = True
+        state["auth_retry_count"] = 0
         emit({"type": "STATUS", "connected": True, "ready": True, "account_id": account_id})
         trader_request = ProtoOATraderReq()
         trader_request.ctidTraderAccountId = account_id
