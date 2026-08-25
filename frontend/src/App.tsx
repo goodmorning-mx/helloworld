@@ -1305,6 +1305,19 @@ function Workspace() {
     setPaperTab('closed');
   }
 
+  async function deletePaperPosition(position: Drawing) {
+    if (!position.id || !position.closed || !auth.accessToken) return;
+    const response = await fetch(`${apiUrl}/trading/paper/operations/${position.id}`, {
+      method: 'DELETE', headers: { Authorization: `Bearer ${auth.accessToken}` }, credentials: 'include',
+    });
+    if (!response.ok) {
+      setPaperSyncError('No se pudo borrar la paper operation cerrada.');
+      return;
+    }
+    setDrawings(current => current.filter(drawing => drawing.id !== position.id));
+    if (visibleClosedId === position.id) setVisibleClosedId(null);
+  }
+
   function chooseTool(key: 'line' | 'ruler' | 'long' | 'short') {
     setTool(tool === key ? null : key);
   }
@@ -1342,7 +1355,7 @@ function Workspace() {
       const rewardDistance = Math.abs(targetPrice - position.start.price);
       const rr = riskDistance > 0 ? rewardDistance / riskDistance : 0;
       const drawingIndex = drawings.findIndex(drawing => drawing.id === position.id);
-      return <tr key={`${position.start.time}-${index}`}><td>{position.symbol ?? symbol}</td><td><span className={`position-side ${position.type}`}>{position.type.toUpperCase()}</span></td><td>{position.start.price.toFixed(8)}</td><td>{position.end.price.toFixed(8)}</td><td>{position.stop?.price?.toFixed(8) ?? '—'}</td><td>{targetPrice.toFixed(8)}</td><td>{margin.toFixed(2)} USDT</td><td>{rr.toFixed(2)}:1</td><td className={pnl >= 0 ? 'value-positive' : 'value-negative'}>{pnl >= 0 ? '+' : ''}{pnl.toFixed(8)} USDT</td><td className={roe >= 0 ? 'value-positive' : 'value-negative'}>{roe >= 0 ? '+' : ''}{roe.toFixed(8)}%</td><td><button className="paper-edit-button" type="button" disabled={position.closed || drawingIndex < 0} onClick={() => void closePaperPosition(position)}>{position.closed ? 'Cerrada' : 'Cerrar posición'}</button></td></tr>;
+      return <tr key={`${position.start.time}-${index}`}><td>{position.symbol ?? symbol}</td><td><span className={`position-side ${position.type}`}>{position.type.toUpperCase()}</span></td><td>{position.start.price.toFixed(8)}</td><td>{position.end.price.toFixed(8)}</td><td>{position.stop?.price?.toFixed(8) ?? '—'}</td><td>{targetPrice.toFixed(8)}</td><td>{margin.toFixed(2)} USDT</td><td>{rr.toFixed(2)}:1</td><td className={pnl >= 0 ? 'value-positive' : 'value-negative'}>{pnl >= 0 ? '+' : ''}{pnl.toFixed(8)} USDT</td><td className={roe >= 0 ? 'value-positive' : 'value-negative'}>{roe >= 0 ? '+' : ''}{roe.toFixed(8)}%</td><td><button className="paper-edit-button" type="button" disabled={drawingIndex < 0} onClick={() => void (position.closed ? deletePaperPosition(position) : closePaperPosition(position))}>{position.closed ? 'Borrar' : 'Cerrar posición'}</button></td></tr>;
     })}</tbody></table></div>}
   </section>;
 
