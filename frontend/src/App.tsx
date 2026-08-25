@@ -11,6 +11,19 @@ const apiUrl = configuredApiUrl === '/api' && window.location.hostname === 'dev.
   ? 'https://api.dev.helloworld.goodmorning.mx'
   : configuredApiUrl;
 
+// Broker contract limits used by paper trading until live symbol metadata is
+// available. The effective paper leverage is always the lower of the Lab
+// recommendation and this broker/symbol limit.
+const SYMBOL_MAX_LEVERAGE: Record<string, number> = {
+  'binance:BTCUSDT': 125, 'binance:ETHUSDT': 100, 'binance:BNBUSDT': 75,
+  'binance:SOLUSDT': 100, 'binance:XRPUSDT': 75, 'binance:DOGEUSDT': 75,
+  'ctrader:AUDUSD': 30, 'ctrader:XAUUSD': 20, 'ctrader:XAGUSD': 20,
+};
+
+function maxLeverageFor(broker: 'binance' | 'ctrader', symbol: string) {
+  return SYMBOL_MAX_LEVERAGE[`${broker}:${symbol}`] ?? (broker === 'binance' ? 20 : 10);
+}
+
 type CTraderCandleRow = { timestamp: number; low: number; delta_open: number; delta_high: number; delta_close: number };
 function parseCTraderCandles(payload: unknown): Array<{ time: UTCTimestamp; open: number; high: number; low: number; close: number }> {
   const rows = (payload as { data?: CTraderCandleRow[] })?.data;
@@ -1265,7 +1278,7 @@ function Workspace() {
     const riskPercent = Number((JSON.parse(localStorage.getItem('helloworld-paper-assist') ?? '{}') as { riskPercent?: number }).riskPercent) || paperRiskPercent;
     const riskAmount = paperInitialBalance * riskPercent / 100;
     const stopPercent = Math.abs(entry - stop) / entry;
-    const notional = stopPercent > 0 ? riskAmount / stopPercent : 0;
+    const notional = Math.min(stopPercent > 0 ? riskAmount / stopPercent : 0, paperInitialBalance * paperLeverage);
     const margin = paperLeverage > 0 ? notional / paperLeverage : 0;
     const response = await fetch(`${apiUrl}/trading/paper/operations`, {
       method: 'POST',
@@ -1354,7 +1367,9 @@ function Workspace() {
 
   const paperPositions = drawings.filter(drawing => drawing.paper && (drawing.type === 'long' || drawing.type === 'short'));
   const assist = JSON.parse(localStorage.getItem('helloworld-paper-assist') ?? '{}') as { leverage?: number };
-  const paperLeverage = Number.isFinite(assist.leverage) && (assist.leverage ?? 0) > 0 ? (assist.leverage as number) : 10;
+  const theoreticalPaperLeverage = Number.isFinite(assist.leverage) && (assist.leverage ?? 0) > 0 ? (assist.leverage as number) : 10;
+  const brokerMaxLeverage = maxLeverageFor(broker, symbol);
+  const paperLeverage = Math.min(theoreticalPaperLeverage, brokerMaxLeverage);
   const paperRiskAmount = paperInitialBalance * paperRiskPercent / 100;
   const paperPnl = (position: Drawing) => {
     const maxLoss = Math.max(0, paperRiskAmount);
@@ -1374,7 +1389,7 @@ function Workspace() {
   const displayedPaperPositions = paperPositions.filter(position => paperTab === 'open' ? !position.closed : position.closed);
   const positionsTable = <section className="positions-panel" aria-label="Posiciones abiertas">
     <div className="positions-panel-head"><div><span className="positions-kicker">TRADING</span><h2>Paper operations</h2></div><span className="paper-badge">PAPER</span></div>{paperSyncError && <p className="paper-sync-error" role="status">{paperSyncError}</p>}<div className="paper-tabs" role="tablist" aria-label="Paper operations"><button role="tab" aria-selected={paperTab === 'open'} className={paperTab === 'open' ? 'paper-tab-active' : ''} onClick={() => setPaperTab('open')}>Abiertas <b>{paperPositions.filter(position => !position.closed).length}</b></button><button role="tab" aria-selected={paperTab === 'closed'} className={paperTab === 'closed' ? 'paper-tab-active' : ''} onClick={() => setPaperTab('closed')}>Cerradas <b>{paperPositions.filter(position => position.closed).length}</b></button></div>
-    <div className="paper-balance-grid"><label>Balance inicial<input type="number" min="1" step="1" value={paperInitialBalance} onChange={event => { const value = Math.max(1, Number(event.target.value) || 1); setPaperInitialBalance(value); localStorage.setItem('helloworld-paper-balance', String(value)); }} /></label><label>Riesgo por operación (%)<input type="number" min="0.05" max="10" step="0.05" value={paperRiskPercent} onChange={event => { const value = Math.max(.05, Math.min(10, Number(event.target.value) || .05)); setPaperRiskPercent(value); const current = JSON.parse(localStorage.getItem('helloworld-paper-assist') ?? '{}'); localStorage.setItem('helloworld-paper-assist', JSON.stringify({ ...current, balance: paperInitialBalance, riskPercent: value })); }} /></label><div><small>Equity teórica</small><strong>{paperEquity.toFixed(2)} USD</strong></div><div><small>PNL realizado</small><strong>{realizedPnl.toFixed(2)} USD</strong></div><div><small>PNL abierto</small><strong>{unrealizedPnl.toFixed(2)} USD</strong></div></div>
+    <div className="paper-balance-grid"><label>Balance inicial<input type="number" min="1" step="1" value={paperInitialBalance} onChange={event => { const value = Math.max(1, Number(event.target.value) || 1); setPaperInitialBalance(value); localStorage.setItem('helloworld-paper-balance', String(value)); }} /></label><label>Riesgo por operación (%)<input type="number" min="0.05" max="10" step="0.05" value={paperRiskPercent} onChange={event => { const value = Math.max(.05, Math.min(10, Number(event.target.value) || .05)); setPaperRiskPercent(value); const current = JSON.parse(localStorage.getItem('helloworld-paper-assist') ?? '{}'); localStorage.setItem('helloworld-paper-assist', JSON.stringify({ ...current, balance: paperInitialBalance, riskPercent: value })); }} /></label><div><small>Leverage máximo · {symbol}</small><strong>{brokerMaxLeverage.toFixed(0)}x</strong></div><div><small>Leverage paper efectivo</small><strong>{paperLeverage.toFixed(1)}x</strong></div><div><small>Equity teórica</small><strong>{paperEquity.toFixed(2)} USD</strong></div><div><small>PNL realizado</small><strong>{realizedPnl.toFixed(2)} USD</strong></div><div><small>PNL abierto</small><strong>{unrealizedPnl.toFixed(2)} USD</strong></div></div>
     {displayedPaperPositions.length === 0 ? <p className="positions-empty">{paperTab === 'open' ? 'No hay operaciones abiertas.' : 'No hay operaciones cerradas.'}</p> : <div className="positions-table-scroll"><table className="positions-table"><thead><tr><th>Instrumento</th><th>Lado</th><th>Entrada</th><th>Actual</th><th>SL</th><th>TP</th><th>Margen</th><th>R:R</th><th>PNL</th><th>ROE</th><th>Acción</th></tr></thead><tbody>{displayedPaperPositions.map((position, index) => {
       const direction = position.type === 'long' ? 1 : -1;
       const stopDistance = Math.abs(position.start.price - (position.stop?.price ?? position.start.price));
