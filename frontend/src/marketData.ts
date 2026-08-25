@@ -119,8 +119,18 @@ function parseCTraderRows(rows: unknown[]): MarketBar[] {
 export async function loadThirtyDays(symbol: string, interval = '1m', options: LoadMarketDataOptions = {}): Promise<MarketBar[]> {
   const now = Math.floor(Date.now() / 1000);
   const start = now - 30 * 86400;
+  const validateCoverage = (rows: MarketBar[]) => {
+    if (options.broker !== 'ctrader' || rows.length < 2) return rows;
+    const coverage = rows[rows.length - 1].time - rows[0].time;
+    if (coverage < 26 * 86400) {
+      const first = new Date(rows[0].time * 1000).toLocaleDateString('es-MX');
+      const last = new Date(rows[rows.length - 1].time * 1000).toLocaleDateString('es-MX');
+      throw new Error(`cTrader solo devolvió ${first} → ${last}; no se completaron 30 días. El Lab no calculará resultados parciales.`);
+    }
+    return rows;
+  };
   const cached = await readCachedBars(symbol, interval);
-  if (cached.length > 0 && cached[0].time <= start + 600 && cached[cached.length - 1].time >= now - 600) return cached.filter(bar => bar.time >= start && bar.time <= now);
+  if (cached.length > 0 && cached[0].time <= start + 600 && cached[cached.length - 1].time >= now - 600) return validateCoverage(cached.filter(bar => bar.time >= start && bar.time <= now));
 
   if (options.broker === 'ctrader') {
     if (!options.apiUrl) throw new Error('La API de cTrader no está configurada.');
@@ -132,7 +142,7 @@ export async function loadThirtyDays(symbol: string, interval = '1m', options: L
     const rows = parseCTraderRows(payload.data ?? []).filter(bar => bar.time >= start && bar.time <= now);
     if (rows.length === 0) throw new Error(`cTrader no devolvió velas de ${symbol} para los últimos 30 días.`);
     await cacheBars(symbol, interval, rows);
-    return (await readCachedBars(symbol, interval)).filter(bar => bar.time >= start && bar.time <= now);
+    return validateCoverage((await readCachedBars(symbol, interval)).filter(bar => bar.time >= start && bar.time <= now));
   }
 
   let cursor = now * 1000;
