@@ -1357,7 +1357,8 @@ function Workspace() {
   const paperLeverage = Number.isFinite(assist.leverage) && (assist.leverage ?? 0) > 0 ? (assist.leverage as number) : 10;
   const paperRiskAmount = paperInitialBalance * paperRiskPercent / 100;
   const paperPnl = (position: Drawing) => {
-    if (position.closed && Number.isFinite(position.pnl)) return position.pnl as number;
+    const maxLoss = Math.max(0, paperRiskAmount);
+    if (position.closed && Number.isFinite(position.pnl)) return Math.max(-maxLoss, position.pnl as number);
     const stopDistance = Math.abs(position.start.price - (position.stop?.price ?? position.start.price));
     const stopPercent = position.start.price > 0 ? stopDistance / position.start.price : 0;
     const calculatedNotional = stopPercent > 0 ? paperRiskAmount / stopPercent : 0;
@@ -1365,7 +1366,7 @@ function Workspace() {
       ? position.notional as number
       : Math.min(calculatedNotional, paperInitialBalance * paperLeverage);
     const direction = position.type === 'long' ? 1 : -1;
-    return ((position.end.price - position.start.price) / position.start.price) * direction * notional;
+    return Math.max(-maxLoss, ((position.end.price - position.start.price) / position.start.price) * direction * notional);
   };
   const realizedPnl = paperPositions.filter(position => position.closed).reduce((sum, position) => sum + paperPnl(position), 0);
   const unrealizedPnl = paperPositions.filter(position => !position.closed).reduce((sum, position) => sum + paperPnl(position), 0);
@@ -1385,7 +1386,7 @@ function Workspace() {
       const margin = position.margin ?? (paperLeverage > 0 ? notional / paperLeverage : 0);
       const leverage = paperLeverage;
       const priceChange = ((position.end.price - position.start.price) / position.start.price) * direction;
-      const pnl = position.closed && Number.isFinite(position.pnl) ? position.pnl as number : priceChange * notional;
+      const pnl = paperPnl(position);
       const roe = (pnl / margin) * 100;
       const targetPrice = position.target?.price ?? position.end.price;
       const riskDistance = Math.abs(position.start.price - (position.stop?.price ?? position.start.price));
