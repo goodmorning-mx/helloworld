@@ -231,6 +231,7 @@ def _worker(high_queue: Any, low_queue: Any, response_queue: Any, host: str, por
         request.period = _period(str(command["interval"]))
         request.fromTimestamp = int(command["from_timestamp"])
         request.toTimestamp = int(command["to_timestamp"])
+        request.count = 1000
         deferred = client.send(request)
         deferred.addCallbacks(lambda message: on_candles(message, command), fail)
 
@@ -245,7 +246,8 @@ def _worker(high_queue: Any, low_queue: Any, response_queue: Any, host: str, por
             rows.append({"timestamp": int(bar.utcTimestampInMinutes), "low": float(bar.low) / divider,
                          "delta_open": float(bar.deltaOpen) / divider, "delta_high": float(bar.deltaHigh) / divider,
                          "delta_close": float(bar.deltaClose) / divider})
-        emit({"type": "CANDLES", "request_id": command["request_id"], "data": rows})
+        emit({"type": "CANDLES", "request_id": command["request_id"], "data": rows,
+              "has_more": bool(getattr(payload, "hasMore", False))})
 
     def handle(command: dict[str, object]) -> None:
         kind = command.get("type")
@@ -352,10 +354,25 @@ class CTraderSession:
         symbol_id = self.symbols().get(symbol.upper())
         if symbol_id is None:
             raise ValueError(f"Símbolo cTrader no disponible: {symbol}")
-        request_id = uuid4().hex
-        self._low.put({"type": "GET_CANDLES", "request_id": request_id, "symbol_id": symbol_id,
-                       "interval": interval, "from_timestamp": start_ms, "to_timestamp": end_ms})
-        return list(self._wait("CANDLES", timeout, request_id).get("data", []))
+        all_rows: list[dict[str, object]] = []
+        cursor_ms = end_ms
+        step_ms = _period(interval) * 60 * 1000
+        for _ in range(100):
+            request_id = uuid4().hex
+            self._low.put({"type": "GET_CANDLES", "request_id": request_id, "symbol_id": symbol_id,
+                           "interval": interval, "from_timestamp": start_ms, "to_timestamp": cursor_ms})
+            response = self._wait("CANDLES", timeout, request_id)
+            batch = list(response.get("data", []))
+            all_rows.extend(batch)
+            if not batch or not response.get("has_more"):
+                break
+            oldest_minute = min(int(row["timestamp"]) for row in batch)
+            next_cursor_ms = oldest_minute * 60 * 1000 - step_ms
+            if next_cursor_ms >= cursor_ms or next_cursor_ms < start_ms:
+                break
+            cursor_ms = next_cursor_ms
+        unique = {int(row["timestamp"]): row for row in all_rows}
+        return [unique[key] for key in sorted(unique)]
 
     def order(self, command: dict[str, object], timeout: float = 30) -> dict[str, object]:
         request_id = uuid4().hex
