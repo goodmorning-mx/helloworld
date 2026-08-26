@@ -76,7 +76,7 @@ export default function LabWindow({ activeSymbol = 'BTCUSDT', broker = 'binance'
   const [direction, setDirection] = useState<LabDirection>('long');
   const [resolution, setResolution] = useState<LabResolution>(5);
   const [capitalModel, setCapitalModel] = useState<LabCapitalModel>('compound');
-  const [horizon, setHorizon] = useState(5);
+  const [horizon, setHorizon] = useState(10);
   const [riskFraction, setRiskFraction] = useState(1);
   const [startingBalance, setStartingBalance] = useState(() => Number(localStorage.getItem('helloworld-paper-balance') ?? 100) || 100);
   const [bars, setBars] = useState<MarketBar[]>(initialBars);
