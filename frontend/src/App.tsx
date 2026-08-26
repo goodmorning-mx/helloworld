@@ -124,10 +124,10 @@ function MobileSheet({ title, onClose, children }: { title: string; onClose: () 
 }
 
 function IndicatorSettingsModal({
-  showSessions, showRsi, showSsl, rsiPeriod, sslPeriod, onClose, onSessions, onRsi, onSsl, onRsiPeriod, onSslPeriod,
-}: { showSessions: boolean; showRsi: boolean; showSsl: boolean; rsiPeriod: number; sslPeriod: number; onClose: () => void; onSessions: () => void; onRsi: () => void; onSsl: () => void; onRsiPeriod: (value: number) => void; onSslPeriod: (value: number) => void }) {
+  showSessions, showRsi, showSsl, rsiPeriod, rsiLowBand, rsiHighBand, sslPeriod, onClose, onSessions, onRsi, onSsl, onRsiPeriod, onRsiLowBand, onRsiHighBand, onSslPeriod,
+}: { showSessions: boolean; showRsi: boolean; showSsl: boolean; rsiPeriod: number; rsiLowBand: number; rsiHighBand: number; sslPeriod: number; onClose: () => void; onSessions: () => void; onRsi: () => void; onSsl: () => void; onRsiPeriod: (value: number) => void; onRsiLowBand: (value: number) => void; onRsiHighBand: (value: number) => void; onSslPeriod: (value: number) => void }) {
   const row = (label: string, description: string, active: boolean, toggle: () => void, period?: number, setPeriod?: (value: number) => void) => <div className="indicator-setting-row"><button className={`indicator-toggle ${active ? 'indicator-toggle-active' : ''}`} onClick={toggle} aria-pressed={active}><span className="indicator-check">{active ? '✓' : ''}</span><span><b>{label}</b><small>{description}</small></span></button>{period !== undefined && setPeriod && <label className="indicator-period">Periodo<input type="number" min="2" max="200" value={period} onChange={event => setPeriod(Math.max(2, Math.min(200, Number(event.target.value) || 2)))} /></label>}</div>;
-  return <div className="indicator-modal-backdrop" role="presentation" onClick={onClose}><section className="indicator-modal" role="dialog" aria-modal="true" aria-label="Indicadores" onClick={event => event.stopPropagation()}><div className="indicator-modal-head"><div><span className="eyebrow">CHART · INDICATORS</span><h2>Indicadores</h2></div><button onClick={onClose} aria-label="Cerrar">×</button></div><p className="indicator-modal-help">Activa los indicadores que se dibujan directamente sobre el precio. La configuración se conserva por usuario.</p>{row('Sesiones de mercado', 'Tokyo, Londres, Nueva York y Sydney', showSessions, onSessions)}{row('RSI', 'Marcadores en el cierre · hover para ver el valor', showRsi, onRsi, rsiPeriod, onRsiPeriod)}{row('SSL Channel', 'Canal dinámico sobre el precio', showSsl, onSsl, sslPeriod, onSslPeriod)}<button className="indicator-modal-done" onClick={onClose}>Listo</button></section></div>;
+  return <div className="indicator-modal-backdrop" role="presentation" onClick={onClose}><section className="indicator-modal" role="dialog" aria-modal="true" aria-label="Indicadores" onClick={event => event.stopPropagation()}><div className="indicator-modal-head"><div><span className="eyebrow">CHART · INDICATORS</span><h2>Indicadores</h2></div><button onClick={onClose} aria-label="Cerrar">×</button></div><p className="indicator-modal-help">Activa los indicadores que se dibujan directamente sobre el precio. La configuración se conserva por usuario.</p>{row('Sesiones de mercado', 'Tokyo, Londres, Nueva York y Sydney', showSessions, onSessions)}{row('RSI', 'Solo marca valores fuera de las bandas', showRsi, onRsi, rsiPeriod, onRsiPeriod)}{showRsi && <div className="indicator-band-row"><label>Low band<input type="number" min="1" max="49" value={rsiLowBand} onChange={event => onRsiLowBand(Math.max(1, Math.min(49, Number(event.target.value) || 1)))} /></label><label>High band<input type="number" min="51" max="99" value={rsiHighBand} onChange={event => onRsiHighBand(Math.max(51, Math.min(99, Number(event.target.value) || 99)))} /></label></div>}{row('SSL Channel', 'Canal dinámico sobre el precio', showSsl, onSsl, sslPeriod, onSslPeriod)}<button className="indicator-modal-done" onClick={onClose}>Listo</button></section></div>;
 }
 
 type BinancePosition = {
@@ -455,9 +455,11 @@ function Workspace() {
   const [showRsi, setShowRsi] = useState(() => localStorage.getItem('helloworld-indicator-rsi') === 'true');
   const [showSsl, setShowSsl] = useState(() => localStorage.getItem('helloworld-indicator-ssl') === 'true');
   const [rsiPeriod, setRsiPeriod] = useState(() => Number(localStorage.getItem('helloworld-rsi-period') ?? 14) || 14);
+  const [rsiLowBand, setRsiLowBand] = useState(() => Number(localStorage.getItem('helloworld-rsi-low-band') ?? 30) || 30);
+  const [rsiHighBand, setRsiHighBand] = useState(() => Number(localStorage.getItem('helloworld-rsi-high-band') ?? 70) || 70);
   const [sslPeriod, setSslPeriod] = useState(() => Number(localStorage.getItem('helloworld-ssl-period') ?? 10) || 10);
   const [showIndicatorSettings, setShowIndicatorSettings] = useState(false);
-  const [indicatorHover, setIndicatorHover] = useState<{ x: number; y: number; label: string } | null>(null);
+  const [indicatorHover, setIndicatorHover] = useState<{ canvas: ChartCanvas; x: number; y: number; label: string } | null>(null);
   const [stageSize, setStageSize] = useState({ width: 1, height: 1 });
   const [overviewSize, setOverviewSize] = useState({ width: 1, height: 1 });
   const [tool, setTool] = useState<'line' | 'ruler' | 'long' | 'short' | null>(null);
@@ -494,10 +496,12 @@ function Workspace() {
     localStorage.setItem('helloworld-indicator-rsi', String(showRsi));
     localStorage.setItem('helloworld-indicator-ssl', String(showSsl));
     localStorage.setItem('helloworld-rsi-period', String(rsiPeriod));
+    localStorage.setItem('helloworld-rsi-low-band', String(rsiLowBand));
+    localStorage.setItem('helloworld-rsi-high-band', String(rsiHighBand));
     localStorage.setItem('helloworld-ssl-period', String(sslPeriod));
     setViewportRevision(value => value + 1);
     setOverviewRevision(value => value + 1);
-  }, [showRsi, showSsl, rsiPeriod, sslPeriod]);
+  }, [showRsi, showSsl, rsiPeriod, rsiLowBand, rsiHighBand, sslPeriod]);
 
   useEffect(() => {
     const syncAssist = () => {
@@ -1101,15 +1105,15 @@ function Workspace() {
       return point ? `${index === 0 ? 'M' : 'L'} ${point.x} ${point.y}` : '';
     }).filter(Boolean).join(' ');
     const rsiMarkers = rsi.map((value, index) => {
-      if (value === null) return null;
+      if (value === null || (value > rsiLowBand && value < rsiHighBand)) return null;
       const point = toPoint(bars[index].close, index);
       if (!point) return null;
-      return <circle key={`rsi-${canvas}-${bars[index].time}`} cx={point.x} cy={point.y} r="4" className="rsi-marker" pointerEvents="all" onPointerEnter={() => setIndicatorHover({ x: point.x, y: point.y, label: `RSI(${rsiPeriod}) ${value.toFixed(2)}` })} onPointerLeave={() => setIndicatorHover(null)}><title>RSI({rsiPeriod}): {value.toFixed(2)}</title></circle>;
+      return <circle key={`rsi-${canvas}-${bars[index].time}`} cx={point.x} cy={point.y} r="5" className="rsi-marker" pointerEvents="all" onPointerEnter={() => setIndicatorHover({ canvas, x: point.x, y: point.y, label: `RSI(${rsiPeriod}) ${value.toFixed(2)}` })} onPointerLeave={() => setIndicatorHover(null)}><title>RSI({rsiPeriod}): {value.toFixed(2)}</title></circle>;
     });
     return <g className={`price-indicators price-indicators-${canvas}`}>
       {showSsl && <><path d={path(ssl.up)} className="ssl-channel ssl-channel-up" /><path d={path(ssl.down)} className="ssl-channel ssl-channel-down" /></>}
       {showRsi && <g className="rsi-markers">{rsiMarkers}</g>}
-      {indicatorHover && canvas === 'entry' && <g className="indicator-hover-label" pointerEvents="none"><rect x={Math.min(width - 160, indicatorHover.x + 10)} y={Math.max(8, Math.min(height - 32, indicatorHover.y - 28))} width="150" height="24" rx="4" /><text x={Math.min(width - 150, indicatorHover.x + 20)} y={Math.max(24, Math.min(height - 16, indicatorHover.y - 12))}>{indicatorHover.label}</text></g>}
+      {indicatorHover?.canvas === canvas && <g className="indicator-hover-label" pointerEvents="none"><rect x={Math.max(4, Math.min(width - 160, indicatorHover.x + 10))} y={Math.max(8, Math.min(height - 32, indicatorHover.y - 28))} width="150" height="24" rx="4" /><text x={Math.max(14, Math.min(width - 150, indicatorHover.x + 20))} y={Math.max(24, Math.min(height - 16, indicatorHover.y - 12))}>{indicatorHover.label}</text></g>}
     </g>;
   }
 
@@ -1567,7 +1571,7 @@ function Workspace() {
   </div>;
 
   const avatarLabel = (auth.identity?.name ?? auth.identity?.email ?? 'U').slice(0, 1).toUpperCase();
-  const profileButton = <><button className="profile-avatar" onClick={() => setShowProfile(true)} aria-label="Abrir perfil" title="Perfil">{avatarLabel}</button>{showIndicatorSettings && <IndicatorSettingsModal showSessions={showSessions} showRsi={showRsi} showSsl={showSsl} rsiPeriod={rsiPeriod} sslPeriod={sslPeriod} onClose={() => setShowIndicatorSettings(false)} onSessions={() => setShowSessions(value => !value)} onRsi={() => setShowRsi(value => !value)} onSsl={() => setShowSsl(value => !value)} onRsiPeriod={setRsiPeriod} onSslPeriod={setSslPeriod} />}</>;
+  const profileButton = <><button className="profile-avatar" onClick={() => setShowProfile(true)} aria-label="Abrir perfil" title="Perfil">{avatarLabel}</button>{showIndicatorSettings && <IndicatorSettingsModal showSessions={showSessions} showRsi={showRsi} showSsl={showSsl} rsiPeriod={rsiPeriod} rsiLowBand={rsiLowBand} rsiHighBand={rsiHighBand} sslPeriod={sslPeriod} onClose={() => setShowIndicatorSettings(false)} onSessions={() => setShowSessions(value => !value)} onRsi={() => setShowRsi(value => !value)} onSsl={() => setShowSsl(value => !value)} onRsiPeriod={setRsiPeriod} onRsiLowBand={setRsiLowBand} onRsiHighBand={setRsiHighBand} onSslPeriod={setSslPeriod} />}</>;
   const labButton = <button className="lab-open-button" onClick={() => labSection.current?.scrollIntoView({ behavior: 'smooth', block: 'start' })} aria-label="Ir a GoodMorning Lab">Lab</button>;
   const desktopHeader = <div className="symbol-bar"><select className="broker-select" value={broker} onChange={event => { const next = event.target.value as 'binance' | 'ctrader'; setBroker(next); setSymbol(next === 'ctrader' ? 'AUDUSD' : 'BTCUSDT'); }} aria-label="Broker"><option value="binance">Binance</option><option value="ctrader">cTrader</option></select><select className="symbol-select" value={symbol} onChange={event => setSymbol(event.target.value)} aria-label="Símbolo">
     {brokerSymbols.map(option => <option key={option}>{option}</option>)}
