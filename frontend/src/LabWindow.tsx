@@ -127,6 +127,7 @@ export default function LabWindow({ activeSymbol = 'BTCUSDT', broker = 'binance'
   }, [activeSymbol]);
 
   useEffect(() => {
+    if (paperBalance != null) return;
     localStorage.setItem('helloworld-paper-balance', String(startingBalance));
     if (!best || !recommendation) return;
     localStorage.setItem('helloworld-paper-assist', JSON.stringify({
