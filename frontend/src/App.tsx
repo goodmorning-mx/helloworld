@@ -143,6 +143,29 @@ type CTraderAccount = {
   last_tick?: { symbol?: string; bid?: number; ask?: number; price?: number; time?: number } | null;
 };
 
+function BalanceSummary({ paperBalance, revision = 0 }: { paperBalance: number; revision?: number }) {
+  const auth = useAuth();
+  const [binance, setBinance] = useState<BinanceAccount | null>(null);
+  const [ctrader, setCtrader] = useState<CTraderAccount | null>(null);
+  useEffect(() => {
+    let active = true;
+    const load = async () => {
+      const headers: Record<string, string> = auth.accessToken ? { Authorization: `Bearer ${auth.accessToken}` } : {};
+      const [binanceResponse, ctraderResponse] = await Promise.allSettled([
+        fetch(`${apiUrl}/trading/binance`, { headers, credentials: 'include' }),
+        fetch(`${apiUrl}/trading/ctrader`, { headers, credentials: 'include' }),
+      ]);
+      if (!active) return;
+      if (binanceResponse.status === 'fulfilled' && binanceResponse.value.ok) setBinance(await binanceResponse.value.json() as BinanceAccount);
+      if (ctraderResponse.status === 'fulfilled' && ctraderResponse.value.ok) setCtrader(await ctraderResponse.value.json() as CTraderAccount);
+    };
+    void load();
+    const timer = window.setInterval(() => void load(), 10_000);
+    return () => { active = false; window.clearInterval(timer); };
+  }, [auth.accessToken, revision]);
+  return <section className="balances-panel" aria-label="Balances"><div className="positions-panel-head"><div><span className="positions-kicker">ACCOUNT SUMMARY</span><h2>Balances</h2></div></div><div className="balances-table-wrap"><table className="balances-table"><thead><tr><th>Cuenta</th><th>Balance</th><th>Estado</th></tr></thead><tbody><tr><td>Paper</td><td>{paperBalance.toFixed(2)} USD</td><td><span className="stream-badge stream-good">Simulado</span></td></tr><tr><td>Binance</td><td>{binance?.futures_balance ?? '—'}</td><td><span className={`stream-badge ${binance?.healthy ? 'stream-good' : 'stream-bad'}`}>{binance?.healthy ? 'Saludable' : 'Sin conexión'}</span></td></tr><tr><td>cTrader</td><td>{ctrader?.balance == null ? '—' : `${ctrader.balance.toFixed(ctrader.money_digits ?? 2)} USD`}</td><td><span className={`stream-badge ${ctrader?.healthy ? 'stream-good' : 'stream-bad'}`}>{ctrader?.healthy ? 'Saludable' : 'Sin conexión'}</span></td></tr></tbody></table></div></section>;
+}
+
 function ProfileModal({ onClose, onSaved }: { onClose: () => void; onSaved: () => void }) {
   const auth = useAuth();
   const [apiKey, setApiKey] = useState('');
@@ -446,14 +469,15 @@ function Workspace() {
   const [paperSyncError, setPaperSyncError] = useState('');
   const [visibleClosedId, setVisibleClosedId] = useState<string | null>(null);
   const [paperTab, setPaperTab] = useState<'open' | 'closed'>('open');
-  const [paperInitialBalance, setPaperInitialBalance] = useState(() => Number(localStorage.getItem('helloworld-paper-balance') ?? 100) || 100);
+  const [paperInitialBalance, setPaperInitialBalance] = useState(() => { const value = Number(localStorage.getItem('helloworld-paper-balance') ?? 100); return Number.isFinite(value) && value >= 1 ? value : 100; });
+  const [depositAmount, setDepositAmount] = useState('');
   const [paperRiskPercent, setPaperRiskPercent] = useState(() => Number(JSON.parse(localStorage.getItem('helloworld-paper-assist') ?? '{}').riskPercent ?? 1) || 1);
 
   useEffect(() => {
     const syncAssist = () => {
       const balance = Number(localStorage.getItem('helloworld-paper-balance') ?? 100);
       const raw = JSON.parse(localStorage.getItem('helloworld-paper-assist') ?? '{}') as { riskPercent?: number };
-      if (Number.isFinite(balance) && balance > 0) setPaperInitialBalance(balance);
+      if (Number.isFinite(balance) && balance >= 1) setPaperInitialBalance(balance);
       if (Number.isFinite(raw.riskPercent) && (raw.riskPercent ?? 0) > 0) setPaperRiskPercent(raw.riskPercent as number);
     };
     window.addEventListener('helloworld-paper-assist-updated', syncAssist);
@@ -1389,7 +1413,7 @@ function Workspace() {
   const displayedPaperPositions = paperPositions.filter(position => paperTab === 'open' ? !position.closed : position.closed);
   const positionsTable = <section className="positions-panel" aria-label="Posiciones abiertas">
     <div className="positions-panel-head"><div><span className="positions-kicker">TRADING</span><h2>Paper operations</h2></div><span className="paper-badge">PAPER</span></div>{paperSyncError && <p className="paper-sync-error" role="status">{paperSyncError}</p>}<div className="paper-tabs" role="tablist" aria-label="Paper operations"><button role="tab" aria-selected={paperTab === 'open'} className={paperTab === 'open' ? 'paper-tab-active' : ''} onClick={() => setPaperTab('open')}>Abiertas <b>{paperPositions.filter(position => !position.closed).length}</b></button><button role="tab" aria-selected={paperTab === 'closed'} className={paperTab === 'closed' ? 'paper-tab-active' : ''} onClick={() => setPaperTab('closed')}>Cerradas <b>{paperPositions.filter(position => position.closed).length}</b></button></div>
-    <div className="paper-balance-grid"><div><small>Balance paper</small><strong>{paperEquity.toFixed(2)} USD</strong></div><label>Riesgo por operación (%)<input type="number" min="0.05" max="10" step="0.05" value={paperRiskPercent} onChange={event => { const value = Math.max(.05, Math.min(10, Number(event.target.value) || .05)); setPaperRiskPercent(value); const current = JSON.parse(localStorage.getItem('helloworld-paper-assist') ?? '{}'); localStorage.setItem('helloworld-paper-assist', JSON.stringify({ ...current, balance: paperInitialBalance, riskPercent: value })); }} /></label><div><small>Leverage máximo · {symbol}</small><strong>{brokerMaxLeverage.toFixed(0)}x</strong></div><div><small>Leverage paper efectivo</small><strong>{paperLeverage.toFixed(1)}x</strong></div><div><small>PNL realizado</small><strong>{realizedPnl.toFixed(2)} USD</strong></div><div><small>PNL abierto</small><strong>{unrealizedPnl.toFixed(2)} USD</strong></div></div>
+    <div className="paper-balance-grid"><div><small>Balance paper</small><strong>{paperEquity.toFixed(2)} USD</strong></div><label>Depósito<input type="number" min="1" step="0.01" placeholder="Agregar USD" value={depositAmount} onChange={event => setDepositAmount(event.target.value)} /><button type="button" className="paper-deposit-button" onClick={() => { const amount = Number(depositAmount); if (!Number.isFinite(amount) || amount <= 0) return; const next = paperInitialBalance + amount; setPaperInitialBalance(next); localStorage.setItem('helloworld-paper-balance', String(next)); window.dispatchEvent(new Event('helloworld-paper-assist-updated')); setDepositAmount(''); }}>Depositar</button></label><label>Riesgo por operación (%)<input type="number" min="0.05" max="10" step="0.05" value={paperRiskPercent} onChange={event => { const value = Math.max(.05, Math.min(10, Number(event.target.value) || .05)); setPaperRiskPercent(value); const current = JSON.parse(localStorage.getItem('helloworld-paper-assist') ?? '{}'); localStorage.setItem('helloworld-paper-assist', JSON.stringify({ ...current, balance: paperInitialBalance, riskPercent: value })); }} /></label><div><small>Leverage máximo · {symbol}</small><strong>{brokerMaxLeverage.toFixed(0)}x</strong></div><div><small>Leverage paper efectivo</small><strong>{paperLeverage.toFixed(1)}x</strong></div><div><small>PNL realizado</small><strong>{realizedPnl.toFixed(2)} USD</strong></div><div><small>PNL abierto</small><strong>{unrealizedPnl.toFixed(2)} USD</strong></div></div>
     {displayedPaperPositions.length === 0 ? <p className="positions-empty">{paperTab === 'open' ? 'No hay operaciones abiertas.' : 'No hay operaciones cerradas.'}</p> : <div className="positions-table-scroll"><table className="positions-table"><thead><tr><th>Instrumento</th><th>Lado</th><th>Entrada</th><th>Actual</th><th>SL %</th><th>TP %</th><th>Leverage</th><th>Margen</th><th>R:R</th><th>PNL</th><th>ROE</th><th>Acción</th></tr></thead><tbody>{displayedPaperPositions.map((position, index) => {
       const direction = position.type === 'long' ? 1 : -1;
       const stopDistance = Math.abs(position.start.price - (position.stop?.price ?? position.start.price));
@@ -1398,7 +1422,7 @@ function Workspace() {
       const notional = Number.isFinite(position.notional) && (position.notional ?? 0) > 0
         ? position.notional as number
         : Math.min(calculatedNotional, paperInitialBalance * paperLeverage);
-      const margin = position.margin ?? (paperLeverage > 0 ? notional / paperLeverage : 0);
+      const margin = position.margin != null && position.margin > 0 ? position.margin : (paperLeverage > 0 ? notional / paperLeverage : 0);
       const leverage = paperLeverage;
       const priceChange = ((position.end.price - position.start.price) / position.start.price) * direction;
       const pnl = paperPnl(position);
@@ -1496,12 +1520,12 @@ function Workspace() {
 
   return mobilePwa ? <main className="trading-shell pwa-shell">
     <header className="pwa-mobile-header"><div><span className="pwa-brand">helloworld</span><span className="pwa-market">{broker.toUpperCase()} · {entryInterval.toUpperCase()} ENTRADA · {interval.toUpperCase()} CONTEXTO</span></div><select className="pwa-symbol-select" value={broker} onChange={event => { const next = event.target.value as 'binance' | 'ctrader'; setBroker(next); setSymbol(next === 'ctrader' ? 'AUDUSD' : 'BTCUSDT'); }} aria-label="Broker"><option value="binance">Binance</option><option value="ctrader">cTrader</option></select><select className="pwa-symbol-select" value={symbol} onChange={event => setSymbol(event.target.value)} aria-label="Símbolo">{brokerSymbols.map(option => <option key={option}>{option}</option>)}</select>{profileButton}</header>
-    <section className="pwa-chart-wrap">{chartStageView}</section><BinanceAccountPanel revision={profileRevision} /><CTraderAccountPanel revision={profileRevision} />{positionsTable}
+    <section className="pwa-chart-wrap">{chartStageView}</section><BinanceAccountPanel revision={profileRevision} /><CTraderAccountPanel revision={profileRevision} />{positionsTable}<BalanceSummary paperBalance={paperEquity} revision={profileRevision} />
     <nav className="pwa-bottom-nav" aria-label="Controles PWA"><button onClick={() => setTool(null)} className={!tool ? 'pwa-nav-active' : ''}>↖<span>Seleccionar</span></button><button onClick={() => setMobileSheet('indicators')} className={showSessions ? 'pwa-nav-active' : ''}>◉<span>Indicadores</span></button><button onClick={() => setMobileSheet('tools')} className={tool ? 'pwa-nav-active' : ''}>⌁<span>Herramientas</span></button><button onClick={() => void auth.logout()}>⇥<span>Salir</span></button></nav>
     {mobileSheet === 'indicators' && <MobileSheet title="Indicadores" onClose={() => setMobileSheet(null)}><button className={`mobile-option ${showSessions ? 'option-active' : ''}`} onClick={() => setShowSessions(value => !value)}><span><b>Sesiones de mercado</b><small>Tokyo, Londres, Nueva York y Sydney</small></span><i>{showSessions ? '✓' : ''}</i></button><label className="mobile-field">Intervalo<select value={interval} onChange={event => setInterval(event.target.value as typeof interval)}>{(['1s', '1m', '3m', '5m', '15m'] as const).map(value => <option key={value}>{value}</option>)}</select></label><label className="mobile-field">Zona horaria<select value={timezone} onChange={event => setTimezone(event.target.value)}>{TIMEZONES.map(([label, value]) => <option key={value} value={value}>{label}</option>)}</select></label></MobileSheet>}
     {mobileSheet === 'tools' && <MobileSheet title="Herramientas" onClose={() => setMobileSheet(null)}><div className="mobile-tool-grid"><button className={!tool ? 'option-active' : ''} onClick={() => { setTool(null); setMobileSheet(null); }}>↖<span>Seleccionar</span></button>{toolOptions.map(([key, icon, label]) => <button key={key} className={tool === key ? 'option-active' : ''} onClick={() => { chooseTool(key); setMobileSheet(null); }}>{icon}<span>{label}</span></button>)}<button onClick={() => { setDrawings(current => current.filter(drawing => drawing.paper)); activePositionIndexRef.current = null; setActivePositionIndex(null); }}>×<span>Borrar dibujos</span></button></div></MobileSheet>}
     {showProfile && <ProfileModal onClose={() => setShowProfile(false)} onSaved={() => setProfileRevision(value => value + 1)} />}
-  </main> : <main className="trading-shell">{desktopHeader}{chartsRow}<BinanceAccountPanel revision={profileRevision} /><CTraderAccountPanel revision={profileRevision} />{positionsTable}<section ref={labSection} className="lab-layout-section"><LabWindow key={`${broker}:${symbol}`} activeSymbol={symbol} broker={broker} apiUrl={apiUrl} accessToken={auth.accessToken} initialBars={candleBarsRef.current} paperBalance={paperEquity} /></section>{showProfile && <ProfileModal onClose={() => setShowProfile(false)} onSaved={() => setProfileRevision(value => value + 1)} />}</main>;
+  </main> : <main className="trading-shell">{desktopHeader}{chartsRow}<BinanceAccountPanel revision={profileRevision} /><CTraderAccountPanel revision={profileRevision} />{positionsTable}<BalanceSummary paperBalance={paperEquity} revision={profileRevision} /><section ref={labSection} className="lab-layout-section"><LabWindow key={`${broker}:${symbol}`} activeSymbol={symbol} broker={broker} apiUrl={apiUrl} accessToken={auth.accessToken} initialBars={candleBarsRef.current} paperBalance={paperEquity} /></section>{showProfile && <ProfileModal onClose={() => setShowProfile(false)} onSaved={() => setProfileRevision(value => value + 1)} />}</main>;
 }
 
 function App() {
