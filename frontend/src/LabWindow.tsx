@@ -3,6 +3,7 @@ import { aggregateBars, loadThirtyDays, readCachedBars, type MarketBar } from '.
 import { analyzeLab, buildLabSeries, LAB_TIMEZONE, type LabCapitalModel, type LabDirection, type LabResolution, type LabRow, type LabSeriesPoint } from './labEngine';
 
 export type LabRecommendation = { label: string; mae: number; mfe: number; rr: number; leverage: number; riskAmount: number; notional: number; margin: number; expectedProfit: number };
+export type LabRecommendations = { long: LabRecommendation; short: LabRecommendation };
 
 function LabChart({ points, resolution, mode }: { points: LabSeriesPoint[]; resolution: LabResolution; mode: 'mae' | 'mfe' | 'comparison' }) {
   const [hoverSlot, setHoverSlot] = useState<number | null>(null);
@@ -72,7 +73,7 @@ function LabChart({ points, resolution, mode }: { points: LabSeriesPoint[]; reso
   </div>;
 }
 
-export default function LabWindow({ activeSymbol = 'BTCUSDT', broker = 'binance', apiUrl, accessToken, initialBars = [], paperBalance, onRecommendation, onClose }: { activeSymbol?: string; broker?: 'binance' | 'ctrader'; apiUrl?: string; accessToken?: string | null; initialBars?: MarketBar[]; paperBalance?: number; onRecommendation?: (value: LabRecommendation | null) => void; onClose?: () => void }) {
+export default function LabWindow({ activeSymbol = 'BTCUSDT', broker = 'binance', apiUrl, accessToken, initialBars = [], paperBalance, onRecommendation, onClose }: { activeSymbol?: string; broker?: 'binance' | 'ctrader'; apiUrl?: string; accessToken?: string | null; initialBars?: MarketBar[]; paperBalance?: number; onRecommendation?: (value: LabRecommendations | null) => void; onClose?: () => void }) {
   const [direction, setDirection] = useState<LabDirection>('long');
   const [resolution, setResolution] = useState<LabResolution>(5);
   const [capitalModel, setCapitalModel] = useState<LabCapitalModel>('compound');
@@ -100,15 +101,27 @@ export default function LabWindow({ activeSymbol = 'BTCUSDT', broker = 'binance'
   const studyBars = useMemo(() => resolution === 5 ? fiveMinuteBars : bars, [bars, fiveMinuteBars, resolution]);
   const best = rows[0];
   const currentSlot = (() => { const parts = new Intl.DateTimeFormat('en-US', { timeZone: LAB_TIMEZONE, weekday: 'short', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' }).formatToParts(clock); const weekday = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'].indexOf(parts.find(part => part.type === 'weekday')?.value ?? ''); const hour = Number(parts.find(part => part.type === 'hour')?.value ?? 0); const minute = Number(parts.find(part => part.type === 'minute')?.value ?? 0); return weekday * (1440 / resolution) + hour * (60 / resolution) + Math.floor(minute / resolution); })();
-  const currentRow = rows.find(row => row.slot === currentSlot) ?? best;
-  const recommendation = useMemo(() => {
-    if (!currentRow) return null;
-    const riskAmount = startingBalance * (riskFraction / 100);
-    const notional = currentRow.stop > 0 ? riskAmount / (currentRow.stop / 100) : 0;
-    const margin = currentRow.leverage > 0 ? notional / currentRow.leverage : 0;
-    return { label: currentRow.label, mae: currentRow.stop, mfe: currentRow.target, rr: currentRow.rr, leverage: currentRow.leverage, riskAmount, notional, margin, expectedProfit: notional * (currentRow.target / 100) };
-  }, [currentRow, riskFraction, startingBalance]);
-  useEffect(() => { onRecommendation?.(recommendation); }, [onRecommendation, recommendation]);
+  const liveRows = useMemo(() => {
+    if (!studyBars.length) return { long: [], short: [] };
+    const longRows = direction === 'long' ? rows : analyzeLab(studyBars, 'long', horizon, riskFraction, resolution, capitalModel);
+    const shortRows = direction === 'short' ? rows : analyzeLab(studyBars, 'short', horizon, riskFraction, resolution, capitalModel);
+    return { long: longRows, short: shortRows };
+  }, [capitalModel, direction, horizon, resolution, riskFraction, rows, studyBars]);
+  const recommendations = useMemo(() => {
+    const make = (row?: LabRow): LabRecommendation | null => {
+      if (!row) return null;
+      const riskAmount = startingBalance * (riskFraction / 100);
+      const notional = row.stop > 0 ? riskAmount / (row.stop / 100) : 0;
+      const margin = row.leverage > 0 ? notional / row.leverage : 0;
+      return { label: row.label, mae: row.stop, mfe: row.target, rr: row.rr, leverage: row.leverage, riskAmount, notional, margin, expectedProfit: notional * (row.target / 100) };
+    };
+    const long = make(liveRows.long.find(row => row.slot === currentSlot) ?? liveRows.long[0]);
+    const short = make(liveRows.short.find(row => row.slot === currentSlot) ?? liveRows.short[0]);
+    return long && short ? { long, short } : null;
+  }, [currentSlot, liveRows, riskFraction, startingBalance]);
+  useEffect(() => {
+    onRecommendation?.(recommendations);
+  }, [onRecommendation, recommendations]);
   const series = useMemo(() => buildLabSeries(studyBars, direction, horizon, resolution), [direction, horizon, resolution, studyBars]);
   const sortedRows = useMemo(() => [...rows].sort((left, right) => {
     const difference = left[tableSort.key] - right[tableSort.key];
@@ -139,13 +152,13 @@ export default function LabWindow({ activeSymbol = 'BTCUSDT', broker = 'binance'
   useEffect(() => {
     if (paperBalance != null) return;
     localStorage.setItem('helloworld-paper-balance', String(startingBalance));
-    if (!best || !recommendation) return;
+    if (!best || !recommendations) return;
     localStorage.setItem('helloworld-paper-assist', JSON.stringify({
       balance: startingBalance, riskPercent: riskFraction, stopPercent: best.stop,
       targetPercent: best.target, leverage: best.leverage, rr: best.rr,
     }));
     window.dispatchEvent(new Event('helloworld-paper-assist-updated'));
-  }, [best, recommendation, riskFraction, startingBalance]);
+  }, [best, recommendations, riskFraction, startingBalance]);
 
   function analyzeLoaded(nextBars: MarketBar[], nextResolution = resolution, nextModel = capitalModel) {
     const normalized = nextResolution === 5 ? aggregateBars(nextBars, 5) : nextBars;

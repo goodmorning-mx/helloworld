@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState, type FormEvent, type PointerEvent
 import { AuthGuard, AuthProvider, createAuthClient, useAuth, type AuthClient } from '@goodmorning/gm-auth';
 import { PwaRuntime } from '@goodmorning/gm-pwa';
 import { CandlestickSeries, createChart, type IPriceLine, type Time, type UTCTimestamp } from 'lightweight-charts';
-import LabWindow, { type LabRecommendation } from './LabWindow';
+import LabWindow, { type LabRecommendations } from './LabWindow';
 import { cacheBars } from './marketData';
 import './styles.css';
 
@@ -420,7 +420,7 @@ function Workspace() {
   const mobilePwa = useMobilePwa();
   const [showProfile, setShowProfile] = useState(false);
   const [profileRevision, setProfileRevision] = useState(0);
-  const [labRecommendation, setLabRecommendation] = useState<LabRecommendation | null>(null);
+  const [labRecommendations, setLabRecommendations] = useState<LabRecommendations | null>(null);
   const chartContainer = useRef<HTMLDivElement>(null);
   const overviewChartContainer = useRef<HTMLDivElement>(null);
   const overviewChartRef = useRef<ReturnType<typeof createChart> | null>(null);
@@ -1281,9 +1281,10 @@ function Workspace() {
     if (!latest) return;
     const entry = latest.close;
     const direction = type === 'long' ? 1 : -1;
+    const recommendation = labRecommendations?.[type];
     const storedAssist = JSON.parse(localStorage.getItem('helloworld-paper-assist') ?? '{}') as { stopPercent?: number; targetPercent?: number };
-    const stopDistance = Number.isFinite(storedAssist.stopPercent) && (storedAssist.stopPercent ?? 0) > 0 ? (storedAssist.stopPercent as number) / 100 : 0.00087;
-    const targetDistance = Number.isFinite(storedAssist.targetPercent) && (storedAssist.targetPercent ?? 0) > 0 ? (storedAssist.targetPercent as number) / 100 : stopDistance * 4;
+    const stopDistance = recommendation?.mae ? recommendation.mae / 100 : Number.isFinite(storedAssist.stopPercent) && (storedAssist.stopPercent ?? 0) > 0 ? (storedAssist.stopPercent as number) / 100 : 0.00087;
+    const targetDistance = recommendation?.mfe ? recommendation.mfe / 100 : Number.isFinite(storedAssist.targetPercent) && (storedAssist.targetPercent ?? 0) > 0 ? (storedAssist.targetPercent as number) / 100 : stopDistance * 4;
     const target = entry * (1 + direction * targetDistance);
     const stop = entry * (1 - direction * stopDistance);
     const intervalSeconds = 60;
@@ -1304,13 +1305,14 @@ function Workspace() {
     const riskPercent = Number((JSON.parse(localStorage.getItem('helloworld-paper-assist') ?? '{}') as { riskPercent?: number }).riskPercent) || paperRiskPercent;
     const riskAmount = paperInitialBalance * riskPercent / 100;
     const stopPercent = Math.abs(entry - stop) / entry;
-    const notional = Math.min(stopPercent > 0 ? riskAmount / stopPercent : 0, paperInitialBalance * paperLeverage);
-    const margin = paperLeverage > 0 ? notional / paperLeverage : 0;
+    const operationLeverage = Math.min(recommendation?.leverage ?? paperLeverage, brokerMaxLeverage);
+    const notional = Math.min(stopPercent > 0 ? riskAmount / stopPercent : 0, paperInitialBalance * operationLeverage);
+    const margin = operationLeverage > 0 ? notional / operationLeverage : 0;
     const response = await fetch(`${apiUrl}/trading/paper/operations`, {
       method: 'POST',
       headers: { Authorization: `Bearer ${auth.accessToken}`, 'Content-Type': 'application/json' },
       credentials: 'include',
-      body: JSON.stringify({ symbol, side: type, chart: 'entry', entry_time: Number(latest.time), entry_price: entry, current_time: Number(latest.time), current_price: entry, stop_time: Number(futureTime), stop_price: stop, target_time: Number(futureTime), target_price: target, risk_percent: riskPercent, notional, margin, pnl: 0, status: 'OPEN', close_reason: null }),
+    body: JSON.stringify({ symbol, side: type, chart: 'entry', entry_time: Number(latest.time), entry_price: entry, current_time: Number(latest.time), current_price: entry, stop_time: Number(futureTime), stop_price: stop, target_time: Number(futureTime), target_price: target, risk_percent: riskPercent, notional, margin, pnl: 0, status: 'OPEN', close_reason: null }),
     });
     if (!response.ok) {
       setPaperSyncError('No se pudo guardar la paper operation.');
@@ -1413,7 +1415,7 @@ function Workspace() {
   const unrealizedPnl = paperPositions.filter(position => !position.closed).reduce((sum, position) => sum + paperPnl(position), 0);
   const paperEquity = paperInitialBalance + realizedPnl + unrealizedPnl;
   const displayedPaperPositions = paperPositions.filter(position => paperTab === 'open' ? !position.closed : position.closed);
-  const labAssistPanel = labRecommendation && <section className="live-lab-assist" aria-label="Recomendación MAE MFE en tiempo real"><div className="live-lab-assist-head"><div><span className="positions-kicker">MAE·MFE LIVE ASSIST</span><h2>Recomendación de la vela actual</h2></div><span>{labRecommendation.label} UTC</span></div><div className="live-lab-assist-grid"><div><small>MAE</small><strong className="value-negative">-{labRecommendation.mae.toFixed(4)}%</strong></div><div><small>MFE</small><strong className="value-positive">+{labRecommendation.mfe.toFixed(4)}%</strong></div><div><small>R:R</small><strong>{labRecommendation.rr.toFixed(2)}:1</strong></div><div><small>Leverage sugerido</small><strong>{labRecommendation.leverage.toFixed(1)}x</strong></div><div><small>Riesgo máximo</small><strong>{labRecommendation.riskAmount.toFixed(2)} USD</strong></div><div><small>Notional sugerido</small><strong>{labRecommendation.notional.toFixed(2)} USD</strong></div><div><small>Margen teórico</small><strong>{labRecommendation.margin.toFixed(2)} USD</strong></div><div><small>TP esperado</small><strong className="value-positive">+{labRecommendation.expectedProfit.toFixed(2)} USD</strong></div></div></section>;
+  const labAssistPanel = labRecommendations && <section className="live-lab-assist" aria-label="Recomendaciones MAE MFE en tiempo real"><div className="live-lab-assist-head"><div><span className="positions-kicker">MAE·MFE LIVE ASSIST</span><h2>Recomendación de la vela actual</h2></div><span>{labRecommendations.long.label} UTC</span></div><div className="live-lab-direction-grid">{(['long', 'short'] as const).map(type => { const recommendation = labRecommendations[type]; return <article key={type} className={`live-lab-direction ${type}`}><h3>{type === 'long' ? 'LONG' : 'SHORT'}</h3><div className="live-lab-assist-grid"><div><small>MAE</small><strong className="value-negative">-{recommendation.mae.toFixed(4)}%</strong></div><div><small>MFE</small><strong className="value-positive">+{recommendation.mfe.toFixed(4)}%</strong></div><div><small>R:R</small><strong>{recommendation.rr.toFixed(2)}:1</strong></div><div><small>Leverage sugerido</small><strong>{recommendation.leverage.toFixed(1)}x</strong></div><div><small>Riesgo máximo</small><strong>{recommendation.riskAmount.toFixed(2)} USD</strong></div><div><small>Notional sugerido</small><strong>{recommendation.notional.toFixed(2)} USD</strong></div><div><small>Margen teórico</small><strong>{recommendation.margin.toFixed(2)} USD</strong></div><div><small>TP esperado</small><strong className="value-positive">+{recommendation.expectedProfit.toFixed(2)} USD</strong></div></div></article>; })}</div></section>;
   const positionsTable = <section className="positions-panel" aria-label="Posiciones abiertas">
     <div className="positions-panel-head"><div><span className="positions-kicker">TRADING</span><h2>Paper operations</h2></div><div className="paper-actions"><span className="paper-risk-indicator">Riesgo {paperRiskPercent.toFixed(2)}%</span><button type="button" className="paper-settings-button" onClick={() => setShowPaperSettings(true)} aria-label="Ajustar Paper">⚙</button><span className="paper-badge">PAPER</span></div></div>{paperSyncError && <p className="paper-sync-error" role="status">{paperSyncError}</p>}<div className="paper-tabs" role="tablist" aria-label="Paper operations"><button role="tab" aria-selected={paperTab === 'open'} className={paperTab === 'open' ? 'paper-tab-active' : ''} onClick={() => setPaperTab('open')}>Abiertas <b>{paperPositions.filter(position => !position.closed).length}</b></button><button role="tab" aria-selected={paperTab === 'closed'} className={paperTab === 'closed' ? 'paper-tab-active' : ''} onClick={() => setPaperTab('closed')}>Cerradas <b>{paperPositions.filter(position => position.closed).length}</b></button></div>
     <div className="paper-balance-grid"><div><small>Balance paper</small><strong>{paperEquity.toFixed(2)} USD</strong></div><div><small>Leverage máximo · {symbol}</small><strong>{brokerMaxLeverage.toFixed(0)}x</strong></div><div><small>Leverage paper efectivo</small><strong>{paperLeverage.toFixed(1)}x</strong></div><div><small>PNL realizado</small><strong>{realizedPnl.toFixed(2)} USD</strong></div><div><small>PNL abierto</small><strong>{unrealizedPnl.toFixed(2)} USD</strong></div></div>
@@ -1528,7 +1530,7 @@ function Workspace() {
     {mobileSheet === 'indicators' && <MobileSheet title="Indicadores" onClose={() => setMobileSheet(null)}><button className={`mobile-option ${showSessions ? 'option-active' : ''}`} onClick={() => setShowSessions(value => !value)}><span><b>Sesiones de mercado</b><small>Tokyo, Londres, Nueva York y Sydney</small></span><i>{showSessions ? '✓' : ''}</i></button><label className="mobile-field">Intervalo<select value={interval} onChange={event => setInterval(event.target.value as typeof interval)}>{(['1s', '1m', '3m', '5m', '15m'] as const).map(value => <option key={value}>{value}</option>)}</select></label><label className="mobile-field">Zona horaria<select value={timezone} onChange={event => setTimezone(event.target.value)}>{TIMEZONES.map(([label, value]) => <option key={value} value={value}>{label}</option>)}</select></label></MobileSheet>}
     {mobileSheet === 'tools' && <MobileSheet title="Herramientas" onClose={() => setMobileSheet(null)}><div className="mobile-tool-grid"><button className={!tool ? 'option-active' : ''} onClick={() => { setTool(null); setMobileSheet(null); }}>↖<span>Seleccionar</span></button>{toolOptions.map(([key, icon, label]) => <button key={key} className={tool === key ? 'option-active' : ''} onClick={() => { chooseTool(key); setMobileSheet(null); }}>{icon}<span>{label}</span></button>)}<button onClick={() => { setDrawings(current => current.filter(drawing => drawing.paper)); activePositionIndexRef.current = null; setActivePositionIndex(null); }}>×<span>Borrar dibujos</span></button></div></MobileSheet>}
     {showProfile && <ProfileModal onClose={() => setShowProfile(false)} onSaved={() => setProfileRevision(value => value + 1)} />}
-  </main> : <main className="trading-shell">{desktopHeader}{chartsRow}{positionsTable}{labAssistPanel}<BalanceSummary paperBalance={paperEquity} revision={profileRevision} /><BinanceAccountPanel revision={profileRevision} /><CTraderAccountPanel revision={profileRevision} /><section ref={labSection} className="lab-layout-section"><LabWindow key={`${broker}:${symbol}`} activeSymbol={symbol} broker={broker} apiUrl={apiUrl} accessToken={auth.accessToken} initialBars={candleBarsRef.current} paperBalance={paperEquity} onRecommendation={setLabRecommendation} /></section>{showProfile && <ProfileModal onClose={() => setShowProfile(false)} onSaved={() => setProfileRevision(value => value + 1)} />}</main>;
+  </main> : <main className="trading-shell">{desktopHeader}{chartsRow}{positionsTable}{labAssistPanel}<BalanceSummary paperBalance={paperEquity} revision={profileRevision} /><BinanceAccountPanel revision={profileRevision} /><CTraderAccountPanel revision={profileRevision} /><section ref={labSection} className="lab-layout-section"><LabWindow key={`${broker}:${symbol}`} activeSymbol={symbol} broker={broker} apiUrl={apiUrl} accessToken={auth.accessToken} initialBars={candleBarsRef.current} paperBalance={paperEquity} onRecommendation={setLabRecommendations} /></section>{showProfile && <ProfileModal onClose={() => setShowProfile(false)} onSaved={() => setProfileRevision(value => value + 1)} />}</main>;
 }
 
 function App() {
