@@ -4,6 +4,7 @@ import { PwaRuntime } from '@goodmorning/gm-pwa';
 import { CandlestickSeries, createChart, type IPriceLine, type Time, type UTCTimestamp } from 'lightweight-charts';
 import LabWindow, { type LabRecommendations } from './LabWindow';
 import { cacheBars } from './marketData';
+import { calculateRsi, calculateSslChannel } from './indicators';
 import './styles.css';
 
 const configuredApiUrl = import.meta.env.VITE_API_URL ?? 'http://localhost:8000';
@@ -120,6 +121,13 @@ function MobileSheet({ title, onClose, children }: { title: string; onClose: () 
       {children}
     </section>
   </div>;
+}
+
+function IndicatorSettingsModal({
+  showSessions, showRsi, showSsl, rsiPeriod, sslPeriod, onClose, onSessions, onRsi, onSsl, onRsiPeriod, onSslPeriod,
+}: { showSessions: boolean; showRsi: boolean; showSsl: boolean; rsiPeriod: number; sslPeriod: number; onClose: () => void; onSessions: () => void; onRsi: () => void; onSsl: () => void; onRsiPeriod: (value: number) => void; onSslPeriod: (value: number) => void }) {
+  const row = (label: string, description: string, active: boolean, toggle: () => void, period?: number, setPeriod?: (value: number) => void) => <div className="indicator-setting-row"><button className={`indicator-toggle ${active ? 'indicator-toggle-active' : ''}`} onClick={toggle} aria-pressed={active}><span className="indicator-check">{active ? '✓' : ''}</span><span><b>{label}</b><small>{description}</small></span></button>{period !== undefined && setPeriod && <label className="indicator-period">Periodo<input type="number" min="2" max="200" value={period} onChange={event => setPeriod(Math.max(2, Math.min(200, Number(event.target.value) || 2)))} /></label>}</div>;
+  return <div className="indicator-modal-backdrop" role="presentation" onClick={onClose}><section className="indicator-modal" role="dialog" aria-modal="true" aria-label="Indicadores" onClick={event => event.stopPropagation()}><div className="indicator-modal-head"><div><span className="eyebrow">CHART · INDICATORS</span><h2>Indicadores</h2></div><button onClick={onClose} aria-label="Cerrar">×</button></div><p className="indicator-modal-help">Activa los indicadores que se dibujan directamente sobre el precio. La configuración se conserva por usuario.</p>{row('Sesiones de mercado', 'Tokyo, Londres, Nueva York y Sydney', showSessions, onSessions)}{row('RSI', 'Marcadores en el cierre · hover para ver el valor', showRsi, onRsi, rsiPeriod, onRsiPeriod)}{row('SSL Channel', 'Canal dinámico sobre el precio', showSsl, onSsl, sslPeriod, onSslPeriod)}<button className="indicator-modal-done" onClick={onClose}>Listo</button></section></div>;
 }
 
 type BinancePosition = {
@@ -444,6 +452,12 @@ function Workspace() {
   const brokerSymbols = broker === 'ctrader' ? ['AUDUSD', 'XAUUSD', 'XAGUSD'] : ['BTCUSDT', 'ETHUSDT', 'BNBUSDT', 'SOLUSDT', 'XRPUSDT', 'DOGEUSDT'];
   const [timezone, setTimezone] = useState('America/Mexico_City');
   const [showSessions, setShowSessions] = useState(true);
+  const [showRsi, setShowRsi] = useState(() => localStorage.getItem('helloworld-indicator-rsi') === 'true');
+  const [showSsl, setShowSsl] = useState(() => localStorage.getItem('helloworld-indicator-ssl') === 'true');
+  const [rsiPeriod, setRsiPeriod] = useState(() => Number(localStorage.getItem('helloworld-rsi-period') ?? 14) || 14);
+  const [sslPeriod, setSslPeriod] = useState(() => Number(localStorage.getItem('helloworld-ssl-period') ?? 10) || 10);
+  const [showIndicatorSettings, setShowIndicatorSettings] = useState(false);
+  const [indicatorHover, setIndicatorHover] = useState<{ x: number; y: number; label: string } | null>(null);
   const [stageSize, setStageSize] = useState({ width: 1, height: 1 });
   const [overviewSize, setOverviewSize] = useState({ width: 1, height: 1 });
   const [tool, setTool] = useState<'line' | 'ruler' | 'long' | 'short' | null>(null);
@@ -475,6 +489,15 @@ function Workspace() {
   const [paperInitialBalance, setPaperInitialBalance] = useState(() => { const value = Number(localStorage.getItem('helloworld-paper-balance') ?? 100); return Number.isFinite(value) && value >= 1 ? value : 100; });
   const [depositAmount, setDepositAmount] = useState('');
   const [paperRiskPercent, setPaperRiskPercent] = useState(() => Number(JSON.parse(localStorage.getItem('helloworld-paper-assist') ?? '{}').riskPercent ?? 1) || 1);
+
+  useEffect(() => {
+    localStorage.setItem('helloworld-indicator-rsi', String(showRsi));
+    localStorage.setItem('helloworld-indicator-ssl', String(showSsl));
+    localStorage.setItem('helloworld-rsi-period', String(rsiPeriod));
+    localStorage.setItem('helloworld-ssl-period', String(sslPeriod));
+    setViewportRevision(value => value + 1);
+    setOverviewRevision(value => value + 1);
+  }, [showRsi, showSsl, rsiPeriod, sslPeriod]);
 
   useEffect(() => {
     const syncAssist = () => {
@@ -1025,13 +1048,13 @@ function Workspace() {
     if (!candles) return null;
     const height = canvas === 'context' ? overviewSize.height : stageSize.height;
     const width = canvas === 'context' ? overviewSize.width : stageSize.width;
-    return <g className="price-line-hit-areas">{drawings.map((drawing, index) => {
+    return <><g className="price-indicator-layer">{renderPriceIndicators(canvas)}</g><g className="price-line-hit-areas">{drawings.map((drawing, index) => {
       if (!drawing.paper || drawing.closed || (drawing.type !== 'long' && drawing.type !== 'short')) return null;
       if (canvas === 'context' ? drawing.chart !== 'context' : drawing.chart === 'context') return null;
       const targetY = drawing.target ? candles.priceToCoordinate(drawing.target.price) : null;
       const stopY = drawing.stop ? candles.priceToCoordinate(drawing.stop.price) : null;
       return <g key={`price-hit-${index}`}><line x1="0" y1={targetY ?? -100} x2={width} y2={targetY ?? -100} className="price-line-hit-target" pointerEvents="stroke" onPointerDown={event => startPriceLineDrag(event, index, 'target', canvas)} /><line x1="0" y1={stopY ?? -100} x2={width} y2={stopY ?? -100} className="price-line-hit-stop" pointerEvents="stroke" onPointerDown={event => startPriceLineDrag(event, index, 'stop', canvas)} /></g>;
-    })}</g>;
+    })}</g></>;
   }
 
   function renderSessionIndicator() {
@@ -1055,6 +1078,39 @@ function Workspace() {
       });
     }
     return <g className="session-indicator">{events.map((event, index) => <g key={`${event.label}-${event.x}-${index}`}><line x1={event.x} y1="0" x2={event.x} y2={stageSize.height} stroke={event.color} className="session-line" /><text x={event.x + 4} y="18" fill={event.color} className="session-label"><tspan x={event.x + 4} dy="0">{event.label}</tspan><tspan x={event.x + 4} dy="26">{event.date}</tspan></text></g>)}</g>;
+  }
+
+  function renderPriceIndicators(canvas: ChartCanvas) {
+    void viewportRevision;
+    const chart = canvas === 'entry' ? chartRef.current : overviewChartRef.current;
+    const candles = canvas === 'entry' ? candlesRef.current : overviewCandlesRef.current;
+    const bars = canvas === 'entry' ? candleBarsRef.current : overviewBarsRef.current;
+    const width = canvas === 'entry' ? stageSize.width : overviewSize.width;
+    const height = canvas === 'entry' ? stageSize.height : overviewSize.height;
+    if (!chart || !candles || !bars.length || (!showRsi && !showSsl)) return null;
+    const rsi = showRsi ? calculateRsi(bars, rsiPeriod) : [];
+    const ssl = showSsl ? calculateSslChannel(bars, sslPeriod) : { up: [], down: [] };
+    const toPoint = (value: number | null, index: number) => {
+      if (value === null || value === undefined) return null;
+      const x = chart.timeScale().timeToCoordinate(bars[index].time);
+      const y = candles.priceToCoordinate(value);
+      return x === null || x === undefined || y === null || y === undefined ? null : { x, y };
+    };
+    const path = (values: Array<number | null>) => values.map((value, index) => {
+      const point = toPoint(value, index);
+      return point ? `${index === 0 ? 'M' : 'L'} ${point.x} ${point.y}` : '';
+    }).filter(Boolean).join(' ');
+    const rsiMarkers = rsi.map((value, index) => {
+      if (value === null) return null;
+      const point = toPoint(bars[index].close, index);
+      if (!point) return null;
+      return <circle key={`rsi-${canvas}-${bars[index].time}`} cx={point.x} cy={point.y} r="4" className="rsi-marker" pointerEvents="all" onPointerEnter={() => setIndicatorHover({ x: point.x, y: point.y, label: `RSI(${rsiPeriod}) ${value.toFixed(2)}` })} onPointerLeave={() => setIndicatorHover(null)}><title>RSI({rsiPeriod}): {value.toFixed(2)}</title></circle>;
+    });
+    return <g className={`price-indicators price-indicators-${canvas}`}>
+      {showSsl && <><path d={path(ssl.up)} className="ssl-channel ssl-channel-up" /><path d={path(ssl.down)} className="ssl-channel ssl-channel-down" /></>}
+      {showRsi && <g className="rsi-markers">{rsiMarkers}</g>}
+      {indicatorHover && canvas === 'entry' && <g className="indicator-hover-label" pointerEvents="none"><rect x={Math.min(width - 160, indicatorHover.x + 10)} y={Math.max(8, Math.min(height - 32, indicatorHover.y - 28))} width="150" height="24" rx="4" /><text x={Math.min(width - 150, indicatorHover.x + 20)} y={Math.max(24, Math.min(height - 16, indicatorHover.y - 12))}>{indicatorHover.label}</text></g>}
+    </g>;
   }
 
   function renderInterestMarkers() {
@@ -1507,11 +1563,11 @@ function Workspace() {
 
   const chartStageView = <div ref={chartStage} className={`chart-stage ${tool ? 'drawing-mode' : ''}`} onPointerDownCapture={startDrawing} onPointerMoveCapture={updateDrawing} onPointerUpCapture={finishDrawing} onPointerCancelCapture={() => { setDrawingStart(null); setDrawingEnd(null); setMoveStart(null); setResizeStart(null); }}>
     <div ref={chartContainer} className="candlestick-chart" /><svg className="drawing-overlay" viewBox={`0 0 ${stageSize.width} ${stageSize.height}`} preserveAspectRatio="none" aria-hidden="true">{renderSessionIndicator()}{renderInterestMarkers()}{renderPriceLineHitAreas('entry')}{drawings.map((drawing, index) => (!drawing.paper || !drawing.closed || drawing.id === visibleClosedId) && drawing.chart !== 'context' ? renderDrawing(drawing, index, 'entry') : null)}{tool && drawingStart && drawingEnd && drawingCanvas === 'entry' && renderDrawing({ type: tool, chart: 'entry', start: drawingStart, end: drawingEnd }, 'preview', 'entry')}{lassoStart && lassoEnd && drawingCanvas === 'entry' && <rect x={Math.min(lassoStart.x, lassoEnd.x)} y={Math.min(lassoStart.y, lassoEnd.y)} width={Math.abs(lassoEnd.x - lassoStart.x)} height={Math.abs(lassoEnd.y - lassoStart.y)} className="selection-lasso" />}</svg><div className="chart-bottom-controls"><span className="timezone-icon" aria-hidden="true">◷</span><select className="timezone-select" value={timezone} onChange={event => setTimezone(event.target.value)} aria-label="Zona horaria">{TIMEZONES.map(([label, value]) => <option key={value} value={value}>{label}</option>)}</select></div>
-    <div className="floating-order-buttons" aria-label="Abrir operación simulada"><button className="open-long-button" disabled={!paperReady} onClick={() => void openSimulatedPosition('long')}>▲ <span>Abrir Long</span></button><button className="open-short-button" disabled={!paperReady} onClick={() => void openSimulatedPosition('short')}>▼ <span>Abrir Short</span></button></div>
+    <div className="floating-order-buttons" aria-label="Abrir operación simulada"><button className="open-long-button" disabled={!paperReady} onClick={() => void openSimulatedPosition('long')}>▲ <span>Abrir Long</span></button><button className="open-short-button" disabled={!paperReady} onClick={() => void openSimulatedPosition('short')}>▼ <span>Abrir Short</span></button></div><button className="indicator-settings-fab" onClick={() => setShowIndicatorSettings(true)} aria-label="Configurar indicadores" title="Configurar indicadores">◌</button>
   </div>;
 
   const avatarLabel = (auth.identity?.name ?? auth.identity?.email ?? 'U').slice(0, 1).toUpperCase();
-  const profileButton = <button className="profile-avatar" onClick={() => setShowProfile(true)} aria-label="Abrir perfil" title="Perfil">{avatarLabel}</button>;
+  const profileButton = <><button className="profile-avatar" onClick={() => setShowProfile(true)} aria-label="Abrir perfil" title="Perfil">{avatarLabel}</button>{showIndicatorSettings && <IndicatorSettingsModal showSessions={showSessions} showRsi={showRsi} showSsl={showSsl} rsiPeriod={rsiPeriod} sslPeriod={sslPeriod} onClose={() => setShowIndicatorSettings(false)} onSessions={() => setShowSessions(value => !value)} onRsi={() => setShowRsi(value => !value)} onSsl={() => setShowSsl(value => !value)} onRsiPeriod={setRsiPeriod} onSslPeriod={setSslPeriod} />}</>;
   const labButton = <button className="lab-open-button" onClick={() => labSection.current?.scrollIntoView({ behavior: 'smooth', block: 'start' })} aria-label="Ir a GoodMorning Lab">Lab</button>;
   const desktopHeader = <div className="symbol-bar"><select className="broker-select" value={broker} onChange={event => { const next = event.target.value as 'binance' | 'ctrader'; setBroker(next); setSymbol(next === 'ctrader' ? 'AUDUSD' : 'BTCUSDT'); }} aria-label="Broker"><option value="binance">Binance</option><option value="ctrader">cTrader</option></select><select className="symbol-select" value={symbol} onChange={event => setSymbol(event.target.value)} aria-label="Símbolo">
     {brokerSymbols.map(option => <option key={option}>{option}</option>)}
