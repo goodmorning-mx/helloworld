@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState, type MouseEvent } from 'react';
 import { aggregateBars, loadThirtyDays, readCachedBars, type MarketBar } from './marketData';
-import { analyzeLab, buildLabSeries, type LabCapitalModel, type LabDirection, type LabResolution, type LabRow, type LabSeriesPoint } from './labEngine';
+import { analyzeLab, buildLabSeries, LAB_TIMEZONE, type LabCapitalModel, type LabDirection, type LabResolution, type LabRow, type LabSeriesPoint } from './labEngine';
 
 export type LabRecommendation = { label: string; mae: number; mfe: number; rr: number; leverage: number; riskAmount: number; notional: number; margin: number; expectedProfit: number };
 
@@ -99,7 +99,7 @@ export default function LabWindow({ activeSymbol = 'BTCUSDT', broker = 'binance'
   const fiveMinuteBars = useMemo(() => aggregateBars(bars, 5), [bars]);
   const studyBars = useMemo(() => resolution === 5 ? fiveMinuteBars : bars, [bars, fiveMinuteBars, resolution]);
   const best = rows[0];
-  const currentSlot = (() => { const date = new Date(clock); return (date.getUTCHours() * 60) + Math.floor(date.getUTCMinutes() / resolution) * resolution; })();
+  const currentSlot = (() => { const parts = new Intl.DateTimeFormat('en-US', { timeZone: LAB_TIMEZONE, weekday: 'short', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' }).formatToParts(clock); const weekday = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'].indexOf(parts.find(part => part.type === 'weekday')?.value ?? ''); const hour = Number(parts.find(part => part.type === 'hour')?.value ?? 0); const minute = Number(parts.find(part => part.type === 'minute')?.value ?? 0); return weekday * (1440 / resolution) + hour * (60 / resolution) + Math.floor(minute / resolution); })();
   const currentRow = rows.find(row => row.slot === currentSlot) ?? best;
   const recommendation = useMemo(() => {
     if (!currentRow) return null;

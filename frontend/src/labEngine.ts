@@ -25,6 +25,7 @@ export type LabRow = {
 };
 
 type Sample = { slot: number; time: number; adverse: number; favorable: number; row: number };
+export const LAB_TIMEZONE = 'America/Mexico_City';
 const STOP_PERCENTILES = [75, 80, 85, 90, 95];
 const TARGET_PERCENTILES = [25, 30, 40, 50, 60, 75];
 
@@ -38,10 +39,12 @@ function percentile(values: number[], p: number) {
 }
 
 function slotOf(time: number, resolution: LabResolution) {
-  const date = new Date(time * 1000);
-  const weekday = (date.getUTCDay() + 6) % 7;
+  const parts = new Intl.DateTimeFormat('en-US', { timeZone: LAB_TIMEZONE, weekday: 'short', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' }).formatToParts(new Date(time * 1000));
+  const weekday = (['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'].indexOf(parts.find(part => part.type === 'weekday')?.value ?? ''));
+  const hour = Number(parts.find(part => part.type === 'hour')?.value ?? 0);
+  const minute = Number(parts.find(part => part.type === 'minute')?.value ?? 0);
   const slotsPerDay = 1440 / resolution;
-  return weekday * slotsPerDay + date.getUTCHours() * (60 / resolution) + Math.floor(date.getUTCMinutes() / resolution);
+  return weekday * slotsPerDay + hour * (60 / resolution) + Math.floor(minute / resolution);
 }
 
 function slotLabel(slot: number, resolution: LabResolution) {
