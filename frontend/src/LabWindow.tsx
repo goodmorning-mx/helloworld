@@ -2,6 +2,8 @@ import { useEffect, useMemo, useRef, useState, type MouseEvent } from 'react';
 import { aggregateBars, loadThirtyDays, readCachedBars, type MarketBar } from './marketData';
 import { analyzeLab, buildLabSeries, type LabCapitalModel, type LabDirection, type LabResolution, type LabRow, type LabSeriesPoint } from './labEngine';
 
+export type LabRecommendation = { label: string; mae: number; mfe: number; rr: number; leverage: number; riskAmount: number; notional: number; margin: number; expectedProfit: number };
+
 function LabChart({ points, resolution, mode }: { points: LabSeriesPoint[]; resolution: LabResolution; mode: 'mae' | 'mfe' | 'comparison' }) {
   const [hoverSlot, setHoverSlot] = useState<number | null>(null);
   const slotsPerDay = 1440 / resolution;
@@ -70,7 +72,7 @@ function LabChart({ points, resolution, mode }: { points: LabSeriesPoint[]; reso
   </div>;
 }
 
-export default function LabWindow({ activeSymbol = 'BTCUSDT', broker = 'binance', apiUrl, accessToken, initialBars = [], paperBalance, onClose }: { activeSymbol?: string; broker?: 'binance' | 'ctrader'; apiUrl?: string; accessToken?: string | null; initialBars?: MarketBar[]; paperBalance?: number; onClose?: () => void }) {
+export default function LabWindow({ activeSymbol = 'BTCUSDT', broker = 'binance', apiUrl, accessToken, initialBars = [], paperBalance, onRecommendation, onClose }: { activeSymbol?: string; broker?: 'binance' | 'ctrader'; apiUrl?: string; accessToken?: string | null; initialBars?: MarketBar[]; paperBalance?: number; onRecommendation?: (value: LabRecommendation | null) => void; onClose?: () => void }) {
   const [direction, setDirection] = useState<LabDirection>('long');
   const [resolution, setResolution] = useState<LabResolution>(5);
   const [capitalModel, setCapitalModel] = useState<LabCapitalModel>('compound');
@@ -88,17 +90,20 @@ export default function LabWindow({ activeSymbol = 'BTCUSDT', broker = 'binance'
     if (paperBalance != null && Number.isFinite(paperBalance) && paperBalance > 0) setStartingBalance(paperBalance);
   }, [paperBalance]);
 
-  const best = rows[0];
-  const recommendation = useMemo(() => {
-    if (!best) return null;
-    const riskAmount = startingBalance * (riskFraction / 100);
-    const notional = best.stop > 0 ? riskAmount / (best.stop / 100) : 0;
-    const margin = best.leverage > 0 ? notional / best.leverage : 0;
-    return { riskAmount, notional, margin, expectedProfit: notional * (best.target / 100) };
-  }, [best, riskFraction, startingBalance]);
   const studyInterval = resolution === 5 ? '5m' : '1m';
   const fiveMinuteBars = useMemo(() => aggregateBars(bars, 5), [bars]);
   const studyBars = useMemo(() => resolution === 5 ? fiveMinuteBars : bars, [bars, fiveMinuteBars, resolution]);
+  const best = rows[0];
+  const currentSlot = studyBars.length ? (() => { const date = new Date(Number(studyBars[studyBars.length - 1].time) * 1000); return (date.getUTCHours() * 60) + Math.floor(date.getUTCMinutes() / resolution) * resolution; })() : null;
+  const currentRow = rows.find(row => row.slot === currentSlot) ?? best;
+  const recommendation = useMemo(() => {
+    if (!currentRow) return null;
+    const riskAmount = startingBalance * (riskFraction / 100);
+    const notional = currentRow.stop > 0 ? riskAmount / (currentRow.stop / 100) : 0;
+    const margin = currentRow.leverage > 0 ? notional / currentRow.leverage : 0;
+    return { label: currentRow.label, mae: currentRow.stop, mfe: currentRow.target, rr: currentRow.rr, leverage: currentRow.leverage, riskAmount, notional, margin, expectedProfit: notional * (currentRow.target / 100) };
+  }, [currentRow, riskFraction, startingBalance]);
+  useEffect(() => { onRecommendation?.(recommendation); }, [onRecommendation, recommendation]);
   const series = useMemo(() => buildLabSeries(studyBars, direction, horizon, resolution), [direction, horizon, resolution, studyBars]);
   const sortedRows = useMemo(() => [...rows].sort((left, right) => {
     const difference = left[tableSort.key] - right[tableSort.key];
@@ -199,7 +204,6 @@ export default function LabWindow({ activeSymbol = 'BTCUSDT', broker = 'binance'
     <div className="lab-tabs" role="tablist" aria-label="Configuración del Lab"><div><span>Resolución</span><button className={resolution === 1 ? 'lab-tab-active' : ''} onClick={() => { setResolution(1); setLoadedThirtyDays(false); autoLoadStarted.current = false; setRows([]); }}>1m</button><button className={resolution === 5 ? 'lab-tab-active' : ''} onClick={() => { setResolution(5); setLoadedThirtyDays(false); autoLoadStarted.current = false; setRows([]); }}>5m</button></div><div><span>Capital</span><button className={capitalModel === 'compound' ? 'lab-tab-active' : ''} onClick={() => { setCapitalModel('compound'); analyzeLoaded(bars, resolution, 'compound'); }}>Compound</button><button className={capitalModel === 'simple' ? 'lab-tab-active' : ''} onClick={() => { setCapitalModel('simple'); analyzeLoaded(bars, resolution, 'simple'); }}>Simple</button></div></div>
     <p className="lab-message">{message}</p>
     {best && <section className="lab-summary"><div><small>MEJOR MOMENTO</small><strong>{best.label} UTC</strong></div><div><small>MAE MÁXIMO</small><strong>{best.stop.toFixed(4)}%</strong></div><div><small>MFE MÁXIMO</small><strong>{best.target.toFixed(4)}%</strong></div><div><small>EXPECTANCY</small><strong>{best.expectancyR.toFixed(3)}R</strong></div><div><small>TP / SL</small><strong>{best.rr.toFixed(2)}:1</strong></div><div><small>LEVERAGE TEÓRICO</small><strong>{best.leverage.toFixed(1)}x</strong></div></section>}
-    {best && recommendation && <section className="lab-risk-assist"><div><small>RIESGO MÁXIMO</small><strong>{recommendation.riskAmount.toFixed(2)} USD</strong></div><div><small>NOTIONAL SUGERIDO</small><strong>{recommendation.notional.toFixed(2)} USD</strong></div><div><small>MARGEN TEÓRICO</small><strong>{recommendation.margin.toFixed(2)} USD</strong></div><div><small>LEVERAGE SUGERIDO</small><strong>{best.leverage.toFixed(1)}x</strong></div><div><small>TP ESPERADO</small><strong>{recommendation.expectedProfit.toFixed(2)} USD</strong></div></section>}
     {series.length > 0 && <section className="lab-charts"><div className="lab-section-label">PERFIL SEMANAL · CADA VELA CONSERVA SU ÍNDICE DE APERTURA</div><LabChart points={series} resolution={resolution} mode="mae" /><LabChart points={series} resolution={resolution} mode="mfe" /><LabChart points={series} resolution={resolution} mode="comparison" /></section>}
     <section className="lab-table-card"><div className="lab-table-title"><div><span className="lab-kicker">OPTIMIZACIÓN POR SLOT</span><h2>TP / SL y leverage recomendado</h2></div><span>{rows.length ? `${rows.length} slots` : 'Sin resultados'}</span></div>{rows.length ? <div className="lab-table-scroll"><table className="lab-table"><thead><tr><th>{sortButton('slot', 'Momento')}</th><th>{sortButton('samples', 'Muestras')}</th><th>{sortButton('stop', 'SL MAE')}</th><th>{sortButton('target', 'TP MFE')}</th><th>{sortButton('rr', 'RR')}</th><th>{sortButton('winRate', 'Win rate')}</th><th>{sortButton('expectancyR', 'Expectancy')}</th><th>{sortButton('leverage', 'Leverage')}</th></tr></thead><tbody>{sortedRows.slice(0, 96).map(row => <tr key={row.slot}><td>{row.label} UTC</td><td>{row.samples}</td><td>{row.stop.toFixed(4)}%</td><td>{row.target.toFixed(4)}%</td><td>{row.rr.toFixed(2)}:1</td><td>{row.winRate.toFixed(1)}%</td><td className={row.expectancyR > 0 ? 'lab-positive' : 'lab-negative'}>{row.expectancyR.toFixed(3)}R</td><td>{row.leverage.toFixed(1)}x</td></tr>)}</tbody></table></div> : <div className="lab-empty">El estudio permanece inactivo para no descargar datos hasta que lo solicites.</div>}</section>
     <footer className="lab-footnote">Fuente: cache OHLC del terminal · gráfico operativo limitado a 7 días · investigación cargada bajo demanda hasta 30 días · {studyBars.length ? `${studyBars.length.toLocaleString('es-MX')} velas ${resolution}m en memoria` : 'sin dataset cargado'}.</footer>
