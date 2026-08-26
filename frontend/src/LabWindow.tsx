@@ -3,7 +3,7 @@ import { aggregateBars, loadThirtyDays, readCachedBars, type MarketBar } from '.
 import { analyzeLab, buildLabSeries, LAB_TIMEZONE, type LabCapitalModel, type LabDirection, type LabResolution, type LabRow, type LabSeriesPoint } from './labEngine';
 
 export type LabRecommendation = { label: string; mae: number; mfe: number; rr: number; leverage: number; riskAmount: number; notional: number; margin: number; expectedProfit: number };
-export type LabRecommendations = { long: LabRecommendation; short: LabRecommendation };
+export type LabRecommendations = { long: LabRecommendation; short: LabRecommendation; resolution: LabResolution; horizon: number };
 
 function LabChart({ points, resolution, mode }: { points: LabSeriesPoint[]; resolution: LabResolution; mode: 'mae' | 'mfe' | 'comparison' }) {
   const [hoverSlot, setHoverSlot] = useState<number | null>(null);
@@ -73,7 +73,7 @@ function LabChart({ points, resolution, mode }: { points: LabSeriesPoint[]; reso
   </div>;
 }
 
-export default function LabWindow({ activeSymbol = 'BTCUSDT', broker = 'binance', apiUrl, accessToken, initialBars = [], paperBalance, onRecommendation, onClose }: { activeSymbol?: string; broker?: 'binance' | 'ctrader'; apiUrl?: string; accessToken?: string | null; initialBars?: MarketBar[]; paperBalance?: number; onRecommendation?: (value: LabRecommendations | null) => void; onClose?: () => void }) {
+export default function LabWindow({ activeSymbol = 'BTCUSDT', broker = 'binance', apiUrl, accessToken, initialBars = [], paperBalance, resolutionOverride, onRecommendation, onClose }: { activeSymbol?: string; broker?: 'binance' | 'ctrader'; apiUrl?: string; accessToken?: string | null; initialBars?: MarketBar[]; paperBalance?: number; resolutionOverride?: LabResolution; onRecommendation?: (value: LabRecommendations | null) => void; onClose?: () => void }) {
   const [direction, setDirection] = useState<LabDirection>('long');
   const [resolution, setResolution] = useState<LabResolution>(5);
   const [capitalModel, setCapitalModel] = useState<LabCapitalModel>('compound');
@@ -91,6 +91,7 @@ export default function LabWindow({ activeSymbol = 'BTCUSDT', broker = 'binance'
   useEffect(() => {
     if (paperBalance != null && Number.isFinite(paperBalance) && paperBalance > 0) setStartingBalance(paperBalance);
   }, [paperBalance]);
+  useEffect(() => { if (resolutionOverride != null && resolutionOverride !== resolution) setResolution(resolutionOverride); }, [resolutionOverride, resolution]);
   useEffect(() => {
     const timer = window.setInterval(() => setClock(Date.now()), 60_000);
     return () => window.clearInterval(timer);
@@ -117,7 +118,7 @@ export default function LabWindow({ activeSymbol = 'BTCUSDT', broker = 'binance'
     };
     const long = make(liveRows.long.find(row => row.slot === currentSlot) ?? liveRows.long[0]);
     const short = make(liveRows.short.find(row => row.slot === currentSlot) ?? liveRows.short[0]);
-    return long && short ? { long, short } : null;
+    return long && short ? { long, short, resolution, horizon } : null;
   }, [currentSlot, liveRows, riskFraction, startingBalance]);
   useEffect(() => {
     onRecommendation?.(recommendations);
