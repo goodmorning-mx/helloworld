@@ -429,7 +429,22 @@ function Workspace() {
   const [showProfile, setShowProfile] = useState(false);
   const [profileRevision, setProfileRevision] = useState(0);
   const [labRecommendations, setLabRecommendations] = useState<LabRecommendations | null>(null);
-  const [labResolution, setLabResolution] = useState<1 | 5>(5);
+  const [labResolution, setLabResolutionState] = useState<1 | 5>(5);
+  const ignoreLabFiveUntilRef = useRef(0);
+  const setLabResolution = (value: 1 | 5) => {
+    // Lab can emit the previous recommendation while the new resolution is
+    // loading. Do not let that stale 5m result undo a user's 1m selection.
+    if (value === 1) ignoreLabFiveUntilRef.current = Date.now() + 900;
+    if (value === 5 && Date.now() < ignoreLabFiveUntilRef.current) return;
+    setLabResolutionState(value);
+  };
+  useEffect(() => {
+    const clearStaleGuard = (event: Event) => {
+      if ((event.target as HTMLElement).closest('.live-lab-controls')) ignoreLabFiveUntilRef.current = 0;
+    };
+    document.addEventListener('pointerdown', clearStaleGuard, true);
+    return () => document.removeEventListener('pointerdown', clearStaleGuard, true);
+  }, []);
   const chartContainer = useRef<HTMLDivElement>(null);
   const overviewChartContainer = useRef<HTMLDivElement>(null);
   const overviewChartRef = useRef<ReturnType<typeof createChart> | null>(null);
