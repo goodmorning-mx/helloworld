@@ -84,17 +84,22 @@ export default function LabWindow({ activeSymbol = 'BTCUSDT', broker = 'binance'
   const [rows, setRows] = useState<LabRow[]>([]);
   const [loading, setLoading] = useState(false);
   const [message, setMessage] = useState('Carga 30 días para iniciar el estudio.');
+  const [clock, setClock] = useState(() => Date.now());
   const autoLoadStarted = useRef(false);
   const [tableSort, setTableSort] = useState<{ key: 'slot' | 'samples' | 'stop' | 'target' | 'rr' | 'winRate' | 'expectancyR' | 'leverage'; direction: 'asc' | 'desc' }>({ key: 'expectancyR', direction: 'desc' });
   useEffect(() => {
     if (paperBalance != null && Number.isFinite(paperBalance) && paperBalance > 0) setStartingBalance(paperBalance);
   }, [paperBalance]);
+  useEffect(() => {
+    const timer = window.setInterval(() => setClock(Date.now()), 60_000);
+    return () => window.clearInterval(timer);
+  }, []);
 
   const studyInterval = resolution === 5 ? '5m' : '1m';
   const fiveMinuteBars = useMemo(() => aggregateBars(bars, 5), [bars]);
   const studyBars = useMemo(() => resolution === 5 ? fiveMinuteBars : bars, [bars, fiveMinuteBars, resolution]);
   const best = rows[0];
-  const currentSlot = studyBars.length ? (() => { const date = new Date(Number(studyBars[studyBars.length - 1].time) * 1000); return (date.getUTCHours() * 60) + Math.floor(date.getUTCMinutes() / resolution) * resolution; })() : null;
+  const currentSlot = (() => { const date = new Date(clock); return (date.getUTCHours() * 60) + Math.floor(date.getUTCMinutes() / resolution) * resolution; })();
   const currentRow = rows.find(row => row.slot === currentSlot) ?? best;
   const recommendation = useMemo(() => {
     if (!currentRow) return null;
