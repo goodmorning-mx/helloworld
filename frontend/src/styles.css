@@ -48,6 +48,7 @@
 .chart-stage { touch-action: none; }
 .chart-bottom-controls { position: absolute; z-index: 4; right: .8rem; bottom: .7rem; display: flex; align-items: center; gap: .35rem; padding: .25rem .35rem; border: 1px solid #252a31; border-radius: 8px; background: #0b0e12dd; box-shadow: 0 4px 18px #0008; }
 .floating-order-buttons { position: absolute; z-index: 5; top: .8rem; right: .8rem; display: flex; gap: .45rem; }
+.floating-order-buttons button small { display: block; margin-top: .15rem; font: 500 .62rem 'DM Mono', monospace; opacity: .9; }
 .floating-order-buttons button { min-height: 34px; padding: .45rem .7rem; border: 1px solid; border-radius: 8px; color: #07100b; font-size: .72rem; font-weight: 800; box-shadow: 0 5px 18px #0008; }
 .floating-order-buttons button:disabled { cursor: wait; opacity: .45; }
 .floating-order-buttons button:active { transform: translateY(1px); }.open-long-button { border-color: #64d39a; background: #64d39a; }.open-short-button { border-color: #f27e7e; background: #f27e7e; }
