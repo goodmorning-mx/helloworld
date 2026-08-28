@@ -783,27 +783,24 @@ function Workspace() {
           candles.setData(showHeikinAshi ? calculateHeikinAshi(visibleBars) : visibleBars);
           if (!polling) chart.timeScale().fitContent();
           polling += 1;
-          setViewportRevision(value => value + 1);
+          if (polling === 1) setViewportRevision(value => value + 1);
         })
         .catch(() => undefined);
       void loadCTrader();
-      let lastIndicatorRefresh = 0;
       const pollTick = () => fetch(`${apiUrl}/trading/ctrader/tick/${encodeURIComponent(symbol)}`, { headers: auth.accessToken ? { Authorization: `Bearer ${auth.accessToken}` } : {}, credentials: 'include' })
         .then(response => response.ok ? response.json() as Promise<{ tick?: { price?: number; time?: number } }> : Promise.reject(new Error('tick unavailable')))
         .then(payload => {
           if (!active || !payload.tick?.price || !payload.tick.time) return;
+          const previousBarTime = candleBarsRef.current[candleBarsRef.current.length - 1]?.time;
           candleBarsRef.current = mergeTickBar(candleBarsRef.current, Number(payload.tick.time), Number(payload.tick.price), 60);
           candleDataRef.current = candleBarsRef.current.map(({ time, close }) => ({ time, close }));
           const visibleBars = renderBars(candleBarsRef.current, MAX_ENTRY_RENDER_BARS);
           const displayBars = showHeikinAshi ? calculateHeikinAshi(visibleBars) : visibleBars;
           if (!displayBars.length) return;
           candles.update(displayBars[displayBars.length - 1]);
-          if (Date.now() - lastIndicatorRefresh >= 5_000) {
-            lastIndicatorRefresh = Date.now();
-            setViewportRevision(value => value + 1);
-          }
+          if (candleBarsRef.current[candleBarsRef.current.length - 1]?.time !== previousBarTime) setViewportRevision(value => value + 1);
         }).catch(() => undefined);
-      const candleTimer = window.setInterval(() => void loadCTrader(), 5_000);
+      const candleTimer = window.setInterval(() => void loadCTrader(), 30_000);
       const tickTimer = window.setInterval(pollTick, 1_000);
       void pollTick();
       return () => { active = false; window.clearInterval(candleTimer); window.clearInterval(tickTimer); chart.timeScale().unsubscribeVisibleTimeRangeChange(refreshDrawings); chart.timeScale().unsubscribeVisibleLogicalRangeChange(refreshDrawings); chartRef.current = null; candlesRef.current = null; candleDataRef.current = []; candleBarsRef.current = []; loadingOlderRef.current = false; chart.remove(); };
@@ -959,27 +956,24 @@ function Workspace() {
           candles.setData(showHeikinAshi ? calculateHeikinAshi(visibleBars) : visibleBars);
           if (!polling) chart.timeScale().fitContent();
           polling += 1;
-          setOverviewRevision(value => value + 1);
+          if (polling === 1) setOverviewRevision(value => value + 1);
         })
         .catch(() => undefined);
       void loadCTrader();
-      let lastIndicatorRefresh = 0;
       const pollTick = () => fetch(`${apiUrl}/trading/ctrader/tick/${encodeURIComponent(symbol)}`, { headers: auth.accessToken ? { Authorization: `Bearer ${auth.accessToken}` } : {}, credentials: 'include' })
         .then(response => response.ok ? response.json() as Promise<{ tick?: { price?: number; time?: number } }> : Promise.reject(new Error('tick unavailable')))
         .then(payload => {
           if (!active || !payload.tick?.price || !payload.tick.time) return;
+          const previousBarTime = overviewBarsRef.current[overviewBarsRef.current.length - 1]?.time;
           overviewBarsRef.current = mergeTickBar(overviewBarsRef.current, Number(payload.tick.time), Number(payload.tick.price), interval === '1s' ? 60 : interval === '1m' ? 60 : interval === '3m' ? 180 : interval === '5m' ? 300 : 900);
           overviewCandleDataRef.current = overviewBarsRef.current.map(({ time, close }) => ({ time, close }));
           const visibleBars = renderBars(overviewBarsRef.current, MAX_CONTEXT_RENDER_BARS);
           const displayBars = showHeikinAshi ? calculateHeikinAshi(visibleBars) : visibleBars;
           if (!displayBars.length) return;
           candles.update(displayBars[displayBars.length - 1]);
-          if (Date.now() - lastIndicatorRefresh >= 5_000) {
-            lastIndicatorRefresh = Date.now();
-            setOverviewRevision(value => value + 1);
-          }
+          if (overviewBarsRef.current[overviewBarsRef.current.length - 1]?.time !== previousBarTime) setOverviewRevision(value => value + 1);
         }).catch(() => undefined);
-      const candleTimer = window.setInterval(() => void loadCTrader(), 5_000);
+      const candleTimer = window.setInterval(() => void loadCTrader(), 30_000);
       const tickTimer = window.setInterval(pollTick, 1_000);
       void pollTick();
       return () => { active = false; window.clearInterval(candleTimer); window.clearInterval(tickTimer); chart.timeScale().unsubscribeVisibleTimeRangeChange(refreshOverview); chart.timeScale().unsubscribeVisibleLogicalRangeChange(refreshOverview); overviewChartRef.current = null; overviewCandlesRef.current = null; overviewCandleDataRef.current = []; overviewBarsRef.current = []; overviewLoadingOlderRef.current = false; chart.remove(); };
