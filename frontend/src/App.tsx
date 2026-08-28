@@ -635,7 +635,7 @@ function Workspace() {
       drawings.forEach((drawing, index) => {
         if (!drawing.paper || (drawing.type !== 'long' && drawing.type !== 'short')) return;
         if (drawing.closed && drawing.id !== visibleClosedId) return;
-        if (canvas === 'context' ? drawing.chart !== 'context' : drawing.chart === 'context') return;
+        // A paper position is shared by both chart views.
         const targetPrice = drawing.target?.price ?? drawing.end.price;
         const stopPrice = drawing.stop?.price;
         if (stopPrice === undefined) return;
@@ -1071,7 +1071,7 @@ function Workspace() {
     const width = canvas === 'context' ? overviewSize.width : stageSize.width;
     return <><g className="price-indicator-layer">{renderPriceIndicators(canvas)}</g><g className="price-line-hit-areas">{drawings.map((drawing, index) => {
       if (!drawing.paper || drawing.closed || (drawing.type !== 'long' && drawing.type !== 'short')) return null;
-      if (canvas === 'context' ? drawing.chart !== 'context' : drawing.chart === 'context') return null;
+      // A paper position is shared by both chart views.
       const targetY = drawing.target ? candles.priceToCoordinate(drawing.target.price) : null;
       const stopY = drawing.stop ? candles.priceToCoordinate(drawing.stop.price) : null;
       return <g key={`price-hit-${index}`}><line x1="0" y1={targetY ?? -100} x2={width} y2={targetY ?? -100} className="price-line-hit-target" pointerEvents="stroke" onPointerDown={event => startPriceLineDrag(event, index, 'target', canvas)} /><line x1="0" y1={stopY ?? -100} x2={width} y2={stopY ?? -100} className="price-line-hit-stop" pointerEvents="stroke" onPointerDown={event => startPriceLineDrag(event, index, 'stop', canvas)} /></g>;
