@@ -140,6 +140,7 @@
 
 .lab-chart { cursor: crosshair; }
 .lab-chart-hover-line { stroke: #89909b; stroke-width: 1; stroke-dasharray: 4 4; }
+.lab-favorable { color: #64d39a; font-weight: 700; }.lab-unfavorable { color: #f27e7e; font-weight: 700; }
 .lab-chart-hover-mae { fill: #f27e7e; stroke: #fff; stroke-width: 1.5; }
 .lab-chart-hover-mfe { fill: #64d39a; stroke: #fff; stroke-width: 1.5; }
 .lab-chart-tooltip { fill: #0b0e12; stroke: #69717e; stroke-width: 1; }
