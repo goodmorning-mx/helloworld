@@ -5,6 +5,7 @@ import { CandlestickSeries, createChart, type IPriceLine, type Time, type UTCTim
 import LabWindow, { type LabRecommendations } from './LabWindow';
 import { cacheBars } from './marketData';
 import { calculateHeikinAshi, calculateRsi, calculateSslChannel } from './indicators';
+import { tradingCosts } from './tradingCosts';
 import './styles.css';
 
 const configuredApiUrl = import.meta.env.VITE_API_URL ?? 'http://localhost:8000';
@@ -853,7 +854,9 @@ function Workspace() {
           const notional = Number.isFinite(drawing.notional) && (drawing.notional ?? 0) > 0
             ? drawing.notional as number
             : Math.min(fallbackNotional, paperInitialBalance * paperLeverage);
-          const realizedPnl = closeReason ? (((next.close - drawing.start.price) / drawing.start.price) * direction * notional) : drawing.pnl;
+          const grossPnl = ((next.close - drawing.start.price) / drawing.start.price) * direction * notional;
+          const costs = tradingCosts(broker, notional);
+          const realizedPnl = closeReason ? grossPnl - costs.total : drawing.pnl;
           if (closeReason && drawing.id) setVisibleClosedId(drawing.id);
           return {
             ...drawing,
@@ -1492,7 +1495,9 @@ function Workspace() {
     const notional = Number.isFinite(position.notional) && (position.notional ?? 0) > 0
       ? position.notional as number
       : Math.min(stopPercent > 0 ? paperRiskAmount / stopPercent : 0, paperInitialBalance * paperLeverage);
-    const pnl = priceChange * notional;
+    const grossPnl = priceChange * notional;
+    const costs = tradingCosts(broker, notional);
+    const pnl = grossPnl - costs.total;
     const response = await fetch(`${apiUrl}/trading/paper/operations/${position.id}`, {
       method: 'PUT',
       headers: { Authorization: `Bearer ${auth.accessToken}`, 'Content-Type': 'application/json' },
@@ -1545,7 +1550,7 @@ function Workspace() {
   const paperRiskAmount = paperInitialBalance * paperRiskPercent / 100;
   const paperPnl = (position: Drawing) => {
     const maxLoss = Math.max(0, paperRiskAmount);
-    if (position.closed && Number.isFinite(position.pnl)) return Math.max(-maxLoss, position.pnl as number);
+    if (position.closed && Number.isFinite(position.pnl)) return position.pnl as number;
     const stopDistance = Math.abs(position.start.price - (position.stop?.price ?? position.start.price));
     const stopPercent = position.start.price > 0 ? stopDistance / position.start.price : 0;
     const calculatedNotional = stopPercent > 0 ? paperRiskAmount / stopPercent : 0;
@@ -1553,17 +1558,28 @@ function Workspace() {
       ? position.notional as number
       : Math.min(calculatedNotional, paperInitialBalance * paperLeverage);
     const direction = position.type === 'long' ? 1 : -1;
-    return Math.max(-maxLoss, ((position.end.price - position.start.price) / position.start.price) * direction * notional);
+    const grossPnl = ((position.end.price - position.start.price) / position.start.price) * direction * notional;
+    const costs = tradingCosts(broker, notional);
+    return Math.max(-maxLoss - costs.total, grossPnl - costs.total);
   };
   const realizedPnl = paperPositions.filter(position => position.closed).reduce((sum, position) => sum + paperPnl(position), 0);
   const unrealizedPnl = paperPositions.filter(position => !position.closed).reduce((sum, position) => sum + paperPnl(position), 0);
+  const paperCosts = paperPositions.reduce((sum, position) => {
+    const stopDistance = Math.abs(position.start.price - (position.stop?.price ?? position.start.price));
+    const stopPercent = position.start.price > 0 ? stopDistance / position.start.price : 0;
+    const calculatedNotional = stopPercent > 0 ? paperRiskAmount / stopPercent : 0;
+    const notional = Number.isFinite(position.notional) && (position.notional ?? 0) > 0
+      ? position.notional as number
+      : Math.min(calculatedNotional, paperInitialBalance * paperLeverage);
+    return sum + tradingCosts(broker, notional).total;
+  }, 0);
   const paperEquity = paperInitialBalance + realizedPnl + unrealizedPnl;
   const displayedPaperPositions = paperPositions.filter(position => paperTab === 'open' ? !position.closed : position.closed);
   const labAssistPanel = labRecommendations && <section className="live-lab-assist" aria-label="Recomendaciones MAE MFE en tiempo real"><div className="live-lab-assist-head"><div><span className="positions-kicker">MAE·MFE LIVE ASSIST</span><h2>Recomendación de la vela actual</h2><p className="live-lab-meta">Horizonte: {labRecommendations.horizon} velas · Vela actual: {labRecommendations.long.label} · Intervalo: {labRecommendations.resolution}m</p></div><div className="live-lab-controls"><button type="button" className={labResolution === 1 ? 'live-lab-time-active' : ''} onClick={() => setLabResolution(1)}>1m</button><button type="button" className={labResolution === 5 ? 'live-lab-time-active' : ''} onClick={() => setLabResolution(5)}>5m</button></div></div><div className="live-lab-direction-grid">{(['long', 'short'] as const).map(type => { const recommendation = labRecommendations[type]; return <article key={type} className={`live-lab-direction ${type}`}><h3>{type === 'long' ? 'LONG' : 'SHORT'}</h3><div className="live-lab-assist-grid"><div><small>MAE</small><strong className="value-negative">-{recommendation.mae.toFixed(4)}%</strong></div><div><small>MFE</small><strong className="value-positive">+{recommendation.mfe.toFixed(4)}%</strong></div><div><small>R:R</small><strong>{recommendation.rr.toFixed(2)}:1</strong></div><div><small>Leverage sugerido</small><strong>{recommendation.leverage.toFixed(1)}x</strong></div><div><small>Riesgo máximo</small><strong>{recommendation.riskAmount.toFixed(2)} USD</strong></div><div><small>Notional sugerido</small><strong>{recommendation.notional.toFixed(2)} USD</strong></div><div><small>Margen teórico</small><strong>{recommendation.margin.toFixed(2)} USD</strong></div><div><small>TP esperado</small><strong className="value-positive">+{recommendation.expectedProfit.toFixed(2)} USD</strong></div></div></article>; })}</div></section>;
   const positionsTable = <section className="positions-panel" aria-label="Posiciones abiertas">
     <div className="positions-panel-head"><div><span className="positions-kicker">TRADING</span><h2>Paper operations</h2></div><div className="paper-actions"><span className="paper-risk-indicator">Riesgo {paperRiskPercent.toFixed(2)}%</span><button type="button" className="paper-settings-button" onClick={() => setShowPaperSettings(true)} aria-label="Ajustar Paper">⚙</button><span className="paper-badge">PAPER</span></div></div>{paperSyncError && <p className="paper-sync-error" role="status">{paperSyncError}</p>}<div className="paper-tabs" role="tablist" aria-label="Paper operations"><button role="tab" aria-selected={paperTab === 'open'} className={paperTab === 'open' ? 'paper-tab-active' : ''} onClick={() => setPaperTab('open')}>Abiertas <b>{paperPositions.filter(position => !position.closed).length}</b></button><button role="tab" aria-selected={paperTab === 'closed'} className={paperTab === 'closed' ? 'paper-tab-active' : ''} onClick={() => setPaperTab('closed')}>Cerradas <b>{paperPositions.filter(position => position.closed).length}</b></button></div>
-    <div className="paper-balance-grid"><div><small>Balance paper</small><strong>{paperEquity.toFixed(2)} USD</strong></div><div><small>Leverage máximo · {symbol}</small><strong>{brokerMaxLeverage.toFixed(0)}x</strong></div><div><small>Leverage paper efectivo</small><strong>{paperLeverage.toFixed(1)}x</strong></div><div><small>PNL realizado</small><strong>{realizedPnl.toFixed(2)} USD</strong></div><div><small>PNL abierto</small><strong>{unrealizedPnl.toFixed(2)} USD</strong></div></div>
-    {displayedPaperPositions.length === 0 ? <p className="positions-empty">{paperTab === 'open' ? 'No hay operaciones abiertas.' : 'No hay operaciones cerradas.'}</p> : <div className="positions-table-scroll"><table className="positions-table"><thead><tr><th>Instrumento</th><th>Lado</th><th>Entrada</th><th>Actual</th><th>SL %</th><th>TP %</th><th>Leverage</th><th>Margen</th><th>R:R</th><th>PNL</th><th>ROE</th><th>Acción</th></tr></thead><tbody>{displayedPaperPositions.map((position, index) => {
+    <div className="paper-balance-grid"><div><small>Balance paper</small><strong>{paperEquity.toFixed(2)} USD</strong></div><div><small>Leverage máximo · {symbol}</small><strong>{brokerMaxLeverage.toFixed(0)}x</strong></div><div><small>Leverage paper efectivo</small><strong>{paperLeverage.toFixed(1)}x</strong></div><div><small>Costos comisión + slippage</small><strong>{paperCosts.toFixed(2)} USD</strong></div><div><small>PNL realizado</small><strong>{realizedPnl.toFixed(2)} USD</strong></div><div><small>PNL abierto</small><strong>{unrealizedPnl.toFixed(2)} USD</strong></div></div>
+    {displayedPaperPositions.length === 0 ? <p className="positions-empty">{paperTab === 'open' ? 'No hay operaciones abiertas.' : 'No hay operaciones cerradas.'}</p> : <div className="positions-table-scroll"><table className="positions-table"><thead><tr><th>Instrumento</th><th>Lado</th><th>Entrada</th><th>Actual</th><th>SL %</th><th>TP %</th><th>Leverage</th><th>Margen</th><th>Costos</th><th>R:R</th><th>PNL</th><th>ROE</th><th>Acción</th></tr></thead><tbody>{displayedPaperPositions.map((position, index) => {
       const direction = position.type === 'long' ? 1 : -1;
       const stopDistance = Math.abs(position.start.price - (position.stop?.price ?? position.start.price));
       const stopPercent = position.start.price > 0 ? stopDistance / position.start.price : 0;
@@ -1575,6 +1591,7 @@ function Workspace() {
       const leverage = paperLeverage;
       const priceChange = ((position.end.price - position.start.price) / position.start.price) * direction;
       const pnl = paperPnl(position);
+      const costs = tradingCosts(broker, notional);
       const roe = (pnl / margin) * 100;
       const targetPrice = position.target?.price ?? position.end.price;
       const stopPercentDisplay = ((position.stop ? position.stop.price : position.start.price) - position.start.price) / position.start.price * direction * 100;
@@ -1583,7 +1600,7 @@ function Workspace() {
       const rewardDistance = Math.abs(targetPrice - position.start.price);
       const rr = riskDistance > 0 ? rewardDistance / riskDistance : 0;
       const drawingIndex = drawings.findIndex(drawing => drawing.id === position.id);
-      return <tr key={`${position.start.time}-${index}`}><td>{position.symbol ?? symbol}</td><td><span className={`position-side ${position.type}`}>{position.type.toUpperCase()}</span></td><td>{position.start.price.toFixed(8)}</td><td>{position.end.price.toFixed(8)}</td><td className="value-negative">{stopPercentDisplay.toFixed(4)}%</td><td className="value-positive">+{targetPercentDisplay.toFixed(4)}%</td><td>{leverage.toFixed(1)}x</td><td>{margin.toFixed(2)} USDT</td><td>{rr.toFixed(2)}:1</td><td className={pnl >= 0 ? 'value-positive' : 'value-negative'}>{pnl >= 0 ? '+' : ''}{pnl.toFixed(8)} USDT</td><td className={roe >= 0 ? 'value-positive' : 'value-negative'}>{roe >= 0 ? '+' : ''}{roe.toFixed(8)}%</td><td><button className="paper-edit-button" type="button" disabled={drawingIndex < 0} onClick={() => void (position.closed ? deletePaperPosition(position) : closePaperPosition(position))}>{position.closed ? 'Borrar' : 'Cerrar posición'}</button></td></tr>;
+      return <tr key={`${position.start.time}-${index}`}><td>{position.symbol ?? symbol}</td><td><span className={`position-side ${position.type}`}>{position.type.toUpperCase()}</span></td><td>{position.start.price.toFixed(8)}</td><td>{position.end.price.toFixed(8)}</td><td className="value-negative">{stopPercentDisplay.toFixed(4)}%</td><td className="value-positive">+{targetPercentDisplay.toFixed(4)}%</td><td>{leverage.toFixed(1)}x</td><td>{margin.toFixed(2)} USDT</td><td>{costs.total.toFixed(2)} USDT</td><td>{rr.toFixed(2)}:1</td><td className={pnl >= 0 ? 'value-positive' : 'value-negative'}>{pnl >= 0 ? '+' : ''}{pnl.toFixed(8)} USDT</td><td className={roe >= 0 ? 'value-positive' : 'value-negative'}>{roe >= 0 ? '+' : ''}{roe.toFixed(8)}%</td><td><button className="paper-edit-button" type="button" disabled={drawingIndex < 0} onClick={() => void (position.closed ? deletePaperPosition(position) : closePaperPosition(position))}>{position.closed ? 'Borrar' : 'Cerrar posición'}</button></td></tr>;
     })}</tbody></table></div>}{showPaperSettings && <div className="paper-settings-backdrop" role="presentation" onClick={() => setShowPaperSettings(false)}><section className="paper-settings-modal" role="dialog" aria-modal="true" aria-label="Ajustes Paper" onClick={event => event.stopPropagation()}><div className="paper-settings-head"><h2>Ajustes Paper</h2><button type="button" onClick={() => setShowPaperSettings(false)} aria-label="Cerrar">×</button></div><label>Depósito<input type="number" min="1" step="0.01" placeholder="Agregar USD" value={depositAmount} onChange={event => setDepositAmount(event.target.value)} /><button type="button" className="paper-deposit-button" onClick={() => { const amount = Number(depositAmount); if (!Number.isFinite(amount) || amount <= 0) return; const next = paperInitialBalance + amount; setPaperInitialBalance(next); localStorage.setItem('helloworld-paper-balance', String(next)); window.dispatchEvent(new Event('helloworld-paper-assist-updated')); setDepositAmount(''); }}>Depositar</button></label><label>Riesgo por operación (%)<input type="number" min="0.05" max="10" step="0.05" value={paperRiskPercent} onChange={event => { const value = Math.max(.05, Math.min(10, Number(event.target.value) || .05)); setPaperRiskPercent(value); const current = JSON.parse(localStorage.getItem('helloworld-paper-assist') ?? '{}'); localStorage.setItem('helloworld-paper-assist', JSON.stringify({ ...current, balance: paperInitialBalance, riskPercent: value })); }} /></label></section></div>}
   </section>;
 

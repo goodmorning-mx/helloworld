@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState, type MouseEvent } from 'react';
 import { aggregateBars, loadThirtyDays, readCachedBars, type MarketBar } from './marketData';
 import { analyzeLab, buildLabSeries, LAB_TIMEZONE, type LabCapitalModel, type LabDirection, type LabResolution, type LabRow, type LabSeriesPoint } from './labEngine';
+import { tradingCosts } from './tradingCosts';
 
 export type LabRecommendation = { label: string; mae: number; mfe: number; rr: number; leverage: number; riskAmount: number; notional: number; margin: number; expectedProfit: number };
 export type LabRecommendations = { long: LabRecommendation; short: LabRecommendation; resolution: LabResolution; horizon: number };
@@ -101,25 +102,34 @@ export default function LabWindow({ activeSymbol = 'BTCUSDT', broker = 'binance'
   const fiveMinuteBars = useMemo(() => aggregateBars(bars, 5), [bars]);
   const studyBars = useMemo(() => resolution === 5 ? fiveMinuteBars : bars, [bars, fiveMinuteBars, resolution]);
   const best = rows[0];
+  const analyzeWithCosts = (nextBars: MarketBar[], nextDirection: LabDirection, nextHorizon: number, nextRiskFraction: number, nextResolution: LabResolution, nextModel: LabCapitalModel) => {
+    const riskAmount = startingBalance * (nextRiskFraction / 100);
+    return analyzeLab(nextBars, nextDirection, nextHorizon, nextRiskFraction, nextResolution, nextModel).map(row => {
+      const notional = row.stop > 0 ? riskAmount / (row.stop / 100) : 0;
+      const costs = tradingCosts(broker, notional);
+      return { ...row, expectancyR: riskAmount > 0 ? row.expectancyR - costs.total / riskAmount : row.expectancyR };
+    });
+  };
   const currentSlot = (() => { const parts = new Intl.DateTimeFormat('en-US', { timeZone: LAB_TIMEZONE, weekday: 'short', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' }).formatToParts(clock); const weekday = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'].indexOf(parts.find(part => part.type === 'weekday')?.value ?? ''); const hour = Number(parts.find(part => part.type === 'hour')?.value ?? 0); const minute = Number(parts.find(part => part.type === 'minute')?.value ?? 0); return weekday * (1440 / resolution) + hour * (60 / resolution) + Math.floor(minute / resolution); })();
   const liveRows = useMemo(() => {
     if (!studyBars.length) return { long: [], short: [] };
-    const longRows = direction === 'long' ? rows : analyzeLab(studyBars, 'long', horizon, riskFraction, resolution, capitalModel);
-    const shortRows = direction === 'short' ? rows : analyzeLab(studyBars, 'short', horizon, riskFraction, resolution, capitalModel);
+    const longRows = direction === 'long' ? rows : analyzeWithCosts(studyBars, 'long', horizon, riskFraction, resolution, capitalModel);
+    const shortRows = direction === 'short' ? rows : analyzeWithCosts(studyBars, 'short', horizon, riskFraction, resolution, capitalModel);
     return { long: longRows, short: shortRows };
-  }, [capitalModel, direction, horizon, resolution, riskFraction, rows, studyBars]);
+  }, [broker, capitalModel, direction, horizon, resolution, riskFraction, rows, startingBalance, studyBars]);
   const recommendations = useMemo(() => {
     const make = (row?: LabRow): LabRecommendation | null => {
       if (!row) return null;
       const riskAmount = startingBalance * (riskFraction / 100);
       const notional = row.stop > 0 ? riskAmount / (row.stop / 100) : 0;
       const margin = row.leverage > 0 ? notional / row.leverage : 0;
-      return { label: row.label, mae: row.stop, mfe: row.target, rr: row.rr, leverage: row.leverage, riskAmount, notional, margin, expectedProfit: notional * (row.target / 100) };
+      const costs = tradingCosts(broker, notional);
+      return { label: row.label, mae: row.stop, mfe: row.target, rr: row.rr, leverage: row.leverage, riskAmount, notional, margin, expectedProfit: notional * (row.target / 100) - costs.total };
     };
     const long = make(liveRows.long.find(row => row.slot === currentSlot) ?? liveRows.long[0]);
     const short = make(liveRows.short.find(row => row.slot === currentSlot) ?? liveRows.short[0]);
     return long && short ? { long, short, resolution, horizon } : null;
-  }, [currentSlot, liveRows, riskFraction, startingBalance]);
+  }, [broker, currentSlot, liveRows, riskFraction, startingBalance]);
   useEffect(() => {
     onRecommendation?.(recommendations);
   }, [onRecommendation, recommendations]);
@@ -170,7 +180,7 @@ export default function LabWindow({ activeSymbol = 'BTCUSDT', broker = 'binance'
 
   function analyzeLoaded(nextBars: MarketBar[], nextResolution = resolution, nextModel = capitalModel) {
     const normalized = nextResolution === 5 ? aggregateBars(nextBars, 5) : nextBars;
-    setRows(analyzeLab(normalized, direction, horizon, riskFraction, nextResolution, nextModel));
+    setRows(analyzeWithCosts(normalized, direction, horizon, riskFraction, nextResolution, nextModel));
   }
 
   // Recalculate the complete study when any analysis parameter changes.
@@ -179,8 +189,8 @@ export default function LabWindow({ activeSymbol = 'BTCUSDT', broker = 'binance'
   useEffect(() => {
     if (!bars.length) return;
     const normalized = resolution === 5 ? aggregateBars(bars, 5) : bars;
-    setRows(analyzeLab(normalized, direction, horizon, riskFraction, resolution, capitalModel));
-  }, [bars, capitalModel, direction, horizon, resolution, riskFraction]);
+    setRows(analyzeWithCosts(normalized, direction, horizon, riskFraction, resolution, capitalModel));
+  }, [bars, broker, capitalModel, direction, horizon, resolution, riskFraction, startingBalance]);
 
   useEffect(() => {
     if (loadedThirtyDays) return;
@@ -189,7 +199,7 @@ export default function LabWindow({ activeSymbol = 'BTCUSDT', broker = 'binance'
       if (available.length > 0) {
         setBars(available);
         const normalized = resolution === 5 ? aggregateBars(available, 5) : available;
-        setRows(analyzeLab(normalized, direction, horizon, riskFraction, resolution, capitalModel));
+        setRows(analyzeWithCosts(normalized, direction, horizon, riskFraction, resolution, capitalModel));
         setMessage(`Cache del gráfico: ${new Date(available[0].time * 1000).toLocaleDateString('es-MX')} → ${new Date(available[available.length - 1].time * 1000).toLocaleDateString('es-MX')}. Completando perfil semanal…`);
       }
       if (!autoLoadStarted.current) {
