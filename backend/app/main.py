@@ -364,6 +364,15 @@ def ctrader_account(identity: AuthIdentity = Depends(identity_dependency(auth_se
     return ctrader_manager.snapshot(identity.user_id)
 
 
+@app.get("/trading/ctrader/tick/{symbol}")
+def ctrader_tick(symbol: str, identity: AuthIdentity = Depends(identity_dependency(auth_service))) -> dict[str, object]:
+    status = ctrader_manager.snapshot(identity.user_id)
+    requested = symbol.upper()
+    ticks = status.get("last_ticks") if isinstance(status.get("last_ticks"), dict) else {}
+    tick = ticks.get(requested) if isinstance(ticks, dict) else None
+    return {"broker": "ctrader", "symbol": requested, "tick": tick, "connected": bool(status.get("healthy"))}
+
+
 @app.get("/trading/ctrader/candles/{symbol}")
 def ctrader_candles(symbol: str, interval: str = "1m", days: int = 1, identity: AuthIdentity = Depends(identity_dependency(auth_service))) -> dict[str, object]:
     if interval not in {"1m", "5m", "15m", "30m", "1h"}:

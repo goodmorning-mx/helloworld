@@ -37,7 +37,7 @@ def _worker(high_queue: Any, low_queue: Any, response_queue: Any, host: str, por
 
     state = {"connected": False, "ready": False, "account_id": account_id, "accounts": [], "symbols": {},
              "balance": None, "money_digits": None, "broker": None, "trader_login": None,
-             "subscribed_spots": set(), "subscribed_trendbars": set(), "auth_retry_count": 0}
+             "subscribed_spots": set(), "subscribed_trendbars": set(), "last_ticks": {}, "auth_retry_count": 0}
     client = Client(host, port, TcpProtocol)
 
     def emit(payload: dict[str, object]) -> None:
@@ -147,9 +147,11 @@ def _worker(high_queue: Any, low_queue: Any, response_queue: Any, host: str, por
             if isinstance(payload, ProtoOASpotEvent):
                 symbol = state["symbols"].get(int(payload.symbolId))
                 if symbol and (payload.bid or payload.ask):
-                    emit({"type": "TICK", "symbol": symbol, "bid": float(payload.bid) / 100000,
+                    tick = {"type": "TICK", "symbol": symbol, "bid": float(payload.bid) / 100000,
                           "ask": float(payload.ask) / 100000, "price": float((payload.bid + payload.ask) / 2) / 100000,
-                          "time": int(payload.timestamp or time.time() * 1000) // 1000})
+                          "time": int(payload.timestamp or time.time() * 1000) // 1000}
+                    state["last_ticks"][symbol] = tick
+                    emit(tick)
             if hasattr(payload, "trendbar") and len(payload.trendbar):
                 symbol = state["symbols"].get(int(payload.symbolId))
                 if symbol:
@@ -318,7 +320,7 @@ class CTraderSession:
         self._process = None
         self._pending: deque[dict[str, object]] = deque()
         self._lock = threading.RLock()
-        self._status = {"connected": False, "ready": False, "error": None, "symbols": {}, "last_tick": None,
+        self._status = {"connected": False, "ready": False, "error": None, "symbols": {}, "last_tick": None, "last_ticks": {},
                         "balance": None, "money_digits": None, "broker": None, "trader_login": None}
         self._symbols_cache: dict[str, int] = {}
         self._symbols_cached_at = 0.0
@@ -345,7 +347,7 @@ class CTraderSession:
             self._process.join(1)
         self._process.close()
         self._process = None
-        self._status = {"connected": False, "ready": False, "error": None, "symbols": {}, "last_tick": None,
+        self._status = {"connected": False, "ready": False, "error": None, "symbols": {}, "last_tick": None, "last_ticks": {},
                         "balance": None, "money_digits": None, "broker": None, "trader_login": None}
         self._symbols_cache = {}
         self._symbols_cached_at = 0.0
@@ -439,6 +441,11 @@ class CTraderSession:
                     self._status["ready"] = False
             elif response.get("type") == "TICK":
                 self._status["last_tick"] = response
+                symbol = str(response.get("symbol") or "").upper()
+                if symbol:
+                    ticks = self._status.setdefault("last_ticks", {})
+                    if isinstance(ticks, dict):
+                        ticks[symbol] = response
             else:
                 self._pending.append(response)
 

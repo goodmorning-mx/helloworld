@@ -19,6 +19,14 @@ const MAX_CONTEXT_RENDER_BARS = 600;
 function renderBars(bars: Array<{ time: UTCTimestamp; open: number; high: number; low: number; close: number }>, max: number) {
   return bars.slice(-max);
 }
+function mergeTickBar(bars: Array<{ time: UTCTimestamp; open: number; high: number; low: number; close: number }>, time: number, price: number, intervalSeconds: number) {
+  const bucket = Math.floor(time / intervalSeconds) * intervalSeconds as UTCTimestamp;
+  const current = bars[bars.length - 1];
+  if (current?.time === bucket) {
+    return [...bars.slice(0, -1), { ...current, high: Math.max(current.high, price), low: Math.min(current.low, price), close: price }];
+  }
+  return [...bars, { time: bucket, open: price, high: price, low: price, close: price }];
+}
 
 // Broker contract limits used by paper trading until live symbol metadata is
 // available. The effective paper leverage is always the lower of the Lab
@@ -779,8 +787,20 @@ function Workspace() {
         })
         .catch(() => undefined);
       void loadCTrader();
-      const timer = window.setInterval(() => void loadCTrader(), 5_000);
-      return () => { active = false; window.clearInterval(timer); chart.timeScale().unsubscribeVisibleTimeRangeChange(refreshDrawings); chart.timeScale().unsubscribeVisibleLogicalRangeChange(refreshDrawings); chartRef.current = null; candlesRef.current = null; candleDataRef.current = []; candleBarsRef.current = []; loadingOlderRef.current = false; chart.remove(); };
+      const pollTick = () => fetch(`${apiUrl}/trading/ctrader/tick/${encodeURIComponent(symbol)}`, { headers: auth.accessToken ? { Authorization: `Bearer ${auth.accessToken}` } : {}, credentials: 'include' })
+        .then(response => response.ok ? response.json() as Promise<{ tick?: { price?: number; time?: number } }> : Promise.reject(new Error('tick unavailable')))
+        .then(payload => {
+          if (!active || !payload.tick?.price || !payload.tick.time) return;
+          candleBarsRef.current = mergeTickBar(candleBarsRef.current, Number(payload.tick.time), Number(payload.tick.price), 60);
+          candleDataRef.current = candleBarsRef.current.map(({ time, close }) => ({ time, close }));
+          const visibleBars = renderBars(candleBarsRef.current, MAX_ENTRY_RENDER_BARS);
+          candles.setData(showHeikinAshi ? calculateHeikinAshi(visibleBars) : visibleBars);
+          setViewportRevision(value => value + 1);
+        }).catch(() => undefined);
+      const candleTimer = window.setInterval(() => void loadCTrader(), 5_000);
+      const tickTimer = window.setInterval(pollTick, 1_000);
+      void pollTick();
+      return () => { active = false; window.clearInterval(candleTimer); window.clearInterval(tickTimer); chart.timeScale().unsubscribeVisibleTimeRangeChange(refreshDrawings); chart.timeScale().unsubscribeVisibleLogicalRangeChange(refreshDrawings); chartRef.current = null; candlesRef.current = null; candleDataRef.current = []; candleBarsRef.current = []; loadingOlderRef.current = false; chart.remove(); };
     }
     const stream = new WebSocket(`wss://stream.binance.com:9443/ws/${symbol.toLowerCase()}@kline_${entryInterval}`);
     fetch(`https://api.binance.com/api/v3/klines?symbol=${symbol}&interval=${entryInterval}&limit=500`)
@@ -937,8 +957,20 @@ function Workspace() {
         })
         .catch(() => undefined);
       void loadCTrader();
-      const timer = window.setInterval(() => void loadCTrader(), 5_000);
-      return () => { active = false; window.clearInterval(timer); chart.timeScale().unsubscribeVisibleTimeRangeChange(refreshOverview); chart.timeScale().unsubscribeVisibleLogicalRangeChange(refreshOverview); overviewChartRef.current = null; overviewCandlesRef.current = null; overviewCandleDataRef.current = []; overviewBarsRef.current = []; overviewLoadingOlderRef.current = false; chart.remove(); };
+      const pollTick = () => fetch(`${apiUrl}/trading/ctrader/tick/${encodeURIComponent(symbol)}`, { headers: auth.accessToken ? { Authorization: `Bearer ${auth.accessToken}` } : {}, credentials: 'include' })
+        .then(response => response.ok ? response.json() as Promise<{ tick?: { price?: number; time?: number } }> : Promise.reject(new Error('tick unavailable')))
+        .then(payload => {
+          if (!active || !payload.tick?.price || !payload.tick.time) return;
+          overviewBarsRef.current = mergeTickBar(overviewBarsRef.current, Number(payload.tick.time), Number(payload.tick.price), interval === '1s' ? 60 : interval === '1m' ? 60 : interval === '3m' ? 180 : interval === '5m' ? 300 : 900);
+          overviewCandleDataRef.current = overviewBarsRef.current.map(({ time, close }) => ({ time, close }));
+          const visibleBars = renderBars(overviewBarsRef.current, MAX_CONTEXT_RENDER_BARS);
+          candles.setData(showHeikinAshi ? calculateHeikinAshi(visibleBars) : visibleBars);
+          setOverviewRevision(value => value + 1);
+        }).catch(() => undefined);
+      const candleTimer = window.setInterval(() => void loadCTrader(), 5_000);
+      const tickTimer = window.setInterval(pollTick, 1_000);
+      void pollTick();
+      return () => { active = false; window.clearInterval(candleTimer); window.clearInterval(tickTimer); chart.timeScale().unsubscribeVisibleTimeRangeChange(refreshOverview); chart.timeScale().unsubscribeVisibleLogicalRangeChange(refreshOverview); overviewChartRef.current = null; overviewCandlesRef.current = null; overviewCandleDataRef.current = []; overviewBarsRef.current = []; overviewLoadingOlderRef.current = false; chart.remove(); };
     }
     const stream = new WebSocket(`wss://stream.binance.com:9443/ws/${symbol.toLowerCase()}@kline_${interval}`);
     fetch(`https://api.binance.com/api/v3/klines?symbol=${symbol}&interval=${interval}&limit=300`)
