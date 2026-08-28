@@ -12,6 +12,14 @@ const apiUrl = configuredApiUrl === '/api' && window.location.hostname === 'dev.
   ? 'https://api.dev.helloworld.goodmorning.mx'
   : configuredApiUrl;
 
+// Keep the interactive charts responsive. The Lab keeps its own historical
+// dataset; these limits only control what is rendered in the live canvases.
+const MAX_ENTRY_RENDER_BARS = 1200;
+const MAX_CONTEXT_RENDER_BARS = 600;
+function renderBars(bars: Array<{ time: UTCTimestamp; open: number; high: number; low: number; close: number }>, max: number) {
+  return bars.slice(-max);
+}
+
 // Broker contract limits used by paper trading until live symbol metadata is
 // available. The effective paper leverage is always the lower of the Lab
 // recommendation and this broker/symbol limit.
@@ -735,7 +743,8 @@ function Workspace() {
               candleBarsRef.current = candleBarsRef.current.filter(bar => Number(bar.time) >= sevenDaysAgo);
               void cacheBars(symbol, entryInterval, candleBarsRef.current);
               candleDataRef.current = candleBarsRef.current.map(({ time, close }) => ({ time, close }));
-              candles.setData(showHeikinAshi ? calculateHeikinAshi(candleBarsRef.current) : candleBarsRef.current);
+              const visibleBars = renderBars(candleBarsRef.current, MAX_ENTRY_RENDER_BARS);
+              candles.setData(showHeikinAshi ? calculateHeikinAshi(visibleBars) : visibleBars);
               chart.timeScale().setVisibleLogicalRange({ from: previousRange.from + older.length, to: previousRange.to + older.length });
               setViewportRevision(value => value + 1);
             })
@@ -762,7 +771,8 @@ function Workspace() {
           if (!parsed.length) return;
           candleBarsRef.current = parsed;
           candleDataRef.current = parsed.map(({ time, close }) => ({ time, close }));
-          candles.setData(showHeikinAshi ? calculateHeikinAshi(parsed) : parsed);
+          const visibleBars = renderBars(parsed, MAX_ENTRY_RENDER_BARS);
+          candles.setData(showHeikinAshi ? calculateHeikinAshi(visibleBars) : visibleBars);
           if (!polling) chart.timeScale().fitContent();
           polling += 1;
           setViewportRevision(value => value + 1);
@@ -781,7 +791,8 @@ function Workspace() {
         candleBarsRef.current = parsed;
         void cacheBars(symbol, entryInterval, parsed);
         candleDataRef.current = parsed.map(({ time, close }) => ({ time, close }));
-        candles.setData(showHeikinAshi ? calculateHeikinAshi(parsed) : parsed);
+        const visibleBars = renderBars(parsed, MAX_ENTRY_RENDER_BARS);
+        candles.setData(showHeikinAshi ? calculateHeikinAshi(visibleBars) : visibleBars);
         chart.timeScale().fitContent();
         setViewportRevision(value => value + 1);
       })
@@ -793,7 +804,8 @@ function Workspace() {
       candleBarsRef.current = [...candleBarsRef.current.filter(value => value.time !== next.time), next].sort((left, right) => Number(left.time) - Number(right.time));
       void cacheBars(symbol, entryInterval, [next]);
       candleDataRef.current = candleBarsRef.current.map(({ time, close }) => ({ time, close }));
-      candles.setData(showHeikinAshi ? calculateHeikinAshi(candleBarsRef.current) : candleBarsRef.current);
+      const visibleBars = renderBars(candleBarsRef.current, MAX_ENTRY_RENDER_BARS);
+      candles.setData(showHeikinAshi ? calculateHeikinAshi(visibleBars) : visibleBars);
       setDrawings(current => {
         let anyOpen = false;
         const updated = current.map(drawing => {
@@ -898,7 +910,8 @@ function Workspace() {
         overviewBarsRef.current = [...older, ...overviewBarsRef.current].filter((bar, index, all) => index === 0 || bar.time !== all[index - 1].time).filter(bar => Number(bar.time) >= sevenDaysAgo);
         void cacheBars(symbol, interval, overviewBarsRef.current);
         overviewCandleDataRef.current = overviewBarsRef.current.map(({ time, close }) => ({ time, close }));
-        candles.setData(showHeikinAshi ? calculateHeikinAshi(overviewBarsRef.current) : overviewBarsRef.current);
+        const visibleBars = renderBars(overviewBarsRef.current, MAX_CONTEXT_RENDER_BARS);
+        candles.setData(showHeikinAshi ? calculateHeikinAshi(visibleBars) : visibleBars);
         chart.timeScale().setVisibleLogicalRange({ from: previousRange.from + older.length, to: previousRange.to + older.length });
         setOverviewRevision(value => value + 1);
       }).catch(() => undefined).finally(() => { overviewLoadingOlderRef.current = false; });
@@ -916,7 +929,8 @@ function Workspace() {
           if (!parsed.length) return;
           overviewBarsRef.current = parsed;
           overviewCandleDataRef.current = parsed.map(({ time, close }) => ({ time, close }));
-          candles.setData(showHeikinAshi ? calculateHeikinAshi(parsed) : parsed);
+          const visibleBars = renderBars(parsed, MAX_CONTEXT_RENDER_BARS);
+          candles.setData(showHeikinAshi ? calculateHeikinAshi(visibleBars) : visibleBars);
           if (!polling) chart.timeScale().fitContent();
           polling += 1;
           setOverviewRevision(value => value + 1);
@@ -935,7 +949,8 @@ function Workspace() {
         overviewBarsRef.current = parsed;
         void cacheBars(symbol, interval, parsed);
         overviewCandleDataRef.current = parsed.map(({ time, close }) => ({ time, close }));
-        candles.setData(showHeikinAshi ? calculateHeikinAshi(parsed) : parsed);
+        const visibleBars = renderBars(parsed, MAX_CONTEXT_RENDER_BARS);
+        candles.setData(showHeikinAshi ? calculateHeikinAshi(visibleBars) : visibleBars);
         chart.timeScale().fitContent();
       }).catch(() => undefined);
     stream.onmessage = event => {
@@ -945,7 +960,8 @@ function Workspace() {
       overviewBarsRef.current = [...overviewBarsRef.current.filter(value => value.time !== next.time), next].sort((left, right) => Number(left.time) - Number(right.time));
       void cacheBars(symbol, interval, [next]);
       overviewCandleDataRef.current = [...overviewCandleDataRef.current.filter(value => value.time !== next.time), { time: next.time, close: next.close }];
-      candles.setData(showHeikinAshi ? calculateHeikinAshi(overviewBarsRef.current) : overviewBarsRef.current);
+      const visibleBars = renderBars(overviewBarsRef.current, MAX_CONTEXT_RENDER_BARS);
+      candles.setData(showHeikinAshi ? calculateHeikinAshi(visibleBars) : visibleBars);
     };
     return () => { active = false; stream.close(); chart.timeScale().unsubscribeVisibleTimeRangeChange(refreshOverview); chart.timeScale().unsubscribeVisibleLogicalRangeChange(refreshOverview); overviewChartRef.current = null; overviewCandlesRef.current = null; overviewCandleDataRef.current = []; overviewBarsRef.current = []; overviewLoadingOlderRef.current = false; chart.remove(); };
   }, [auth.accessToken, broker, symbol, interval, timezone, mobilePwa, showHeikinAshi]);
@@ -1107,7 +1123,8 @@ function Workspace() {
     void viewportRevision;
     const chart = canvas === 'entry' ? chartRef.current : overviewChartRef.current;
     const candles = canvas === 'entry' ? candlesRef.current : overviewCandlesRef.current;
-    const bars = canvas === 'entry' ? candleBarsRef.current : overviewBarsRef.current;
+    const rawBars = canvas === 'entry' ? candleBarsRef.current : overviewBarsRef.current;
+    const bars = renderBars(rawBars, canvas === 'entry' ? MAX_ENTRY_RENDER_BARS : MAX_CONTEXT_RENDER_BARS);
     const width = canvas === 'entry' ? stageSize.width : overviewSize.width;
     const height = canvas === 'entry' ? stageSize.height : overviewSize.height;
     if (!chart || !candles || !bars.length || (!showRsi && !showSsl)) return null;
@@ -1119,10 +1136,16 @@ function Workspace() {
       const y = candles.priceToCoordinate(value);
       return x === null || x === undefined || y === null || y === undefined ? null : { x, y };
     };
-    const path = (values: Array<number | null>) => values.map((value, index) => {
+    const path = (values: Array<number | null>) => {
+      let started = false;
+      return values.map((value, index) => {
       const point = toPoint(value, index);
-      return point ? `${index === 0 ? 'M' : 'L'} ${point.x} ${point.y}` : '';
-    }).filter(Boolean).join(' ');
+      if (!point) return '';
+      const command = started ? 'L' : 'M';
+      started = true;
+      return `${command} ${point.x} ${point.y}`;
+      }).filter(Boolean).join(' ');
+    };
     const rsiMarkers = rsi.map((value, index) => {
       if (value === null || (value > rsiLowBand && value < rsiHighBand)) return null;
       const point = toPoint(bars[index].close, index);
