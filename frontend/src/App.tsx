@@ -601,8 +601,8 @@ function Workspace() {
       } satisfies Drawing));
       setDrawings(current => [...current.filter(drawing => !drawing.paper), ...restored]);
       const activeIndex = restored.findIndex(operation => !operation.closed);
-      const lastClosed = [...operations].filter(operation => operation.status !== 'OPEN').sort((left, right) => Date.parse(right.updated_at ?? '') - Date.parse(left.updated_at ?? ''))[0];
-      setVisibleClosedId(lastClosed?.id ?? null);
+      // Closed trades stay in Paper history, but never render over the live chart.
+      setVisibleClosedId(null);
       activePositionIndexRef.current = activeIndex >= 0 ? activeIndex : null;
       setActivePositionIndex(activePositionIndexRef.current);
       paperReadyRef.current = true;
@@ -652,7 +652,7 @@ function Workspace() {
       drawings.forEach((drawing, index) => {
         if (!drawing.paper || (drawing.type !== 'long' && drawing.type !== 'short')) return;
         if (drawing.symbol && drawing.symbol !== symbol) return;
-        if (drawing.closed && drawing.id !== visibleClosedId) return;
+        if (drawing.closed) return;
         // A paper position is shared by both chart views.
         const targetPrice = drawing.target?.price ?? drawing.end.price;
         const stopPrice = drawing.stop?.price;
@@ -857,7 +857,7 @@ function Workspace() {
           const grossPnl = ((next.close - drawing.start.price) / drawing.start.price) * direction * notional;
           const costs = tradingCosts(broker, notional);
           const realizedPnl = closeReason ? grossPnl - costs.total : drawing.pnl;
-          if (closeReason && drawing.id) setVisibleClosedId(drawing.id);
+          if (closeReason) setVisibleClosedId(null);
           return {
             ...drawing,
             end: { time: next.time, price: next.close },
@@ -1519,7 +1519,7 @@ function Workspace() {
       return;
     }
     setDrawings(current => current.map(drawing => drawing.id === position.id ? { ...drawing, closed: true, status, closeReason: 'MANUAL', notional, margin: position.margin ?? (paperLeverage > 0 ? notional / paperLeverage : 0), pnl } : drawing));
-    setVisibleClosedId(position.id);
+    setVisibleClosedId(null);
     setActivePositionIndex(null);
     setSelectedDrawing(null);
     setPaperTab('closed');
