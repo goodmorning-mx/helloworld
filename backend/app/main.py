@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import math
 from uuid import uuid4
 from urllib.parse import urlencode
 
@@ -266,6 +267,76 @@ def binance_account(identity: AuthIdentity = Depends(identity_dependency(auth_se
     if not settings.binance_account_monitor_enabled:
         return {"enabled": False, "configured": False, "healthy": False, "error": "Monitor Binance deshabilitado"}
     return binance_manager.snapshot(identity.user_id)
+
+
+@app.get("/market/binance/active-symbols")
+def binance_active_symbols(
+    limit: int = 30,
+    min_quote_volume: float = 50_000_000,
+    min_trades: int = 100_000,
+    min_movement_pct: float = 0.5,
+) -> dict[str, object]:
+    """Return liquid, active Binance Futures symbols ranked by observed movement.
+
+    This endpoint uses public market data only. It intentionally does not
+    reuse the legacy scanner or require a user's private Binance credentials.
+    """
+    limit = max(1, min(limit, 100))
+    min_quote_volume = max(0, min(min_quote_volume, 10_000_000_000_000))
+    min_trades = max(0, min(min_trades, 100_000_000))
+    min_movement_pct = max(0, min(min_movement_pct, 100))
+    try:
+        exchange_response = httpx.get("https://fapi.binance.com/fapi/v1/exchangeInfo", timeout=15)
+        ticker_response = httpx.get("https://fapi.binance.com/fapi/v1/ticker/24hr", timeout=15)
+        exchange_response.raise_for_status()
+        ticker_response.raise_for_status()
+        exchange_payload = exchange_response.json()
+        ticker_payload = ticker_response.json()
+    except (httpx.HTTPError, ValueError) as exc:
+        raise HTTPException(status_code=502, detail="No se pudo consultar el mercado público de Binance.") from exc
+
+    tradable = {
+        str(item.get("symbol", ""))
+        for item in exchange_payload.get("symbols", [])
+        if item.get("status") == "TRADING"
+        and item.get("quoteAsset") == "USDT"
+        and item.get("contractType") == "PERPETUAL"
+    }
+    ranked: list[dict[str, object]] = []
+    for item in ticker_payload if isinstance(ticker_payload, list) else []:
+        symbol = str(item.get("symbol", ""))
+        try:
+            movement_pct = abs(float(item.get("priceChangePercent", 0)))
+            high = float(item.get("highPrice", 0))
+            low = float(item.get("lowPrice", 0))
+            range_pct = ((high - low) / low * 100) if low > 0 else 0
+            quote_volume = float(item.get("quoteVolume", 0))
+            trades = int(item.get("count", 0))
+            last_price = float(item.get("lastPrice", 0))
+        except (TypeError, ValueError):
+            continue
+        if symbol not in tradable or quote_volume < min_quote_volume or trades < min_trades or movement_pct < min_movement_pct:
+            continue
+        # Movement is primary; liquidity contributes logarithmically so a
+        # single huge-volume market cannot drown out all other candidates.
+        score = movement_pct * (1 + math.log10(max(quote_volume, 1)) / 10)
+        ranked.append({
+            "symbol": symbol,
+            "last_price": last_price,
+            "change_pct": float(item.get("priceChangePercent", 0)),
+            "movement_pct": movement_pct,
+            "range_pct": range_pct,
+            "quote_volume": quote_volume,
+            "trades": trades,
+            "score": score,
+        })
+    ranked.sort(key=lambda row: (float(row["score"]), float(row["quote_volume"])), reverse=True)
+    return {
+        "broker": "binance",
+        "interval": "24h",
+        "filters": {"min_quote_volume": min_quote_volume, "min_trades": min_trades, "min_movement_pct": min_movement_pct},
+        "symbols": ranked[:limit],
+    }
 
 
 @app.get("/trading/binance/credentials")
