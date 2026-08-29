@@ -1656,11 +1656,14 @@ function Workspace() {
     const paperNotional = drawing.notional && drawing.notional > 0
       ? drawing.notional
       : Math.min(fallbackNotional, paperInitialBalance * paperLeverage);
-    const slAmount = riskPercent / 100 * paperNotional;
-    const tpAmount = targetPercent / 100 * paperNotional;
+    const feeAmount = drawing.paper ? tradingCosts(broker, paperNotional).total : 0;
+    // Price percentages remain gross market movement; displayed dollar
+    // amounts are net and include the round-trip fee.
+    const slAmount = riskPercent / 100 * paperNotional - feeAmount;
+    const tpAmount = targetPercent / 100 * paperNotional - feeAmount;
     const livePnl = drawing.closed && Number.isFinite(drawing.pnl)
-      ? Math.max(-paperRiskAmount, drawing.pnl as number)
-      : Math.max(-paperRiskAmount, ((drawing.end.price - drawing.start.price) / drawing.start.price) * (drawing.type === 'long' ? 1 : -1) * paperNotional);
+      ? drawing.pnl as number
+      : ((drawing.end.price - drawing.start.price) / drawing.start.price) * (drawing.type === 'long' ? 1 : -1) * paperNotional - feeAmount;
     const rr = riskDistance > 0 ? rewardDistance / riskDistance : 0;
     const targetLabel = `${targetPercent >= 0 ? '+' : ''}${targetPercent.toFixed(8)}%`;
     const riskLabel = `${riskPercent >= 0 ? '+' : ''}${riskPercent.toFixed(8)}%`;
