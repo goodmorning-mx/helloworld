@@ -1588,7 +1588,9 @@ function Workspace() {
         ? position.notional as number
         : Math.min(calculatedNotional, paperInitialBalance * paperLeverage);
       const margin = position.margin != null && position.margin > 0 ? position.margin : (paperLeverage > 0 ? notional / paperLeverage : 0);
-      const leverage = paperLeverage;
+      // Each operation keeps its own margin/notional. Do not display the
+      // currently selected symbol's leverage for historical positions.
+      const leverage = margin > 0 ? notional / margin : paperLeverage;
       const priceChange = ((position.end.price - position.start.price) / position.start.price) * direction;
       const pnl = paperPnl(position);
       const costs = tradingCosts(broker, notional);
