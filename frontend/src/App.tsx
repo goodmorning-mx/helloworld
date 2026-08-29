@@ -5,7 +5,7 @@ import { CandlestickSeries, createChart, type IPriceLine, type Time, type UTCTim
 import LabWindow, { type LabRecommendations } from './LabWindow';
 import { cacheBars } from './marketData';
 import { calculateHeikinAshi, calculateRsi, calculateSslChannel } from './indicators';
-import { tradingCosts } from './tradingCosts';
+import { tradingCosts, tradingCostRate } from './tradingCosts';
 import './styles.css';
 
 const configuredApiUrl = import.meta.env.VITE_API_URL ?? 'http://localhost:8000';
@@ -1459,8 +1459,12 @@ function Workspace() {
     const riskAmount = paperInitialBalance * riskPercent / 100;
     const stopPercent = Math.abs(entry - stop) / entry;
     const operationLeverage = Math.min(recommendation?.leverage ?? paperLeverage, brokerMaxLeverage);
-    const notional = Math.min(stopPercent > 0 ? riskAmount / stopPercent : 0, paperInitialBalance * operationLeverage);
-    const margin = operationLeverage > 0 ? notional / operationLeverage : 0;
+    const effectiveStop = stopPercent + tradingCostRate(broker);
+    const riskBoundNotional = effectiveStop > 0 ? riskAmount / effectiveStop : 0;
+    const feeAwareLeverage = riskAmount > 0 ? riskBoundNotional / riskAmount : operationLeverage;
+    const effectiveLeverage = Math.min(operationLeverage, feeAwareLeverage, brokerMaxLeverage);
+    const notional = Math.min(riskBoundNotional, paperInitialBalance * effectiveLeverage);
+    const margin = effectiveLeverage > 0 ? notional / effectiveLeverage : 0;
     const response = await fetch(`${apiUrl}/trading/paper/operations`, {
       method: 'POST',
       headers: { Authorization: `Bearer ${auth.accessToken}`, 'Content-Type': 'application/json' },

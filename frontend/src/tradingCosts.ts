@@ -6,6 +6,10 @@ export type TradingCosts = {
   total: number;
 };
 
+export function tradingCostRate(broker: TradingBroker) {
+  return broker === 'ctrader' ? 0.00016 : 0.0014;
+}
+
 /** Round-trip estimates used by Paper and the MAE/MFE assist. */
 export function tradingCosts(broker: TradingBroker, notional: number): TradingCosts {
   const safeNotional = Math.max(0, Number(notional) || 0);

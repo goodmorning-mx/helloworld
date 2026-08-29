@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState, type MouseEvent } from 'react';
 import { aggregateBars, loadThirtyDays, readCachedBars, type MarketBar } from './marketData';
 import { analyzeLab, buildLabSeries, LAB_TIMEZONE, type LabCapitalModel, type LabDirection, type LabResolution, type LabRow, type LabSeriesPoint } from './labEngine';
-import { tradingCosts } from './tradingCosts';
+import { tradingCosts, tradingCostRate } from './tradingCosts';
 
 export type LabRecommendation = { label: string; mae: number; mfe: number; rr: number; leverage: number; riskAmount: number; notional: number; margin: number; expectedProfit: number };
 export type LabRecommendations = { long: LabRecommendation; short: LabRecommendation; resolution: LabResolution; horizon: number };
@@ -121,10 +121,12 @@ export default function LabWindow({ activeSymbol = 'BTCUSDT', broker = 'binance'
     const make = (row?: LabRow): LabRecommendation | null => {
       if (!row) return null;
       const riskAmount = startingBalance * (riskFraction / 100);
-      const notional = row.stop > 0 ? riskAmount / (row.stop / 100) : 0;
+      const effectiveStop = row.stop / 100 + tradingCostRate(broker);
+      const notional = effectiveStop > 0 ? riskAmount / effectiveStop : 0;
       const margin = row.leverage > 0 ? notional / row.leverage : 0;
       const costs = tradingCosts(broker, notional);
-      return { label: row.label, mae: row.stop, mfe: row.target, rr: row.rr, leverage: row.leverage, riskAmount, notional, margin, expectedProfit: notional * (row.target / 100) - costs.total };
+      const leverage = riskAmount > 0 ? notional / riskAmount : row.leverage;
+      return { label: row.label, mae: row.stop, mfe: row.target, rr: row.rr, leverage, riskAmount, notional, margin: riskAmount, expectedProfit: notional * (row.target / 100) - costs.total };
     };
     const long = make(liveRows.long.find(row => row.slot === currentSlot) ?? liveRows.long[0]);
     const short = make(liveRows.short.find(row => row.slot === currentSlot) ?? liveRows.short[0]);
