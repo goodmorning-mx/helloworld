@@ -48,6 +48,15 @@ def test_account_update_exposes_balance_position_and_order_event():
     assert snapshot["events"][0]["status"] == "FILLED"
 
 
+def test_max_leverages_reads_first_bracket_per_symbol(monkeypatch):
+    instance = monitor()
+    monkeypatch.setattr(instance, "_signed_get", lambda path: [
+        {"symbol": "BTCUSDT", "brackets": [{"initialLeverage": 125}, {"initialLeverage": 50}]},
+        {"symbol": "XRPUSDT", "brackets": [{"initialLeverage": 75}]},
+    ])
+    assert instance.max_leverages() == {"BTCUSDT": 125, "XRPUSDT": 75}
+
+
 def test_invalid_api_key_or_ip_gets_actionable_message():
     instance = monitor()
     response = HTTPError("https://fapi.example.test/fapi/v2/account", 401, "Unauthorized", {}, None)

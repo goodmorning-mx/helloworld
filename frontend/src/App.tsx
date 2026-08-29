@@ -530,7 +530,7 @@ function Workspace() {
   const [paperInitialBalance, setPaperInitialBalance] = useState(() => { const value = Number(localStorage.getItem('helloworld-paper-balance') ?? 100); return Number.isFinite(value) && value >= 1 ? value : 100; });
   const [depositAmount, setDepositAmount] = useState('');
   const [paperRiskPercent, setPaperRiskPercent] = useState(() => Number(JSON.parse(localStorage.getItem('helloworld-paper-assist') ?? '{}').riskPercent ?? 1) || 1);
-  type ActiveMarketSymbol = { symbol: string; last_price: number; change_pct: number; movement_pct: number; range_pct: number; quote_volume: number; trades: number; score: number };
+  type ActiveMarketSymbol = { symbol: string; last_price: number; change_pct: number; movement_pct: number; range_pct: number; quote_volume: number; trades: number; score: number; max_leverage: number | null };
   const [activeMarketSymbols, setActiveMarketSymbols] = useState<ActiveMarketSymbol[]>([]);
   const [activeMarketLoading, setActiveMarketLoading] = useState(false);
   const [activeMarketError, setActiveMarketError] = useState('');
@@ -568,7 +568,7 @@ function Workspace() {
     const loadActiveMarkets = async () => {
       setActiveMarketLoading(true);
       try {
-        const response = await fetch(`${apiUrl}/market/binance/active-symbols?limit=20&min_movement_pct=0.5`);
+        const response = await fetch(`${apiUrl}/market/binance/active-symbols?limit=20&min_movement_pct=0.5`, { headers: auth.accessToken ? { Authorization: `Bearer ${auth.accessToken}` } : undefined, credentials: 'include' });
         const payload = await response.json() as { symbols?: ActiveMarketSymbol[]; detail?: string };
         if (!response.ok) throw new Error(payload.detail ?? `Binance respondió ${response.status}`);
         if (active) {
@@ -584,7 +584,7 @@ function Workspace() {
     void loadActiveMarkets();
     const timer = window.setInterval(() => void loadActiveMarkets(), 60_000);
     return () => { active = false; window.clearInterval(timer); };
-  }, [broker]);
+  }, [auth.accessToken, broker]);
 
   useEffect(() => {
     const removeSelected = (event: KeyboardEvent) => {
@@ -1729,7 +1729,7 @@ function Workspace() {
     <button onClick={() => setDrawings(current => current.filter(drawing => drawing.paper))} aria-label="Borrar dibujos" title="Borrar dibujos">×</button>
   </div>{profileButton}<button className="logout-button" onClick={() => void auth.logout()} aria-label="Cerrar sesión">Salir</button></div>;
 
-  const marketScanner = broker === 'binance' ? <section className="market-scanner" aria-label="Criptomonedas activas"><div className="market-scanner-head"><div><span className="positions-kicker">MARKET SCANNER · BINANCE FUTURES</span><strong>Mercados con mayor movimiento y liquidez</strong></div><small>{activeMarketLoading ? 'Actualizando…' : activeMarketError || `${activeMarketSymbols.length} símbolos candidatos · 24h`}</small></div>{activeMarketSymbols.length > 0 ? <div className="market-scanner-list">{activeMarketSymbols.map(candidate => <button key={candidate.symbol} type="button" className={candidate.symbol === symbol ? 'market-scanner-item active' : 'market-scanner-item'} onClick={() => setSymbol(candidate.symbol)}><b>{candidate.symbol}</b><span className={candidate.change_pct >= 0 ? 'value-positive' : 'value-negative'}>{candidate.change_pct >= 0 ? '+' : ''}{candidate.change_pct.toFixed(2)}%</span><small>Rango {candidate.range_pct.toFixed(2)}% · Vol {(candidate.quote_volume / 1_000_000).toFixed(0)}M</small></button>)}</div> : <p className="market-scanner-empty">{activeMarketError || 'Buscando mercados activos…'}</p>}</section> : null;
+  const marketScanner = broker === 'binance' ? <section className="market-scanner" aria-label="Criptomonedas activas"><div className="market-scanner-head"><div><span className="positions-kicker">MARKET SCANNER · BINANCE FUTURES</span><strong>Mercados con mayor movimiento y liquidez</strong></div><small>{activeMarketLoading ? 'Actualizando…' : activeMarketError || `${activeMarketSymbols.length} símbolos candidatos · 24h`}</small></div>{activeMarketSymbols.length > 0 ? <div className="market-scanner-list">{activeMarketSymbols.map(candidate => <button key={candidate.symbol} type="button" className={candidate.symbol === symbol ? 'market-scanner-item active' : 'market-scanner-item'} onClick={() => setSymbol(candidate.symbol)}><b>{candidate.symbol}</b><span className={candidate.change_pct >= 0 ? 'value-positive' : 'value-negative'}>{candidate.change_pct >= 0 ? '+' : ''}{candidate.change_pct.toFixed(2)}%</span><small>Rango {candidate.range_pct.toFixed(2)}% · Vol {(candidate.quote_volume / 1_000_000).toFixed(0)}M · Max {candidate.max_leverage != null ? `${candidate.max_leverage}x` : '—'}</small></button>)}</div> : <p className="market-scanner-empty">{activeMarketError || 'Buscando mercados activos…'}</p>}</section> : null;
 
   const toolOptions = [['line', '╱', 'Línea'], ['ruler', '▥', 'Medir'], ['long', 'L', 'Long'], ['short', 'S', 'Short']] as const;
   const chartsRow = <div className="charts-row"><section ref={overviewStage} className={`secondary-chart ${tool ? 'drawing-mode' : ''}`} onPointerDownCapture={event => startDrawing(event, 'context')} onPointerMoveCapture={updateDrawing} onPointerUpCapture={finishDrawing} onPointerCancelCapture={() => { setDrawingStart(null); setDrawingEnd(null); setMoveStart(null); setResizeStart(null); setLassoStart(null); setLassoEnd(null); }}><div className="chart-panel-label">5M · CONTEXTO · BTCUSDT</div><div ref={overviewChartContainer} className="overview-chart" /><svg className="overview-overlay" viewBox={`0 0 ${overviewSize.width} ${overviewSize.height}`} preserveAspectRatio="none" aria-hidden="true">{renderOverviewSessions()}{renderOverviewInterestMarkers()}{renderPriceLineHitAreas('context')}{drawings.map((drawing, index) => (!drawing.paper || !drawing.closed || drawing.id === visibleClosedId) && (!drawing.paper || !drawing.symbol || drawing.symbol === symbol) && (drawing.chart === 'context' || drawing.paper) ? renderDrawing(drawing, index, 'context') : null)}{tool && drawingStart && drawingEnd && drawingCanvas === 'context' && renderDrawing({ type: tool, chart: 'context', start: drawingStart, end: drawingEnd }, 'preview', 'context')}{lassoStart && lassoEnd && drawingCanvas === 'context' && <rect x={Math.min(lassoStart.x, lassoEnd.x)} y={Math.min(lassoStart.y, lassoEnd.y)} width={Math.abs(lassoEnd.x - lassoStart.x)} height={Math.abs(lassoEnd.y - lassoStart.y)} className="selection-lasso" />}</svg></section><section className="primary-chart"><div className="chart-panel-label">1M · AJUSTE DE ENTRADA</div>{chartStageView}</section></div>;

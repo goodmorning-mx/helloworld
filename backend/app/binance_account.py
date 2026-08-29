@@ -66,6 +66,18 @@ class BinanceAccountMonitor:
         with self._lock:
             return json.loads(json.dumps(self._snapshot))
 
+    def max_leverages(self) -> dict[str, int]:
+        """Return Binance's first-bracket maximum leverage per symbol."""
+        payload = self._signed_get("/fapi/v1/leverageBracket")
+        result: dict[str, int] = {}
+        for item in payload if isinstance(payload, list) else []:
+            symbol = str(item.get("symbol", "")).upper()
+            brackets = item.get("brackets", [])
+            values = [int(bracket["initialLeverage"]) for bracket in brackets if bracket.get("initialLeverage") is not None]
+            if symbol and values:
+                result[symbol] = max(values)
+        return result
+
     def _run(self) -> None:
         if connect is None:
             self._set(error="La dependencia WebSocket no está disponible")

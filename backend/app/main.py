@@ -21,6 +21,7 @@ from gm_mcp import Permission, RequestContext, ToolRegistry, tool
 from app.config import get_settings
 from app.database import create_database_engine
 from app.binance_credentials import BinanceCredentialStore, BinanceMonitorManager
+from app.binance_account import BinanceAccountMonitor
 from app.ctrader_credentials import CTraderCredentialStore
 from app.ctrader_runtime import CTraderManager
 from app.paper_operations import PaperOperationStore
@@ -275,6 +276,7 @@ def binance_active_symbols(
     min_quote_volume: float = 50_000_000,
     min_trades: int = 100_000,
     min_movement_pct: float = 0.5,
+    identity: AuthIdentity = Depends(identity_dependency(auth_service)),
 ) -> dict[str, object]:
     """Return liquid, active Binance Futures symbols ranked by observed movement.
 
@@ -331,10 +333,23 @@ def binance_active_symbols(
             "score": score,
         })
     ranked.sort(key=lambda row: (float(row["score"]), float(row["quote_volume"])), reverse=True)
+    max_leverages: dict[str, int] = {}
+    leverage_source = "no configurado"
+    user_id = getattr(identity, "user_id", None)
+    credentials = binance_credentials.get(user_id) if user_id else None
+    if credentials:
+        try:
+            max_leverages = BinanceAccountMonitor(credentials[0], credentials[1], settings.binance_base_url).max_leverages()
+            leverage_source = "Binance leverageBracket"
+        except Exception:
+            leverage_source = "no disponible"
+    for row in ranked:
+        row["max_leverage"] = max_leverages.get(str(row["symbol"]).upper())
     return {
         "broker": "binance",
         "interval": "24h",
         "filters": {"min_quote_volume": min_quote_volume, "min_trades": min_trades, "min_movement_pct": min_movement_pct},
+        "leverage_source": leverage_source,
         "symbols": ranked[:limit],
     }
 
