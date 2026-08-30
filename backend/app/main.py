@@ -350,7 +350,7 @@ def binance_active_symbols(
         row["max_leverage"] = max_leverages.get(str(row["symbol"]).upper())
 
     # The 24h ticker is only a universe filter. The scanner metric is the
-    # accumulated absolute range of the latest N candles.
+    # accumulated absolute close-to-close variation of the latest N candles.
     def horizon_variation(symbol: str) -> tuple[float, float] | None:
         try:
             response = httpx.get(
@@ -366,16 +366,16 @@ def binance_active_symbols(
                 if not isinstance(candle, list) or len(candle) < 5:
                     continue
                 try:
-                    candles.append((float(candle[1]), float(candle[2]), float(candle[3])))
+                    candles.append((float(candle[1]), float(candle[2]), float(candle[3]), float(candle[4])))
                 except (TypeError, ValueError):
                     continue
             if len(candles) <= horizon:
                 return None
-            recent = candles[-horizon:]
-            ranges = [(high - low) / open_price * 100 for open_price, high, low in recent if open_price > 0]
-            if len(ranges) < horizon:
+            recent = candles[-(horizon + 1):]
+            variations = [abs(recent[index][3] - recent[index - 1][3]) / recent[index - 1][3] * 100 for index in range(1, len(recent)) if recent[index - 1][3] > 0]
+            if len(variations) < horizon:
                 return None
-            return sum(ranges), sum(ranges) / len(ranges)
+            return sum(variations), sum(variations) / len(variations)
         except (httpx.HTTPError, ValueError):
             return None
 
@@ -398,7 +398,7 @@ def binance_active_symbols(
         "interval": "24h",
         "horizon": horizon,
         "candle_interval": interval,
-        "variation": "sum((high-low)/open) for the last N candles",
+        "variation": "sum(abs(close-close_previous)/close_previous) for the last N candles",
         "filters": {"min_quote_volume": min_quote_volume, "min_trades": min_trades, "min_movement_pct": min_movement_pct},
         "leverage_source": leverage_source,
         "symbols": ranked[:limit],

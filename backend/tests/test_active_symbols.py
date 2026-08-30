@@ -36,7 +36,7 @@ def test_active_symbols_filters_and_ranks_public_binance_data(monkeypatch) -> No
 
 
 def test_active_symbols_ranks_by_accumulated_candle_variation(monkeypatch) -> None:
-    candles = [[index * 300_000, "100", str(100 + (index % 4)), str(100 - (index % 2)), "100"] for index in range(30)]
+    candles = [[index * 300_000, "100", str(100 + (index % 4)), str(100 - (index % 2)), str(100 + (index % 3))] for index in range(30)]
 
     def fake_get(url, timeout):
         assert timeout == 15
