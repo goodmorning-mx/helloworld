@@ -58,3 +58,27 @@ export function calculateSslChannel(bars: IndicatorBar[], period = 9) {
   }
   return { up, down };
 }
+
+/**
+ * Projects favorable entry extensions from the opposite wick of recent candles.
+ * A long uses lower wicks (price probing down and recovering); a short uses
+ * upper wicks (price probing up and rejecting). Values are percentages.
+ */
+export function calculateWickExtensions(bars: OhlcBar[], lookback = 10, multiplier = 1.5) {
+  const length = Math.max(2, Math.round(lookback));
+  const factor = Math.max(0, Number.isFinite(multiplier) ? multiplier : 1.5);
+  const long: Array<number | null> = Array.from({ length: bars.length }, () => null);
+  const short: Array<number | null> = Array.from({ length: bars.length }, () => null);
+
+  for (let index = length; index < bars.length; index += 1) {
+    const window = bars.slice(index - length, index);
+    const lowerAverage = window.reduce((sum, bar) => sum + Math.max(0, Math.min(bar.open, bar.close) - bar.low), 0) / length;
+    const upperAverage = window.reduce((sum, bar) => sum + Math.max(0, bar.high - Math.max(bar.open, bar.close)), 0) / length;
+    const reference = bars[index].close;
+    if (reference <= 0) continue;
+    long[index] = reference * (1 - (lowerAverage / reference) * factor);
+    short[index] = reference * (1 + (upperAverage / reference) * factor);
+  }
+
+  return { long, short };
+}
