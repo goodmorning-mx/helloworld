@@ -1475,19 +1475,6 @@ function Workspace() {
     const stop = entry * (1 - direction * stopDistance);
     const intervalSeconds = 60;
     const futureTime = (Number(latest.time) + intervalSeconds * 5) as UTCTimestamp;
-    const previousOpen = drawings.filter(drawing => drawing.paper && drawing.id && !drawing.closed && (drawing.type === 'long' || drawing.type === 'short'));
-    try {
-      await Promise.all(previousOpen.map(async drawing => {
-        const response = await fetch(`${apiUrl}/trading/paper/operations/${drawing.id}`, {
-          method: 'DELETE', headers: { Authorization: `Bearer ${auth.accessToken}` }, credentials: 'include',
-        });
-        if (!response.ok) throw new Error('No se pudo reemplazar la paper operation anterior.');
-      }));
-    } catch (reason) {
-      setPaperSyncError(reason instanceof Error ? reason.message : 'No se pudo reemplazar la paper operation anterior.');
-      return;
-    }
-    if (previousOpen.length) setDrawings(current => current.filter(drawing => !previousOpen.some(previous => previous.id === drawing.id)));
     const riskPercent = Number((JSON.parse(localStorage.getItem('helloworld-paper-assist') ?? '{}') as { riskPercent?: number }).riskPercent) || paperRiskPercent;
     const riskAmount = paperInitialBalance * riskPercent / 100;
     const stopPercent = Math.abs(entry - stop) / entry;
