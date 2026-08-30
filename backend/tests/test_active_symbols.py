@@ -33,3 +33,28 @@ def test_active_symbols_filters_and_ranks_public_binance_data(monkeypatch) -> No
     assert [row["symbol"] for row in result["symbols"]] == ["FASTUSDT"]
     assert result["symbols"][0]["movement_pct"] == 4.0
     assert result["symbols"][0]["range_pct"] == 8 / 96 * 100
+
+
+def test_active_symbols_ranks_by_horizon_ieo_and_keeps_costs_separate(monkeypatch) -> None:
+    candles = [[index * 300_000, "100", str(100 + (index % 4)), str(100 - (index % 2)), "100"] for index in range(30)]
+
+    def fake_get(url, timeout):
+        assert timeout == 15
+        if url.endswith("exchangeInfo"):
+            return FakeResponse({"symbols": [{"symbol": "VOLATILEUSDT", "status": "TRADING", "quoteAsset": "USDT", "contractType": "PERPETUAL"}]})
+        if "ticker/24hr" in url:
+            return FakeResponse([{"symbol": "VOLATILEUSDT", "priceChangePercent": "0.6", "highPrice": "104", "lowPrice": "96", "quoteVolume": "100000000", "count": 200000, "lastPrice": "100"}])
+        return FakeResponse(candles)
+
+    monkeypatch.setattr(main.httpx, "get", fake_get)
+    result = main.binance_active_symbols(limit=1, min_movement_pct=0.5, horizon=10, interval="5m")
+    row = result["symbols"][0]
+
+    assert row["interval"] == "5m"
+    assert row["horizon"] == 10
+    assert row["mfe_pct"] > 0
+    assert row["mae_pct"] >= 0
+    assert row["fee_pct"] == 0.10
+    assert row["slippage_pct"] == 0.04
+    assert row["cost_pct"] == 0.14
+    assert row["ieo"] > 0

@@ -148,7 +148,7 @@ export async function loadThirtyDays(symbol: string, interval = '1m', options: L
   let cursor = now * 1000;
   const rows: MarketBar[] = [];
   while (cursor > start * 1000) {
-    const response = await fetch(`https://api.binance.com/api/v3/klines?symbol=${encodeURIComponent(symbol)}&interval=${interval}&limit=1000&endTime=${cursor - 1}`);
+    const response = await fetch(`https://fapi.binance.com/fapi/v1/klines?symbol=${encodeURIComponent(symbol)}&interval=${interval}&limit=1000&endTime=${cursor - 1}`);
     if (!response.ok) throw new Error(`Binance respondió ${response.status}`);
     const batch = parseBinanceRows(await response.json() as unknown[]).filter(bar => bar.time >= start && bar.time < now);
     if (batch.length === 0) break;

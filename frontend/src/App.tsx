@@ -530,7 +530,7 @@ function Workspace() {
   const [paperInitialBalance, setPaperInitialBalance] = useState(() => { const value = Number(localStorage.getItem('helloworld-paper-balance') ?? 100); return Number.isFinite(value) && value >= 1 ? value : 100; });
   const [depositAmount, setDepositAmount] = useState('');
   const [paperRiskPercent, setPaperRiskPercent] = useState(() => Number(JSON.parse(localStorage.getItem('helloworld-paper-assist') ?? '{}').riskPercent ?? 1) || 1);
-  type ActiveMarketSymbol = { symbol: string; last_price: number; change_pct: number; movement_pct: number; range_pct: number; quote_volume: number; trades: number; score: number; max_leverage: number | null };
+  type ActiveMarketSymbol = { symbol: string; last_price: number; change_pct: number; movement_pct: number; range_pct: number; quote_volume: number; trades: number; score: number; max_leverage: number | null; horizon: number; interval: string; mae_pct: number; mfe_pct: number; fee_pct: number; slippage_pct: number; cost_pct: number; net_mfe_pct: number; net_profit_on_1pct_margin: number; ieo: number };
   const [activeMarketSymbols, setActiveMarketSymbols] = useState<ActiveMarketSymbol[]>([]);
   const [activeMarketLoading, setActiveMarketLoading] = useState(false);
   const [activeMarketError, setActiveMarketError] = useState('');
@@ -569,7 +569,7 @@ function Workspace() {
     const loadActiveMarkets = async () => {
       setActiveMarketLoading(true);
       try {
-        const response = await fetch(`${apiUrl}/market/binance/active-symbols?limit=20&min_movement_pct=0.5`, { headers: auth.accessToken ? { Authorization: `Bearer ${auth.accessToken}` } : undefined, credentials: 'include' });
+        const response = await fetch(`${apiUrl}/market/binance/active-symbols?limit=20&min_movement_pct=0.5&horizon=10&interval=5m`, { headers: auth.accessToken ? { Authorization: `Bearer ${auth.accessToken}` } : undefined, credentials: 'include' });
         const payload = await response.json() as { symbols?: ActiveMarketSymbol[]; detail?: string };
         if (!response.ok) throw new Error(payload.detail ?? `Binance respondió ${response.status}`);
         if (active) {
@@ -779,7 +779,7 @@ function Workspace() {
           loadingOlderRef.current = true;
           const previousRange = { from: logicalRange.from, to: logicalRange.to };
           const dayStart = Math.max(sevenDaysAgo, oldest - 86400);
-          const fetchChunk = (endTime: number, limit: number) => fetch(`https://api.binance.com/api/v3/klines?symbol=${symbol}&interval=${entryInterval}&limit=${limit}&endTime=${Math.max(sevenDaysAgo * 1000, endTime * 1000 - 1)}`).then(response => response.json());
+          const fetchChunk = (endTime: number, limit: number) => fetch(`https://fapi.binance.com/fapi/v1/klines?symbol=${symbol}&interval=${entryInterval}&limit=${limit}&endTime=${Math.max(sevenDaysAgo * 1000, endTime * 1000 - 1)}`).then(response => response.json());
           fetchChunk(oldest, 1000).then(firstRows => {
               if (!active || !Array.isArray(firstRows)) return [];
               const first = firstRows.map(row => ({ time: Math.floor(Number(row[0]) / 1000) as UTCTimestamp, open: Number(row[1]), high: Number(row[2]), low: Number(row[3]), close: Number(row[4]) }));
@@ -846,7 +846,7 @@ function Workspace() {
       return () => { active = false; window.clearInterval(candleTimer); window.clearInterval(tickTimer); chart.timeScale().unsubscribeVisibleTimeRangeChange(refreshDrawings); chart.timeScale().unsubscribeVisibleLogicalRangeChange(refreshDrawings); chartRef.current = null; candlesRef.current = null; candleDataRef.current = []; candleBarsRef.current = []; loadingOlderRef.current = false; chart.remove(); };
     }
     const stream = new WebSocket(`wss://stream.binance.com:9443/ws/${symbol.toLowerCase()}@kline_${entryInterval}`);
-    fetch(`https://api.binance.com/api/v3/klines?symbol=${symbol}&interval=${entryInterval}&limit=500`)
+    fetch(`https://fapi.binance.com/fapi/v1/klines?symbol=${symbol}&interval=${entryInterval}&limit=500`)
       .then(response => response.json())
       .then(rows => {
         if (!active || !Array.isArray(rows)) return;
@@ -957,7 +957,7 @@ function Workspace() {
       const secondsPerBar = interval === '1s' ? 1 : interval === '1m' ? 60 : interval === '3m' ? 180 : interval === '5m' ? 300 : 900;
       const dayStart = Math.max(sevenDaysAgo, oldest - 86400);
       const expected = Math.ceil((oldest - dayStart) / secondsPerBar);
-      const fetchChunk = (endTime: number, limit: number) => fetch(`https://api.binance.com/api/v3/klines?symbol=${symbol}&interval=${interval}&limit=${limit}&endTime=${Math.max(sevenDaysAgo * 1000, endTime * 1000 - 1)}`).then(response => response.json());
+      const fetchChunk = (endTime: number, limit: number) => fetch(`https://fapi.binance.com/fapi/v1/klines?symbol=${symbol}&interval=${interval}&limit=${limit}&endTime=${Math.max(sevenDaysAgo * 1000, endTime * 1000 - 1)}`).then(response => response.json());
       const loadDay = async () => {
         const rows: any[] = [];
         let cursor = oldest;
@@ -1021,7 +1021,7 @@ function Workspace() {
       return () => { active = false; window.clearInterval(candleTimer); window.clearInterval(tickTimer); chart.timeScale().unsubscribeVisibleTimeRangeChange(refreshOverview); chart.timeScale().unsubscribeVisibleLogicalRangeChange(refreshOverview); overviewChartRef.current = null; overviewCandlesRef.current = null; overviewCandleDataRef.current = []; overviewBarsRef.current = []; overviewLoadingOlderRef.current = false; chart.remove(); };
     }
     const stream = new WebSocket(`wss://stream.binance.com:9443/ws/${symbol.toLowerCase()}@kline_${interval}`);
-    fetch(`https://api.binance.com/api/v3/klines?symbol=${symbol}&interval=${interval}&limit=300`)
+    fetch(`https://fapi.binance.com/fapi/v1/klines?symbol=${symbol}&interval=${interval}&limit=300`)
       .then(response => response.json())
       .then(rows => {
         if (!active || !Array.isArray(rows)) return;
@@ -1730,7 +1730,7 @@ function Workspace() {
     <button onClick={() => setDrawings(current => current.filter(drawing => drawing.paper))} aria-label="Borrar dibujos" title="Borrar dibujos">×</button>
   </div>{profileButton}<button className="logout-button" onClick={() => void auth.logout()} aria-label="Cerrar sesión">Salir</button></div>;
 
-  const marketScanner = broker === 'binance' ? <section className="market-scanner" aria-label="Criptomonedas activas"><div className="market-scanner-head"><div><span className="positions-kicker">MARKET SCANNER · BINANCE FUTURES</span><strong>Mercados con mayor movimiento y liquidez</strong></div><small>{activeMarketLoading ? 'Actualizando…' : activeMarketError || `${activeMarketSymbols.length} símbolos candidatos · 24h`}</small></div>{activeMarketSymbols.length > 0 ? <div className="market-scanner-list">{activeMarketSymbols.map(candidate => <button key={candidate.symbol} type="button" className={candidate.symbol === symbol ? 'market-scanner-item active' : 'market-scanner-item'} onClick={() => { setLabRecommendations(null); setSymbol(candidate.symbol); }}><b>{candidate.symbol}</b><span className={candidate.change_pct >= 0 ? 'value-positive' : 'value-negative'}>{candidate.change_pct >= 0 ? '+' : ''}{candidate.change_pct.toFixed(2)}%</span><small>Rango {candidate.range_pct.toFixed(2)}% · Vol {(candidate.quote_volume / 1_000_000).toFixed(0)}M · Max {candidate.max_leverage != null ? `${candidate.max_leverage}x` : '—'}</small></button>)}</div> : <p className="market-scanner-empty">{activeMarketError || 'Buscando mercados activos…'}</p>}</section> : null;
+    const marketScanner = broker === 'binance' ? <section className="market-scanner" aria-label="Criptomonedas activas"><div className="market-scanner-head"><div><span className="positions-kicker">MARKET SCANNER · BINANCE FUTURES</span><strong>Mercados ordenados por IEO · MFE neto / MAE · leverage</strong></div><small>{activeMarketLoading ? 'Actualizando…' : activeMarketError || `${activeMarketSymbols.length} símbolos · MFE de 10 velas 5m`}</small></div>{activeMarketSymbols.length > 0 ? <div className="market-scanner-list">{activeMarketSymbols.map(candidate => <button key={candidate.symbol} type="button" className={candidate.symbol === symbol ? 'market-scanner-item active' : 'market-scanner-item'} onClick={() => { setLabRecommendations(null); setSymbol(candidate.symbol); }}><b>{candidate.symbol}</b><span className="value-positive">IEO {candidate.ieo.toFixed(1)}</span><small>MFE {candidate.mfe_pct.toFixed(2)}% · MAE {candidate.mae_pct.toFixed(2)}% · Neto {candidate.net_mfe_pct.toFixed(2)}%</small><small>Fee {candidate.fee_pct.toFixed(2)}% + Slip {candidate.slippage_pct.toFixed(2)}% · Max {candidate.max_leverage != null ? `${candidate.max_leverage}x` : '—'}</small></button>)}</div> : <p className="market-scanner-empty">{activeMarketError || 'Buscando mercados activos…'}</p>}</section> : null;
 
   const toolOptions = [['line', '╱', 'Línea'], ['ruler', '▥', 'Medir'], ['long', 'L', 'Long'], ['short', 'S', 'Short']] as const;
   const chartsRow = <div className="charts-row"><section ref={overviewStage} className={`secondary-chart ${tool ? 'drawing-mode' : ''}`} onPointerDownCapture={event => startDrawing(event, 'context')} onPointerMoveCapture={updateDrawing} onPointerUpCapture={finishDrawing} onPointerCancelCapture={() => { setDrawingStart(null); setDrawingEnd(null); setMoveStart(null); setResizeStart(null); setLassoStart(null); setLassoEnd(null); }}><div className="chart-panel-label">5M · CONTEXTO · BTCUSDT</div><div ref={overviewChartContainer} className="overview-chart" /><svg className="overview-overlay" viewBox={`0 0 ${overviewSize.width} ${overviewSize.height}`} preserveAspectRatio="none" aria-hidden="true">{renderOverviewSessions()}{renderOverviewInterestMarkers()}{renderPriceLineHitAreas('context')}{drawings.map((drawing, index) => (!drawing.paper || !drawing.closed || drawing.id === visibleClosedId) && (!drawing.paper || !drawing.symbol || drawing.symbol === symbol) && (drawing.chart === 'context' || drawing.paper) ? renderDrawing(drawing, index, 'context') : null)}{tool && drawingStart && drawingEnd && drawingCanvas === 'context' && renderDrawing({ type: tool, chart: 'context', start: drawingStart, end: drawingEnd }, 'preview', 'context')}{lassoStart && lassoEnd && drawingCanvas === 'context' && <rect x={Math.min(lassoStart.x, lassoEnd.x)} y={Math.min(lassoStart.y, lassoEnd.y)} width={Math.abs(lassoEnd.x - lassoStart.x)} height={Math.abs(lassoEnd.y - lassoStart.y)} className="selection-lasso" />}</svg></section><section className="primary-chart"><div className="chart-panel-label">1M · AJUSTE DE ENTRADA</div>{chartStageView}</section></div>;
