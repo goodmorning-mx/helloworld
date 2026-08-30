@@ -504,7 +504,7 @@ function Workspace() {
   const [rsiPeriod, setRsiPeriod] = useState(() => Number(localStorage.getItem('helloworld-rsi-period') ?? 14) || 14);
   const [rsiLowBand, setRsiLowBand] = useState(() => Number(localStorage.getItem('helloworld-rsi-low-band') ?? 30) || 30);
   const [rsiHighBand, setRsiHighBand] = useState(() => Number(localStorage.getItem('helloworld-rsi-high-band') ?? 70) || 70);
-  const [sslPeriod, setSslPeriod] = useState(() => Number(localStorage.getItem('helloworld-ssl-period') ?? 10) || 10);
+  const [sslPeriod, setSslPeriod] = useState(9);
   const [showIndicatorSettings, setShowIndicatorSettings] = useState(false);
   const [indicatorHover, setIndicatorHover] = useState<{ canvas: ChartCanvas; x: number; y: number; label: string } | null>(null);
   const [stageSize, setStageSize] = useState({ width: 1, height: 1 });

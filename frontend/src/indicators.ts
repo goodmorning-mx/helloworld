@@ -42,7 +42,7 @@ export function calculateRsi(bars: IndicatorBar[], period = 14): Array<number | 
   return values;
 }
 
-export function calculateSslChannel(bars: IndicatorBar[], period = 10) {
+export function calculateSslChannel(bars: IndicatorBar[], period = 9) {
   const length = Math.max(2, Math.round(period));
   const up: Array<number | null> = Array.from({ length: bars.length }, () => null);
   const down: Array<number | null> = Array.from({ length: bars.length }, () => null);
