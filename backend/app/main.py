@@ -349,26 +349,9 @@ def binance_active_symbols(
     for row in ranked:
         row["max_leverage"] = max_leverages.get(str(row["symbol"]).upper())
 
-    # The 24h ticker is only a universe filter.  The operational ranking is
-    # based on the movement available after an entry, using the selected
-    # horizon.  Keep this request limited to the candidates shown in the
-    # scanner so the public Binance API is not hammered.
-    fee_pct = 0.10
-    slippage_pct = 0.04
-    cost_pct = fee_pct + slippage_pct
-
-    def percentile(values: list[float], p: float) -> float:
-        if not values:
-            return 0.0
-        ordered = sorted(values)
-        position = (len(ordered) - 1) * p
-        lower = math.floor(position)
-        upper = math.ceil(position)
-        if lower == upper:
-            return ordered[lower]
-        return ordered[lower] + (ordered[upper] - ordered[lower]) * (position - lower)
-
-    def horizon_stats(symbol: str) -> tuple[float, float, str] | None:
+    # The 24h ticker is only a universe filter. The scanner metric is the
+    # accumulated absolute range of the latest N candles.
+    def horizon_variation(symbol: str) -> tuple[float, float] | None:
         try:
             response = httpx.get(
                 f"https://fapi.binance.com/fapi/v1/klines?symbol={symbol}&interval={interval}&limit=500",
@@ -388,59 +371,26 @@ def binance_active_symbols(
                     continue
             if len(candles) <= horizon:
                 return None
-            side_stats: dict[str, tuple[list[float], list[float]]] = {
-                "long": ([], []), "short": ([], []),
-            }
-            for index in range(len(candles) - horizon):
-                entry, _, _ = candles[index]
-                if entry <= 0:
-                    continue
-                window = candles[index:index + horizon]
-                long_mae, long_mfe = side_stats["long"]
-                short_mae, short_mfe = side_stats["short"]
-                long_mae.append(max((entry - low) / entry * 100 for _, _, low in window))
-                long_mfe.append(max((high - entry) / entry * 100 for _, high, _ in window))
-                short_mae.append(max((high - entry) / entry * 100 for _, high, _ in window))
-                short_mfe.append(max((entry - low) / entry * 100 for _, _, low in window))
-            candidates = []
-            for side, (maes, mfes) in side_stats.items():
-                if maes and mfes:
-                    candidates.append((percentile(maes, 0.50), percentile(mfes, 0.75), side))
-            if not candidates:
+            recent = candles[-horizon:]
+            ranges = [(high - low) / open_price * 100 for open_price, high, low in recent if open_price > 0]
+            if len(ranges) < horizon:
                 return None
-            # Median MAE is a stable risk estimate; p75 MFE captures the
-            # meaningful movement without letting one wick define the rank.
-            return max(candidates, key=lambda item: item[1] / max(item[0], 0.01))
+            return sum(ranges), sum(ranges) / len(ranges)
         except (httpx.HTTPError, ValueError):
             return None
 
     for row in ranked[:limit]:
-        stats = horizon_stats(str(row["symbol"]))
-        mae_pct, mfe_pct, preferred_side = stats if stats else (0.0, 0.0, "—")
-        leverage = float(row["max_leverage"] or 1)
-        net_mfe_pct = max(0.0, mfe_pct - cost_pct)
-        # IEO is a scanner score, not a final expectancy: the Lab supplies
-        # win rate and slot-specific expectancy after the symbol is selected.
-        ieo = (net_mfe_pct * leverage / max(mae_pct, 0.01)) if mfe_pct > 0 else 0.0
+        variation = horizon_variation(str(row["symbol"]))
+        variation_sum_pct, variation_average_pct = variation if variation else (0.0, 0.0)
         row.update({
             "horizon": horizon,
             "interval": interval,
-            "mae_pct": mae_pct,
-            "mfe_pct": mfe_pct,
-            "preferred_side": preferred_side,
-            "mfe_mae_ratio": (mfe_pct / mae_pct) if mae_pct > 0 else 0.0,
-            "fee_pct": fee_pct,
-            "slippage_pct": slippage_pct,
-            "cost_pct": cost_pct,
-            "net_mfe_pct": net_mfe_pct,
-            "gross_profit_on_1pct_margin": mfe_pct * leverage,
-            "fee_on_1pct_margin": cost_pct * leverage,
-            "net_profit_on_1pct_margin": net_mfe_pct * leverage,
-            "ieo": ieo,
+            "variation_sum_pct": variation_sum_pct,
+            "variation_average_pct": variation_average_pct,
         })
     ranked[:limit] = sorted(
         ranked[:limit],
-        key=lambda row: (float(row.get("ieo", 0)), float(row.get("mfe_pct", 0)), float(row["quote_volume"])),
+        key=lambda row: (float(row.get("variation_sum_pct", 0)), float(row["quote_volume"])),
         reverse=True,
     )
     return {
@@ -448,7 +398,7 @@ def binance_active_symbols(
         "interval": "24h",
         "horizon": horizon,
         "candle_interval": interval,
-        "costs": {"fee_pct": fee_pct, "slippage_pct": slippage_pct, "total_pct": cost_pct},
+        "variation": "sum((high-low)/open) for the last N candles",
         "filters": {"min_quote_volume": min_quote_volume, "min_trades": min_trades, "min_movement_pct": min_movement_pct},
         "leverage_source": leverage_source,
         "symbols": ranked[:limit],

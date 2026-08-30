@@ -35,7 +35,7 @@ def test_active_symbols_filters_and_ranks_public_binance_data(monkeypatch) -> No
     assert result["symbols"][0]["range_pct"] == 8 / 96 * 100
 
 
-def test_active_symbols_ranks_by_horizon_ieo_and_keeps_costs_separate(monkeypatch) -> None:
+def test_active_symbols_ranks_by_accumulated_candle_variation(monkeypatch) -> None:
     candles = [[index * 300_000, "100", str(100 + (index % 4)), str(100 - (index % 2)), "100"] for index in range(30)]
 
     def fake_get(url, timeout):
@@ -52,9 +52,5 @@ def test_active_symbols_ranks_by_horizon_ieo_and_keeps_costs_separate(monkeypatc
 
     assert row["interval"] == "5m"
     assert row["horizon"] == 10
-    assert row["mfe_pct"] > 0
-    assert row["mae_pct"] >= 0
-    assert row["fee_pct"] == 0.10
-    assert row["slippage_pct"] == 0.04
-    assert row["cost_pct"] == 0.14
-    assert row["ieo"] > 0
+    assert row["variation_sum_pct"] > 0
+    assert row["variation_average_pct"] == row["variation_sum_pct"] / 10
