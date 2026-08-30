@@ -368,7 +368,7 @@ def binance_active_symbols(
             return ordered[lower]
         return ordered[lower] + (ordered[upper] - ordered[lower]) * (position - lower)
 
-    def horizon_stats(symbol: str) -> tuple[float, float] | None:
+    def horizon_stats(symbol: str) -> tuple[float, float, str] | None:
         try:
             response = httpx.get(
                 f"https://fapi.binance.com/fapi/v1/klines?symbol={symbol}&interval={interval}&limit=500",
@@ -388,26 +388,35 @@ def binance_active_symbols(
                     continue
             if len(candles) <= horizon:
                 return None
-            maes: list[float] = []
-            mfes: list[float] = []
+            side_stats: dict[str, tuple[list[float], list[float]]] = {
+                "long": ([], []), "short": ([], []),
+            }
             for index in range(len(candles) - horizon):
                 entry, _, _ = candles[index]
                 if entry <= 0:
                     continue
                 window = candles[index:index + horizon]
-                maes.append(max((entry - low) / entry * 100 for _, _, low in window))
-                mfes.append(max((high - entry) / entry * 100 for _, high, _ in window))
-            if not maes or not mfes:
+                long_mae, long_mfe = side_stats["long"]
+                short_mae, short_mfe = side_stats["short"]
+                long_mae.append(max((entry - low) / entry * 100 for _, _, low in window))
+                long_mfe.append(max((high - entry) / entry * 100 for _, high, _ in window))
+                short_mae.append(max((high - entry) / entry * 100 for _, high, _ in window))
+                short_mfe.append(max((entry - low) / entry * 100 for _, _, low in window))
+            candidates = []
+            for side, (maes, mfes) in side_stats.items():
+                if maes and mfes:
+                    candidates.append((percentile(maes, 0.50), percentile(mfes, 0.75), side))
+            if not candidates:
                 return None
             # Median MAE is a stable risk estimate; p75 MFE captures the
             # meaningful movement without letting one wick define the rank.
-            return percentile(maes, 0.50), percentile(mfes, 0.75)
+            return max(candidates, key=lambda item: item[1] / max(item[0], 0.01))
         except (httpx.HTTPError, ValueError):
             return None
 
     for row in ranked[:limit]:
         stats = horizon_stats(str(row["symbol"]))
-        mae_pct, mfe_pct = stats if stats else (0.0, 0.0)
+        mae_pct, mfe_pct, preferred_side = stats if stats else (0.0, 0.0, "—")
         leverage = float(row["max_leverage"] or 1)
         net_mfe_pct = max(0.0, mfe_pct - cost_pct)
         # IEO is a scanner score, not a final expectancy: the Lab supplies
@@ -418,6 +427,7 @@ def binance_active_symbols(
             "interval": interval,
             "mae_pct": mae_pct,
             "mfe_pct": mfe_pct,
+            "preferred_side": preferred_side,
             "mfe_mae_ratio": (mfe_pct / mae_pct) if mae_pct > 0 else 0.0,
             "fee_pct": fee_pct,
             "slippage_pct": slippage_pct,
