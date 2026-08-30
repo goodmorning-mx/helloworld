@@ -48,6 +48,13 @@ function formatPaperPrice(price: number) {
   return price.toFixed(decimals).replace(/\.?0+$/, '');
 }
 
+type BinanceSymbolRules = { price_precision: number; quantity_precision: number; tick_size: number; step_size: number; min_qty: number; min_notional: number };
+function roundToBinance(value: number, step: number, precision: number) {
+  if (!Number.isFinite(value)) return 0;
+  const rounded = step > 0 ? Math.floor((value + step * 1e-9) / step) * step : value;
+  return Number(rounded.toFixed(Math.max(0, precision)));
+}
+
 type CTraderCandleRow = { timestamp: number; low: number; delta_open: number; delta_high: number; delta_close: number };
 function parseCTraderCandles(payload: unknown): Array<{ time: UTCTimestamp; open: number; high: number; low: number; close: number }> {
   const rows = (payload as { data?: CTraderCandleRow[] })?.data;
@@ -483,7 +490,8 @@ function Workspace() {
   const candleBarsRef = useRef<Array<{ time: UTCTimestamp; open: number; high: number; low: number; close: number }>>([]);
   const loadingOlderRef = useRef(false);
   const candleDataRef = useRef<Array<{ time: UTCTimestamp; close: number }>>([]);
-  const [symbol, setSymbol] = useState('BTCUSDT');
+  const [symbol, setSymbol] = useState(() => localStorage.getItem('helloworld-selected-symbol') ?? 'BTCUSDT');
+  const [binanceRules, setBinanceRules] = useState<BinanceSymbolRules | null>(null);
   const [broker, setBroker] = useState<'binance' | 'ctrader'>('binance');
   const [interval, setInterval] = useState<'1s' | '1m' | '3m' | '5m' | '15m'>('5m');
   const entryInterval = '1m' as const;
@@ -506,7 +514,7 @@ function Workspace() {
   const [overviewRevision, setOverviewRevision] = useState(0);
   type ChartPoint = { time: UTCTimestamp; price: number };
   type ChartCanvas = 'entry' | 'context';
-  type Drawing = { id?: string; symbol?: string; type: 'line' | 'ruler' | 'long' | 'short'; start: ChartPoint; end: ChartPoint; stop?: ChartPoint; target?: ChartPoint; chart?: ChartCanvas; paper?: boolean; closed?: boolean; closeReason?: 'TP' | 'SL' | 'MANUAL'; status?: 'OPEN' | 'CLOSED - WIN' | 'CLOSED - FAILED'; riskPercent?: number; notional?: number; margin?: number; pnl?: number };
+  type Drawing = { id?: string; symbol?: string; type: 'line' | 'ruler' | 'long' | 'short'; start: ChartPoint; end: ChartPoint; stop?: ChartPoint; target?: ChartPoint; chart?: ChartCanvas; paper?: boolean; closed?: boolean; closeReason?: 'TP' | 'SL' | 'MANUAL'; status?: 'OPEN' | 'CLOSED - WIN' | 'CLOSED - FAILED'; riskPercent?: number; quantity?: number; notional?: number; margin?: number; pnl?: number };
   const [drawings, setDrawings] = useState<Drawing[]>([]);
   const [drawingStart, setDrawingStart] = useState<ChartPoint | null>(null);
   const [drawingEnd, setDrawingEnd] = useState<ChartPoint | null>(null);
@@ -535,6 +543,20 @@ function Workspace() {
   const [activeMarketLoading, setActiveMarketLoading] = useState(false);
   const [activeMarketError, setActiveMarketError] = useState('');
   const selectableSymbols = [...new Set([...brokerSymbols, ...activeMarketSymbols.map(candidate => candidate.symbol)])];
+
+  useEffect(() => {
+    localStorage.setItem('helloworld-selected-symbol', symbol);
+  }, [symbol]);
+
+  useEffect(() => {
+    if (broker !== 'binance') { setBinanceRules(null); return; }
+    let active = true;
+    fetch(`${apiUrl}/market/binance/symbol-info/${encodeURIComponent(symbol)}`, { headers: auth.accessToken ? { Authorization: `Bearer ${auth.accessToken}` } : undefined, credentials: 'include' })
+      .then(response => response.ok ? response.json() as Promise<BinanceSymbolRules & { symbol: string }> : Promise.reject(new Error('No se pudieron cargar las reglas del símbolo.')))
+      .then(rules => { if (active) setBinanceRules(rules); })
+      .catch(() => { if (active) setBinanceRules(null); });
+    return () => { active = false; };
+  }, [auth.accessToken, broker, symbol]);
 
   useEffect(() => {
     localStorage.setItem('helloworld-indicator-rsi', String(showRsi));
@@ -615,7 +637,7 @@ function Workspace() {
         id: string; symbol: string; side: 'long' | 'short'; chart: ChartCanvas;
         entry_time: number; entry_price: number; current_time: number; current_price: number;
         stop_time: number; stop_price: number; target_time: number; target_price: number;
-        risk_percent?: number | null; notional?: number | null; margin?: number | null; pnl?: number | null;
+        risk_percent?: number | null; quantity?: number | null; notional?: number | null; margin?: number | null; pnl?: number | null;
         status: 'OPEN' | 'CLOSED - WIN' | 'CLOSED - FAILED'; close_reason?: 'TP' | 'SL' | 'MANUAL' | null; updated_at?: string;
       }>>;
     }).then(operations => {
@@ -634,6 +656,7 @@ function Workspace() {
         status: operation.status,
         closeReason: operation.close_reason ?? undefined,
         riskPercent: operation.risk_percent ?? undefined,
+        quantity: operation.quantity ?? undefined,
         notional: operation.notional ?? undefined,
         margin: operation.margin ?? undefined,
         pnl: operation.pnl ?? undefined,
@@ -671,7 +694,7 @@ function Workspace() {
             current_time: Number(drawing.end.time), current_price: drawing.end.price,
             stop_time: Number(drawing.stop?.time ?? drawing.end.time), stop_price: drawing.stop?.price ?? drawing.start.price,
             target_time: Number(drawing.target?.time ?? drawing.end.time), target_price: drawing.target?.price ?? drawing.end.price,
-            risk_percent: drawing.riskPercent ?? null, notional: drawing.notional ?? null,
+            risk_percent: drawing.riskPercent ?? null, quantity: drawing.quantity ?? null, notional: drawing.notional ?? null,
             margin: drawing.margin ?? null, pnl: drawing.pnl ?? null,
             status: drawing.status ?? (drawing.closed ? 'CLOSED - FAILED' : 'OPEN'),
             close_reason: drawing.closeReason ?? null,
@@ -766,7 +789,7 @@ function Workspace() {
       localization: { locale: 'es-MX', timeFormatter: (time: Time) => chartTimeLabel(time, timezone, true) },
       timeScale: { borderColor: '#252a31', timeVisible: true, secondsVisible: false, tickMarkFormatter: (time: Time) => chartTimeLabel(time, timezone, false) },
     });
-    const candles = chart.addSeries(CandlestickSeries, { upColor: '#64d39a', downColor: '#f27e7e', borderVisible: false, wickUpColor: '#64d39a', wickDownColor: '#f27e7e' });
+    const candles = chart.addSeries(CandlestickSeries, { upColor: '#64d39a', downColor: '#f27e7e', borderVisible: false, wickUpColor: '#64d39a', wickDownColor: '#f27e7e', priceFormat: { type: 'price', precision: binanceRules?.price_precision ?? 8, minMove: binanceRules?.tick_size || 0.00000001 } });
     chartRef.current = chart;
     candlesRef.current = candles;
     let active = true;
@@ -930,7 +953,7 @@ function Workspace() {
       loadingOlderRef.current = false;
       chart.remove();
     };
-  }, [auth.accessToken, broker, symbol, showHeikinAshi]);
+  }, [auth.accessToken, binanceRules, broker, symbol, showHeikinAshi]);
 
   useEffect(() => {
     if (mobilePwa || !overviewChartContainer.current) return;
@@ -942,7 +965,7 @@ function Workspace() {
       localization: { locale: 'es-MX', timeFormatter: (time: Time) => chartTimeLabel(time, timezone, true) },
       timeScale: { borderColor: '#252a31', timeVisible: true, secondsVisible: false, tickMarkFormatter: (time: Time) => chartTimeLabel(time, timezone, false) },
     });
-    const candles = chart.addSeries(CandlestickSeries, { upColor: '#64d39a', downColor: '#f27e7e', borderVisible: false, wickUpColor: '#64d39a', wickDownColor: '#f27e7e' });
+    const candles = chart.addSeries(CandlestickSeries, { upColor: '#64d39a', downColor: '#f27e7e', borderVisible: false, wickUpColor: '#64d39a', wickDownColor: '#f27e7e', priceFormat: { type: 'price', precision: binanceRules?.price_precision ?? 8, minMove: binanceRules?.tick_size || 0.00000001 } });
     overviewChartRef.current = chart;
     overviewCandlesRef.current = candles;
     const refreshOverview = () => {
@@ -1044,7 +1067,7 @@ function Workspace() {
       candles.setData(showHeikinAshi ? calculateHeikinAshi(visibleBars) : visibleBars);
     };
     return () => { active = false; stream.close(); chart.timeScale().unsubscribeVisibleTimeRangeChange(refreshOverview); chart.timeScale().unsubscribeVisibleLogicalRangeChange(refreshOverview); overviewChartRef.current = null; overviewCandlesRef.current = null; overviewCandleDataRef.current = []; overviewBarsRef.current = []; overviewLoadingOlderRef.current = false; chart.remove(); };
-  }, [auth.accessToken, broker, symbol, interval, timezone, mobilePwa, showHeikinAshi]);
+  }, [auth.accessToken, binanceRules, broker, symbol, interval, timezone, mobilePwa, showHeikinAshi]);
 
   useEffect(() => {
     const chart = chartRef.current;
@@ -1465,14 +1488,18 @@ function Workspace() {
     setVisibleClosedId(null);
     const latest = candleDataRef.current[candleDataRef.current.length - 1];
     if (!latest) return;
-    const entry = latest.close;
+    const entry = broker === 'binance' && binanceRules?.tick_size
+      ? roundToBinance(latest.close, binanceRules.tick_size, binanceRules.price_precision)
+      : latest.close;
     const direction = type === 'long' ? 1 : -1;
     const recommendation = labRecommendations?.[type];
     const storedAssist = JSON.parse(localStorage.getItem('helloworld-paper-assist') ?? '{}') as { stopPercent?: number; targetPercent?: number };
     const stopDistance = recommendation?.mae ? recommendation.mae / 100 : Number.isFinite(storedAssist.stopPercent) && (storedAssist.stopPercent ?? 0) > 0 ? (storedAssist.stopPercent as number) / 100 : 0.00087;
     const targetDistance = recommendation?.mfe ? recommendation.mfe / 100 : Number.isFinite(storedAssist.targetPercent) && (storedAssist.targetPercent ?? 0) > 0 ? (storedAssist.targetPercent as number) / 100 : stopDistance * 4;
-    const target = entry * (1 + direction * targetDistance);
-    const stop = entry * (1 - direction * stopDistance);
+    const rawTarget = entry * (1 + direction * targetDistance);
+    const rawStop = entry * (1 - direction * stopDistance);
+    const target = broker === 'binance' && binanceRules?.tick_size ? roundToBinance(rawTarget, binanceRules.tick_size, binanceRules.price_precision) : rawTarget;
+    const stop = broker === 'binance' && binanceRules?.tick_size ? roundToBinance(rawStop, binanceRules.tick_size, binanceRules.price_precision) : rawStop;
     const intervalSeconds = 60;
     const futureTime = (Number(latest.time) + intervalSeconds * 5) as UTCTimestamp;
     const riskPercent = Number((JSON.parse(localStorage.getItem('helloworld-paper-assist') ?? '{}') as { riskPercent?: number }).riskPercent) || paperRiskPercent;
@@ -1483,13 +1510,21 @@ function Workspace() {
     const riskBoundNotional = effectiveStop > 0 ? riskAmount / effectiveStop : 0;
     const feeAwareLeverage = riskAmount > 0 ? riskBoundNotional / riskAmount : operationLeverage;
     const effectiveLeverage = Math.min(operationLeverage, feeAwareLeverage, brokerMaxLeverage);
-    const notional = Math.min(riskBoundNotional, paperInitialBalance * effectiveLeverage);
+    const requestedNotional = Math.min(riskBoundNotional, paperInitialBalance * effectiveLeverage);
+    const quantity = broker === 'binance' && binanceRules
+      ? roundToBinance(requestedNotional / entry, binanceRules.step_size, binanceRules.quantity_precision)
+      : (entry > 0 ? requestedNotional / entry : 0);
+    const notional = quantity * entry;
+    if (broker === 'binance' && binanceRules && (quantity < binanceRules.min_qty || notional < binanceRules.min_notional)) {
+      setPaperSyncError(`La operación mínima de ${symbol} requiere ${binanceRules.min_notional.toFixed(2)} USDT de notional.`);
+      return;
+    }
     const margin = effectiveLeverage > 0 ? notional / effectiveLeverage : 0;
     const response = await fetch(`${apiUrl}/trading/paper/operations`, {
       method: 'POST',
       headers: { Authorization: `Bearer ${auth.accessToken}`, 'Content-Type': 'application/json' },
       credentials: 'include',
-    body: JSON.stringify({ symbol, side: type, chart: 'entry', entry_time: Number(latest.time), entry_price: entry, current_time: Number(latest.time), current_price: entry, stop_time: Number(futureTime), stop_price: stop, target_time: Number(futureTime), target_price: target, risk_percent: riskPercent, notional, margin, pnl: 0, status: 'OPEN', close_reason: null }),
+    body: JSON.stringify({ symbol, side: type, chart: 'entry', entry_time: Number(latest.time), entry_price: entry, current_time: Number(latest.time), current_price: entry, stop_time: Number(futureTime), stop_price: stop, target_time: Number(futureTime), target_price: target, risk_percent: riskPercent, quantity, notional, margin, pnl: 0, status: 'OPEN', close_reason: null }),
     });
     if (!response.ok) {
       setPaperSyncError('No se pudo guardar la paper operation.');
@@ -1497,7 +1532,7 @@ function Workspace() {
     }
     const saved = await response.json() as { id: string };
     const position: Drawing = {
-      id: saved.id, symbol, type, paper: true, status: 'OPEN',
+      id: saved.id, symbol, type, paper: true, status: 'OPEN', quantity,
       start: { time: latest.time, price: entry },
       end: { time: latest.time, price: entry },
       stop: { time: futureTime, price: stop },
@@ -1540,7 +1575,7 @@ function Workspace() {
         current_time: Number(position.end.time), current_price: position.end.price,
         stop_time: Number(position.stop?.time ?? position.end.time), stop_price: position.stop?.price ?? position.start.price,
         target_time: Number(position.target?.time ?? position.end.time), target_price: position.target?.price ?? position.end.price,
-        risk_percent: position.riskPercent ?? paperRiskPercent, notional, margin: position.margin ?? (paperLeverage > 0 ? notional / paperLeverage : 0), pnl,
+        risk_percent: position.riskPercent ?? paperRiskPercent, quantity: position.quantity ?? (position.start.price > 0 ? notional / position.start.price : 0), notional, margin: position.margin ?? (paperLeverage > 0 ? notional / paperLeverage : 0), pnl,
         status, close_reason: 'MANUAL',
       }),
     });

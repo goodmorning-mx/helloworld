@@ -188,6 +188,7 @@ class PaperOperationInput(BaseModel):
     target_price: float
     risk_percent: float | None = None
     notional: float | None = None
+    quantity: float | None = None
     margin: float | None = None
     pnl: float | None = None
     status: Literal["OPEN", "CLOSED - WIN", "CLOSED - FAILED"] = "OPEN"
@@ -307,6 +308,8 @@ def binance_active_symbols(
         and item.get("quoteAsset") == "USDT"
         and item.get("contractType") == "PERPETUAL"
     }
+
+
     ranked: list[dict[str, object]] = []
     for item in ticker_payload if isinstance(ticker_payload, list) else []:
         symbol = str(item.get("symbol", ""))
@@ -402,6 +405,34 @@ def binance_active_symbols(
         "filters": {"min_quote_volume": min_quote_volume, "min_trades": min_trades, "min_movement_pct": min_movement_pct},
         "leverage_source": leverage_source,
         "symbols": ranked[:limit],
+    }
+
+
+@app.get("/market/binance/symbol-info/{symbol}")
+def binance_symbol_info(symbol: str, identity: AuthIdentity = Depends(identity_dependency(auth_service))) -> dict[str, object]:
+    """Return Binance Futures execution rules for one symbol."""
+    requested = symbol.upper()
+    try:
+        response = httpx.get("https://fapi.binance.com/fapi/v1/exchangeInfo", timeout=15)
+        response.raise_for_status()
+        payload = response.json()
+    except (httpx.HTTPError, ValueError) as exc:
+        raise HTTPException(status_code=502, detail="No se pudo consultar la precisión del símbolo en Binance.") from exc
+    item = next((value for value in payload.get("symbols", []) if value.get("symbol") == requested), None)
+    if not item:
+        raise HTTPException(status_code=404, detail="Símbolo no encontrado en Binance Futures.")
+    filters = {str(value.get("filterType")): value for value in item.get("filters", [])}
+    price_filter = filters.get("PRICE_FILTER", {})
+    lot_size = filters.get("LOT_SIZE", {})
+    notional_filter = filters.get("NOTIONAL") or filters.get("MIN_NOTIONAL") or {}
+    return {
+        "symbol": requested,
+        "price_precision": int(item.get("pricePrecision", 8)),
+        "quantity_precision": int(item.get("quantityPrecision", 8)),
+        "tick_size": float(price_filter.get("tickSize", 0) or 0),
+        "step_size": float(lot_size.get("stepSize", 0) or 0),
+        "min_qty": float(lot_size.get("minQty", 0) or 0),
+        "min_notional": float(notional_filter.get("notional", 0) or 0),
     }
 
 
