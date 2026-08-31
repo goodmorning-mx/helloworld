@@ -54,10 +54,10 @@ export function calculateSslChannel(bars: IndicatorBar[], period = 9) {
     const low = window.reduce((sum, bar) => sum + bar.low, 0) / length;
     if (bars[index].close > high) direction = 1;
     else if (bars[index].close < low) direction = -1;
-    // Keep the visual semantics stable: the upper channel is green and the
-    // lower channel is red, regardless of the current direction.
-    up[index] = Math.max(high, low);
-    down[index] = Math.min(high, low);
+    // Standard SSL Channel: the two averages exchange positions when the
+    // regime changes, producing the characteristic bullish/bearish cross.
+    up[index] = direction >= 0 ? high : low;
+    down[index] = direction >= 0 ? low : high;
     bullish[index] = direction >= 0;
   }
   return { up, down, bullish };

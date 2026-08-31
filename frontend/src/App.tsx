@@ -1254,25 +1254,6 @@ function Workspace() {
       return `${command} ${point.x} ${point.y}`;
       }).filter(Boolean).join(' ');
     };
-    const sslPaths = (values: Array<number | null>, upper: boolean) => {
-      const result: Array<{ d: string; bullish: boolean }> = [];
-      let current: { d: string; bullish: boolean } | null = null;
-      values.forEach((value, index) => {
-        const point = toPoint(value, index);
-        if (!point) { current = null; return; }
-        const bullish = ssl.bullish[index] ?? false;
-        const colorBullish = upper ? bullish : !bullish;
-        if (!current || current.bullish !== colorBullish) {
-          const previousValue = index > 0 ? values[index - 1] : null;
-          const previousPoint = previousValue === null || previousValue === undefined ? null : toPoint(previousValue, index - 1);
-          current = { d: previousPoint ? `M ${previousPoint.x} ${previousPoint.y} L ${point.x} ${point.y}` : `M ${point.x} ${point.y}`, bullish: colorBullish };
-          result.push(current);
-        } else {
-          current.d += ` L ${point.x} ${point.y}`;
-        }
-      });
-      return result;
-    };
     const rsiMarkers = rsi.map((value, index) => {
       if (value === null || (value > rsiLowBand && value < rsiHighBand)) return null;
       const point = toPoint(bars[index].close, index);
@@ -1289,7 +1270,7 @@ function Workspace() {
       </g>;
     });
     return <g className={`price-indicators price-indicators-${canvas}`}>
-      {showSsl && <>{sslPaths(ssl.up, true).map((segment, index) => <path key={`ssl-up-${canvas}-${index}`} d={segment.d} className={`ssl-channel ${segment.bullish ? 'ssl-channel-up' : 'ssl-channel-down'}`} />)}{sslPaths(ssl.down, false).map((segment, index) => <path key={`ssl-down-${canvas}-${index}`} d={segment.d} className={`ssl-channel ${segment.bullish ? 'ssl-channel-up' : 'ssl-channel-down'}`} />)}</>}
+      {showSsl && <><path d={path(ssl.up)} className="ssl-channel ssl-channel-up" /><path d={path(ssl.down)} className="ssl-channel ssl-channel-down" /></>}
       {showRsi && <g className="rsi-markers">{rsiMarkers}</g>}
       {showWickExtensions && <g className="wick-extension-layer">{wickMarkers}</g>}
       {indicatorHover?.canvas === canvas && <g className="indicator-hover-label" pointerEvents="none"><rect x={Math.max(4, Math.min(width - 160, indicatorHover.x + 10))} y={Math.max(8, Math.min(height - 32, indicatorHover.y - 28))} width="150" height="24" rx="4" /><text x={Math.max(14, Math.min(width - 150, indicatorHover.x + 20))} y={Math.max(24, Math.min(height - 16, indicatorHover.y - 12))}>{indicatorHover.label}</text></g>}
