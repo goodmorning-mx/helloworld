@@ -44,6 +44,9 @@ function maxLeverageFor(broker: 'binance' | 'ctrader', symbol: string) {
 
 function formatPaperPrice(price: number) {
   const absolute = Math.abs(price);
+  if (absolute > 0 && absolute < 0.001) {
+    return price.toExponential(4).replace(/\.?(\d*?[1-9])0+e/, '$1e').replace(/e([+-])0+(\d+)/, 'e$1$2');
+  }
   const decimals = absolute >= 1000 ? 2 : absolute >= 1 ? 5 : 8;
   return price.toFixed(decimals).replace(/\.?0+$/, '');
 }
@@ -790,7 +793,7 @@ function Workspace() {
       layout: { background: { color: '#080a0d' }, textColor: '#89909b' },
       grid: { vertLines: { color: '#151a20' }, horzLines: { color: '#151a20' } },
       rightPriceScale: { borderColor: '#252a31' },
-      localization: { locale: 'es-MX', timeFormatter: (time: Time) => chartTimeLabel(time, timezone, true) },
+      localization: { locale: 'es-MX', timeFormatter: (time: Time) => chartTimeLabel(time, timezone, true), priceFormatter: formatPaperPrice },
       timeScale: { borderColor: '#252a31', timeVisible: true, secondsVisible: false, tickMarkFormatter: (time: Time) => chartTimeLabel(time, timezone, false) },
     });
     const candles = chart.addSeries(CandlestickSeries, { upColor: '#64d39a', downColor: '#f27e7e', borderVisible: false, wickUpColor: '#64d39a', wickDownColor: '#f27e7e', priceFormat: { type: 'price', precision: binanceRules?.price_precision ?? 8, minMove: binanceRules?.tick_size || 0.00000001 } });
@@ -966,7 +969,7 @@ function Workspace() {
       layout: { background: { color: '#080a0d' }, textColor: '#89909b' },
       grid: { vertLines: { color: '#151a20' }, horzLines: { color: '#151a20' } },
       rightPriceScale: { borderColor: '#252a31' },
-      localization: { locale: 'es-MX', timeFormatter: (time: Time) => chartTimeLabel(time, timezone, true) },
+      localization: { locale: 'es-MX', timeFormatter: (time: Time) => chartTimeLabel(time, timezone, true), priceFormatter: formatPaperPrice },
       timeScale: { borderColor: '#252a31', timeVisible: true, secondsVisible: false, tickMarkFormatter: (time: Time) => chartTimeLabel(time, timezone, false) },
     });
     const candles = chart.addSeries(CandlestickSeries, { upColor: '#64d39a', downColor: '#f27e7e', borderVisible: false, wickUpColor: '#64d39a', wickDownColor: '#f27e7e', priceFormat: { type: 'price', precision: binanceRules?.price_precision ?? 8, minMove: binanceRules?.tick_size || 0.00000001 } });
