@@ -46,6 +46,7 @@ export function calculateSslChannel(bars: IndicatorBar[], period = 9) {
   const length = Math.max(2, Math.round(period));
   const up: Array<number | null> = Array.from({ length: bars.length }, () => null);
   const down: Array<number | null> = Array.from({ length: bars.length }, () => null);
+  const bullish: boolean[] = Array.from({ length: bars.length }, () => false);
   let direction = 0;
   for (let index = length - 1; index < bars.length; index += 1) {
     const window = bars.slice(index - length + 1, index + 1);
@@ -57,8 +58,9 @@ export function calculateSslChannel(bars: IndicatorBar[], period = 9) {
     // lower channel is red, regardless of the current direction.
     up[index] = Math.max(high, low);
     down[index] = Math.min(high, low);
+    bullish[index] = direction >= 0;
   }
-  return { up, down };
+  return { up, down, bullish };
 }
 
 /**
