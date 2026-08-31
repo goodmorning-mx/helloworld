@@ -511,12 +511,12 @@ function Workspace() {
   const [indicatorHover, setIndicatorHover] = useState<{ canvas: ChartCanvas; x: number; y: number; label: string } | null>(null);
   const [stageSize, setStageSize] = useState({ width: 1, height: 1 });
   const [overviewSize, setOverviewSize] = useState({ width: 1, height: 1 });
-  const [tool, setTool] = useState<'line' | 'ruler' | 'long' | 'short' | null>(null);
+  const [tool, setTool] = useState<'line' | 'ruler' | 'long' | 'short' | 'zoom' | null>(null);
   const [viewportRevision, setViewportRevision] = useState(0);
   const [overviewRevision, setOverviewRevision] = useState(0);
   type ChartPoint = { time: UTCTimestamp; price: number };
   type ChartCanvas = 'entry' | 'context';
-  type Drawing = { id?: string; symbol?: string; type: 'line' | 'ruler' | 'long' | 'short'; start: ChartPoint; end: ChartPoint; stop?: ChartPoint; target?: ChartPoint; chart?: ChartCanvas; paper?: boolean; closed?: boolean; closeReason?: 'TP' | 'SL' | 'MANUAL'; status?: 'OPEN' | 'CLOSED - WIN' | 'CLOSED - FAILED'; riskPercent?: number; quantity?: number; notional?: number; margin?: number; pnl?: number };
+  type Drawing = { id?: string; symbol?: string; type: 'line' | 'ruler' | 'long' | 'short' | 'zoom'; start: ChartPoint; end: ChartPoint; stop?: ChartPoint; target?: ChartPoint; chart?: ChartCanvas; paper?: boolean; closed?: boolean; closeReason?: 'TP' | 'SL' | 'MANUAL'; status?: 'OPEN' | 'CLOSED - WIN' | 'CLOSED - FAILED'; riskPercent?: number; quantity?: number; notional?: number; margin?: number; pnl?: number };
   const [drawings, setDrawings] = useState<Drawing[]>([]);
   const [drawingStart, setDrawingStart] = useState<ChartPoint | null>(null);
   const [drawingEnd, setDrawingEnd] = useState<ChartPoint | null>(null);
@@ -1356,6 +1356,14 @@ function Workspace() {
     if ((event.target as HTMLElement).closest('button')) return;
     setDrawingCanvas(canvas);
     const point = pointFromEvent(event);
+    if (tool === 'zoom') {
+      event.preventDefault();
+      event.stopPropagation();
+      event.currentTarget.setPointerCapture(event.pointerId);
+      setLassoStart(point);
+      setLassoEnd(point);
+      return;
+    }
     const handle = handleAt(point, canvas);
     if (handle) {
       event.preventDefault();
@@ -1448,6 +1456,19 @@ function Workspace() {
       const end = pointFromEvent(event);
       const left = Math.min(lassoStart.x, end.x);
       const right = Math.max(lassoStart.x, end.x);
+      if (tool === 'zoom') {
+        const { chart } = chartContext(drawingCanvas);
+        const from = chart?.timeScale().coordinateToTime(left);
+        const to = chart?.timeScale().coordinateToTime(right);
+        if (chart && from !== null && from !== undefined && to !== null && to !== undefined && Number(from) !== Number(to)) {
+          chart.timeScale().setVisibleRange({ from: from as Time, to: to as Time });
+        }
+        setLassoStart(null);
+        setLassoEnd(null);
+        setTool(null);
+        if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
+        return;
+      }
       const top = Math.min(lassoStart.y, end.y);
       const bottom = Math.max(lassoStart.y, end.y);
       const matches = drawings.map((drawing, index) => ({ drawing, index })).filter(({ drawing }) => {
@@ -1474,7 +1495,7 @@ function Workspace() {
       if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
       return;
     }
-    if (!tool || !drawingStart) return;
+    if (!tool || tool === 'zoom' || !drawingStart) return;
     event.preventDefault();
     event.stopPropagation();
     const end = chartPointFromEvent(event, drawingCanvas);
@@ -1618,8 +1639,13 @@ function Workspace() {
     if (visibleClosedId === position.id) setVisibleClosedId(null);
   }
 
-  function chooseTool(key: 'line' | 'ruler' | 'long' | 'short') {
+  function chooseTool(key: 'line' | 'ruler' | 'long' | 'short' | 'zoom') {
     setTool(tool === key ? null : key);
+  }
+
+  function resetChartZoom(canvas: ChartCanvas = 'entry') {
+    const { chart } = chartContext(canvas);
+    if (chart) chart.timeScale().fitContent();
   }
 
   const paperPositions = drawings.filter(drawing => drawing.paper && (drawing.type === 'long' || drawing.type === 'short'));
@@ -1763,13 +1789,13 @@ function Workspace() {
     {selectableSymbols.map(option => <option key={option}>{option}</option>)}
   </select><select className="interval-select" value={interval} onChange={event => setInterval(event.target.value as typeof interval)} aria-label="Intervalo de contexto">{(['1s', '1m', '3m', '5m', '15m'] as const).map(value => <option key={value} value={value}>{value}</option>)}</select><span className="chart-source">{broker.toUpperCase()} · {entryInterval.toUpperCase()} ENTRADA · {interval.toUpperCase()} CONTEXTO</span><button className={`session-toggle ${showSessions ? 'session-active' : ''}`} onClick={() => setShowSessions(value => !value)} aria-label="Mostrar sesiones" title="Mostrar sesiones">Sesiones</button><div className="chart-tools" aria-label="Herramientas del gráfico">
     {labButton}<button className={`indicator-bar-button ${showHeikinAshi ? 'indicator-toggle-active' : ''}`} onClick={() => setShowHeikinAshi(value => !value)} aria-pressed={showHeikinAshi} aria-label="Alternar Heikin Ashi" title="Heikin Ashi">HA</button><button className={!tool ? 'tool-active' : ''} onClick={() => setTool(null)} aria-label="Seleccionar y navegar" title="Seleccionar y navegar">↖</button>
-    {([['line', '╱', 'Línea'], ['ruler', '▥', 'Regla'], ['long', 'L', 'Long'], ['short', 'S', 'Short']] as const).map(([key, icon, label]) => <button key={key} className={tool === key ? 'tool-active' : ''} onClick={() => chooseTool(key)} aria-label={label} title={label}>{icon}</button>)}
+    {([['line', '╱', 'Línea'], ['ruler', '▥', 'Regla'], ['long', 'L', 'Long'], ['short', 'S', 'Short'], ['zoom', '⌗', 'Zoom lazo']] as const).map(([key, icon, label]) => <button key={key} className={tool === key ? 'tool-active' : ''} onClick={() => chooseTool(key)} aria-label={label} title={label}>{icon}</button>)}<button onClick={() => { resetChartZoom('entry'); resetChartZoom('context'); }} aria-label="Restablecer zoom" title="Restablecer zoom">↺</button>
     <button onClick={() => setDrawings(current => current.filter(drawing => drawing.paper))} aria-label="Borrar dibujos" title="Borrar dibujos">×</button>
   </div>{profileButton}<button className="logout-button" onClick={() => void auth.logout()} aria-label="Cerrar sesión">Salir</button></div>;
 
     const marketScanner = broker === 'binance' ? <section className="market-scanner" aria-label="Criptomonedas activas"><div className="market-scanner-head"><div><span className="positions-kicker">MARKET SCANNER · BINANCE FUTURES</span><strong>Mayor variación acumulada cierre a cierre</strong></div><small>{activeMarketLoading ? 'Actualizando…' : activeMarketError || `${activeMarketSymbols.length} símbolos · 10 cambios ${activeMarketSymbols[0]?.interval ?? '5m'}`}</small></div>{activeMarketSymbols.length > 0 ? <div className="market-scanner-list">{activeMarketSymbols.map(candidate => <button key={candidate.symbol} type="button" className={`market-scanner-item ${candidate.symbol === symbol ? 'active' : ''}`} onClick={() => { setLabRecommendations(null); setSymbol(candidate.symbol); }}><b>{candidate.symbol}</b><span className="value-positive">Σ {candidate.variation_sum_pct.toFixed(2)}%</span><small>Leverage máximo {candidate.max_leverage != null ? `${candidate.max_leverage}x` : '—'}</small><small>Prom. x vela {candidate.variation_average_pct.toFixed(3)}%</small></button>)}</div> : <p className="market-scanner-empty">{activeMarketError || 'Buscando mercados activos…'}</p>}</section> : null;
 
-  const toolOptions = [['line', '╱', 'Línea'], ['ruler', '▥', 'Medir'], ['long', 'L', 'Long'], ['short', 'S', 'Short']] as const;
+  const toolOptions = [['line', '╱', 'Línea'], ['ruler', '▥', 'Medir'], ['long', 'L', 'Long'], ['short', 'S', 'Short'], ['zoom', '⌗', 'Zoom lazo']] as const;
   const chartsRow = <div className="charts-row"><section ref={overviewStage} className={`secondary-chart ${tool ? 'drawing-mode' : ''}`} onPointerDownCapture={event => startDrawing(event, 'context')} onPointerMoveCapture={updateDrawing} onPointerUpCapture={finishDrawing} onPointerCancelCapture={() => { setDrawingStart(null); setDrawingEnd(null); setMoveStart(null); setResizeStart(null); setLassoStart(null); setLassoEnd(null); }}><div className="chart-panel-label">5M · CONTEXTO · BTCUSDT</div><div ref={overviewChartContainer} className="overview-chart" /><svg className="overview-overlay" viewBox={`0 0 ${overviewSize.width} ${overviewSize.height}`} preserveAspectRatio="none" aria-hidden="true">{renderOverviewSessions()}{renderOverviewInterestMarkers()}{renderPriceLineHitAreas('context')}{drawings.map((drawing, index) => (!drawing.paper || !drawing.closed || drawing.id === visibleClosedId) && (!drawing.paper || !drawing.symbol || drawing.symbol === symbol) && (drawing.chart === 'context' || drawing.paper) ? renderDrawing(drawing, index, 'context') : null)}{tool && drawingStart && drawingEnd && drawingCanvas === 'context' && renderDrawing({ type: tool, chart: 'context', start: drawingStart, end: drawingEnd }, 'preview', 'context')}{lassoStart && lassoEnd && drawingCanvas === 'context' && <rect x={Math.min(lassoStart.x, lassoEnd.x)} y={Math.min(lassoStart.y, lassoEnd.y)} width={Math.abs(lassoEnd.x - lassoStart.x)} height={Math.abs(lassoEnd.y - lassoStart.y)} className="selection-lasso" />}</svg></section><section className="primary-chart"><div className="chart-panel-label">1M · AJUSTE DE ENTRADA</div>{chartStageView}</section></div>;
 
   return mobilePwa ? <main className="trading-shell pwa-shell">
