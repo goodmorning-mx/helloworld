@@ -53,8 +53,10 @@ export function calculateSslChannel(bars: IndicatorBar[], period = 9) {
     const low = window.reduce((sum, bar) => sum + bar.low, 0) / length;
     if (bars[index].close > high) direction = 1;
     else if (bars[index].close < low) direction = -1;
-    up[index] = direction >= 0 ? low : high;
-    down[index] = direction >= 0 ? high : low;
+    // Keep the visual semantics stable: the upper channel is green and the
+    // lower channel is red, regardless of the current direction.
+    up[index] = Math.max(high, low);
+    down[index] = Math.min(high, low);
   }
   return { up, down };
 }
