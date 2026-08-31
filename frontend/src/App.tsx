@@ -1263,7 +1263,9 @@ function Workspace() {
         const bullish = ssl.bullish[index] ?? false;
         const colorBullish = upper ? bullish : !bullish;
         if (!current || current.bullish !== colorBullish) {
-          current = { d: `M ${point.x} ${point.y}`, bullish: colorBullish };
+          const previousValue = index > 0 ? values[index - 1] : null;
+          const previousPoint = previousValue === null || previousValue === undefined ? null : toPoint(previousValue, index - 1);
+          current = { d: previousPoint ? `M ${previousPoint.x} ${previousPoint.y} L ${point.x} ${point.y}` : `M ${point.x} ${point.y}`, bullish: colorBullish };
           result.push(current);
         } else {
           current.d += ` L ${point.x} ${point.y}`;
