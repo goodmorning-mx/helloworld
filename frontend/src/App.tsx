@@ -29,6 +29,38 @@ function mergeTickBar(bars: Array<{ time: UTCTimestamp; open: number; high: numb
   return [...bars, { time: bucket, open: price, high: price, low: price, close: price }];
 }
 
+function createBinanceKlineStream(symbol: string, interval: string) {
+  let socket: WebSocket | null = null;
+  let reconnectTimer: number | null = null;
+  let stopped = false;
+  let delay = 1000;
+  let messageHandler: ((event: MessageEvent) => void) | null = null;
+  const controller = {
+    set onmessage(handler: (event: MessageEvent) => void) { messageHandler = handler; },
+    close() {
+      stopped = true;
+      if (reconnectTimer !== null) window.clearTimeout(reconnectTimer);
+      socket?.close();
+      socket = null;
+    },
+  };
+  const connect = () => {
+    if (stopped) return;
+    socket = new WebSocket(`wss://fstream.binance.com/ws/${symbol.toLowerCase()}@kline_${interval}`);
+    socket.onopen = () => { delay = 1000; };
+    socket.onmessage = event => messageHandler?.(event);
+    socket.onerror = () => socket?.close();
+    socket.onclose = () => {
+      socket = null;
+      if (stopped) return;
+      reconnectTimer = window.setTimeout(connect, delay);
+      delay = Math.min(delay * 2, 30_000);
+    };
+  };
+  connect();
+  return controller;
+}
+
 // Broker contract limits used by paper trading until live symbol metadata is
 // available. The effective paper leverage is always the lower of the Lab
 // recommendation and this broker/symbol limit.
@@ -902,7 +934,7 @@ function Workspace() {
     // The chart/history uses Binance Futures, so the live stream must use the
     // Futures WebSocket too. Spot streams can silently stop for Futures-only
     // scanner symbols after a symbol switch.
-    const stream = new WebSocket(`wss://fstream.binance.com/ws/${symbol.toLowerCase()}@kline_${entryInterval}`);
+    const stream = createBinanceKlineStream(symbol, entryInterval);
     fetch(`https://fapi.binance.com/fapi/v1/klines?symbol=${symbol}&interval=${entryInterval}&limit=500`)
       .then(response => response.json())
       .then(rows => {
@@ -1077,7 +1109,7 @@ function Workspace() {
       void pollTick();
       return () => { active = false; window.clearInterval(candleTimer); window.clearInterval(tickTimer); chart.timeScale().unsubscribeVisibleTimeRangeChange(refreshOverview); chart.timeScale().unsubscribeVisibleLogicalRangeChange(refreshOverview); overviewChartRef.current = null; overviewCandlesRef.current = null; overviewCandleDataRef.current = []; overviewBarsRef.current = []; overviewLoadingOlderRef.current = false; chart.remove(); };
     }
-    const stream = new WebSocket(`wss://fstream.binance.com/ws/${symbol.toLowerCase()}@kline_${interval}`);
+    const stream = createBinanceKlineStream(symbol, interval);
     fetch(`https://fapi.binance.com/fapi/v1/klines?symbol=${symbol}&interval=${interval}&limit=300`)
       .then(response => response.json())
       .then(rows => {
