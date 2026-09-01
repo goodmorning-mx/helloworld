@@ -16,8 +16,11 @@ const marketWsUrl = apiUrl.replace(/^http/, 'ws');
 
 // Keep the interactive charts responsive. The Lab keeps its own historical
 // dataset; these limits only control what is rendered in the live canvases.
-const MAX_ENTRY_RENDER_BARS = 1200;
-const MAX_CONTEXT_RENDER_BARS = 600;
+const MAX_ENTRY_RENDER_BARS = 240;
+const MAX_CONTEXT_RENDER_BARS = 180;
+const INITIAL_ENTRY_BARS = 240;
+const INITIAL_CONTEXT_BARS = 180;
+const MAX_CHART_HISTORY_SECONDS = 2 * 86400;
 // Wick-extension/impulse markers are intentionally local to the latest
 // candles. Rendering a full month of them creates visual noise and needless
 // SVG work while the trader is only tuning the current move.
@@ -900,12 +903,12 @@ function Workspace() {
       const logicalRange = chart.timeScale().getVisibleLogicalRange();
       if (logicalRange && logicalRange.from < 80 && !loadingOlderRef.current && candleBarsRef.current.length > 0) {
         const oldest = Number(candleBarsRef.current[0].time);
-        const sevenDaysAgo = Math.floor(Date.now() / 1000) - 7 * 86400;
-        if (oldest > sevenDaysAgo) {
+        const historyCutoff = Math.floor(Date.now() / 1000) - MAX_CHART_HISTORY_SECONDS;
+        if (oldest > historyCutoff) {
           loadingOlderRef.current = true;
           const previousRange = { from: logicalRange.from, to: logicalRange.to };
-          const dayStart = Math.max(sevenDaysAgo, oldest - 86400);
-          const fetchChunk = (endTime: number, limit: number) => fetch(`https://fapi.binance.com/fapi/v1/klines?symbol=${symbol}&interval=${entryInterval}&limit=${limit}&endTime=${Math.max(sevenDaysAgo * 1000, endTime * 1000 - 1)}`).then(response => response.json());
+          const dayStart = Math.max(historyCutoff, oldest - 86400);
+          const fetchChunk = (endTime: number, limit: number) => fetch(`https://fapi.binance.com/fapi/v1/klines?symbol=${symbol}&interval=${entryInterval}&limit=${limit}&endTime=${Math.max(historyCutoff * 1000, endTime * 1000 - 1)}`).then(response => response.json());
           fetchChunk(oldest, 1000).then(firstRows => {
               if (!active || !Array.isArray(firstRows)) return [];
               const first = firstRows.map(row => ({ time: Math.floor(Number(row[0]) / 1000) as UTCTimestamp, open: Number(row[1]), high: Number(row[2]), low: Number(row[3]), close: Number(row[4]) }));
@@ -914,7 +917,7 @@ function Workspace() {
             }).then(older => {
               if (!active || older.length === 0) return;
               candleBarsRef.current = [...older, ...candleBarsRef.current].filter((bar, index, all) => index === 0 || bar.time !== all[index - 1].time);
-              candleBarsRef.current = candleBarsRef.current.filter(bar => Number(bar.time) >= sevenDaysAgo);
+              candleBarsRef.current = candleBarsRef.current.filter(bar => Number(bar.time) >= historyCutoff);
               void cacheBars(symbol, entryInterval, candleBarsRef.current);
               candleDataRef.current = candleBarsRef.current.map(({ time, close }) => ({ time, close }));
               const visibleBars = renderBars(candleBarsRef.current, MAX_ENTRY_RENDER_BARS);
@@ -937,7 +940,7 @@ function Workspace() {
       // A cTrader weekend can contain no candles in the last 24 hours. Keep
       // the entry chart useful without making the worker request an oversized
       // history window.
-      const loadCTrader = () => fetch(`${apiUrl}/trading/ctrader/candles/${encodeURIComponent(symbol)}?interval=${entryInterval}&days=3`, { headers: auth.accessToken ? { Authorization: `Bearer ${auth.accessToken}` } : {}, credentials: 'include' })
+      const loadCTrader = () => fetch(`${apiUrl}/trading/ctrader/candles/${encodeURIComponent(symbol)}?interval=${entryInterval}&days=1`, { headers: auth.accessToken ? { Authorization: `Bearer ${auth.accessToken}` } : {}, credentials: 'include' })
         .then(response => response.ok ? response.json() : Promise.reject(new Error(`cTrader ${response.status}`)))
         .then(payload => {
           if (!active) return;
@@ -947,7 +950,7 @@ function Workspace() {
           candleDataRef.current = parsed.map(({ time, close }) => ({ time, close }));
           const visibleBars = renderBars(parsed, MAX_ENTRY_RENDER_BARS);
           candles.setData(showHeikinAshi ? calculateHeikinAshi(visibleBars) : visibleBars);
-          if (!polling) chart.timeScale().fitContent();
+          if (!polling) chart.timeScale().setVisibleLogicalRange({ from: Math.max(0, visibleBars.length - INITIAL_ENTRY_BARS), to: visibleBars.length - 1 });
           polling += 1;
           if (polling === 1) setViewportRevision(value => value + 1);
         })
@@ -976,7 +979,7 @@ function Workspace() {
     // Futures WebSocket too. Spot streams can silently stop for Futures-only
     // scanner symbols after a symbol switch.
     const stream = createBinanceKlineStream(symbol, entryInterval);
-    fetch(`${apiUrl}/market/binance/candles/${encodeURIComponent(symbol)}?interval=${entryInterval}&limit=500`, { headers: auth.accessToken ? { Authorization: `Bearer ${auth.accessToken}` } : {}, credentials: 'include' })
+    fetch(`${apiUrl}/market/binance/candles/${encodeURIComponent(symbol)}?interval=${entryInterval}&limit=${INITIAL_ENTRY_BARS}`, { headers: auth.accessToken ? { Authorization: `Bearer ${auth.accessToken}` } : {}, credentials: 'include' })
       .then(response => response.json())
       .then(payload => {
         const rows = (payload as { bars?: Array<{ time: number; open: number; high: number; low: number; close: number }> }).bars;
@@ -987,7 +990,7 @@ function Workspace() {
         candleDataRef.current = parsed.map(({ time, close }) => ({ time, close }));
         const visibleBars = renderBars(parsed, MAX_ENTRY_RENDER_BARS);
         candles.setData(showHeikinAshi ? calculateHeikinAshi(visibleBars) : visibleBars);
-        chart.timeScale().fitContent();
+        chart.timeScale().setVisibleLogicalRange({ from: Math.max(0, parsed.length - INITIAL_ENTRY_BARS), to: parsed.length - 1 });
         setViewportRevision(value => value + 1);
       })
       .catch(() => undefined);
@@ -1090,14 +1093,14 @@ function Workspace() {
       const logicalRange = chart.timeScale().getVisibleLogicalRange();
       if (!logicalRange || logicalRange.from >= 50 || overviewLoadingOlderRef.current || overviewBarsRef.current.length === 0) return;
       const oldest = Number(overviewBarsRef.current[0].time);
-      const sevenDaysAgo = Math.floor(Date.now() / 1000) - 7 * 86400;
-      if (oldest <= sevenDaysAgo) return;
+        const historyCutoff = Math.floor(Date.now() / 1000) - MAX_CHART_HISTORY_SECONDS;
+        if (oldest <= historyCutoff) return;
       overviewLoadingOlderRef.current = true;
       const previousRange = { from: logicalRange.from, to: logicalRange.to };
       const secondsPerBar = interval === '1s' ? 1 : interval === '1m' ? 60 : interval === '3m' ? 180 : interval === '5m' ? 300 : 900;
-      const dayStart = Math.max(sevenDaysAgo, oldest - 86400);
+        const dayStart = Math.max(historyCutoff, oldest - 86400);
       const expected = Math.ceil((oldest - dayStart) / secondsPerBar);
-      const fetchChunk = (endTime: number, limit: number) => fetch(`https://fapi.binance.com/fapi/v1/klines?symbol=${symbol}&interval=${interval}&limit=${limit}&endTime=${Math.max(sevenDaysAgo * 1000, endTime * 1000 - 1)}`).then(response => response.json());
+      const fetchChunk = (endTime: number, limit: number) => fetch(`https://fapi.binance.com/fapi/v1/klines?symbol=${symbol}&interval=${interval}&limit=${limit}&endTime=${Math.max(historyCutoff * 1000, endTime * 1000 - 1)}`).then(response => response.json());
       const loadDay = async () => {
         const rows: any[] = [];
         let cursor = oldest;
@@ -1112,7 +1115,7 @@ function Workspace() {
       };
       void loadDay().then(older => {
         if (!active || older.length === 0) return;
-        overviewBarsRef.current = [...older, ...overviewBarsRef.current].filter((bar, index, all) => index === 0 || bar.time !== all[index - 1].time).filter(bar => Number(bar.time) >= sevenDaysAgo);
+        overviewBarsRef.current = [...older, ...overviewBarsRef.current].filter((bar, index, all) => index === 0 || bar.time !== all[index - 1].time).filter(bar => Number(bar.time) >= historyCutoff);
         void cacheBars(symbol, interval, overviewBarsRef.current);
         overviewCandleDataRef.current = overviewBarsRef.current.map(({ time, close }) => ({ time, close }));
         const visibleBars = renderBars(overviewBarsRef.current, MAX_CONTEXT_RENDER_BARS);
@@ -1126,7 +1129,7 @@ function Workspace() {
     let active = true;
     if (broker === 'ctrader') {
       let polling = 0;
-      const loadCTrader = () => fetch(`${apiUrl}/trading/ctrader/candles/${encodeURIComponent(symbol)}?interval=${interval === '1s' ? '1m' : interval}&days=7`, { headers: auth.accessToken ? { Authorization: `Bearer ${auth.accessToken}` } : {}, credentials: 'include' })
+      const loadCTrader = () => fetch(`${apiUrl}/trading/ctrader/candles/${encodeURIComponent(symbol)}?interval=${interval === '1s' ? '1m' : interval}&days=1`, { headers: auth.accessToken ? { Authorization: `Bearer ${auth.accessToken}` } : {}, credentials: 'include' })
         .then(response => response.ok ? response.json() : Promise.reject(new Error(`cTrader ${response.status}`)))
         .then(payload => {
           if (!active) return;
@@ -1136,7 +1139,7 @@ function Workspace() {
           overviewCandleDataRef.current = parsed.map(({ time, close }) => ({ time, close }));
           const visibleBars = renderBars(parsed, MAX_CONTEXT_RENDER_BARS);
           candles.setData(showHeikinAshi ? calculateHeikinAshi(visibleBars) : visibleBars);
-          if (!polling) chart.timeScale().fitContent();
+          if (!polling) chart.timeScale().setVisibleLogicalRange({ from: Math.max(0, visibleBars.length - INITIAL_CONTEXT_BARS), to: visibleBars.length - 1 });
           polling += 1;
           if (polling === 1) setOverviewRevision(value => value + 1);
         })
@@ -1163,7 +1166,7 @@ function Workspace() {
     }
     const stream = createBinanceKlineStream(symbol, interval);
     const gatewayInterval = interval === '1s' ? '1m' : interval;
-    fetch(`${apiUrl}/market/binance/candles/${encodeURIComponent(symbol)}?interval=${gatewayInterval}&limit=300`, { headers: auth.accessToken ? { Authorization: `Bearer ${auth.accessToken}` } : {}, credentials: 'include' })
+    fetch(`${apiUrl}/market/binance/candles/${encodeURIComponent(symbol)}?interval=${gatewayInterval}&limit=${INITIAL_CONTEXT_BARS}`, { headers: auth.accessToken ? { Authorization: `Bearer ${auth.accessToken}` } : {}, credentials: 'include' })
       .then(response => response.json())
       .then(payload => {
         const rows = (payload as { bars?: Array<{ time: number; open: number; high: number; low: number; close: number }> }).bars;
@@ -1174,7 +1177,7 @@ function Workspace() {
         overviewCandleDataRef.current = parsed.map(({ time, close }) => ({ time, close }));
         const visibleBars = renderBars(parsed, MAX_CONTEXT_RENDER_BARS);
         candles.setData(showHeikinAshi ? calculateHeikinAshi(visibleBars) : visibleBars);
-        chart.timeScale().fitContent();
+        chart.timeScale().setVisibleLogicalRange({ from: Math.max(0, parsed.length - INITIAL_CONTEXT_BARS), to: parsed.length - 1 });
       }).catch(() => undefined);
     stream.onmessage = event => {
       if (!active) return;
