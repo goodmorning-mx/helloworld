@@ -18,6 +18,10 @@ const marketWsUrl = apiUrl.replace(/^http/, 'ws');
 // dataset; these limits only control what is rendered in the live canvases.
 const MAX_ENTRY_RENDER_BARS = 1200;
 const MAX_CONTEXT_RENDER_BARS = 600;
+// Wick-extension/impulse markers are intentionally local to the latest
+// candles. Rendering a full month of them creates visual noise and needless
+// SVG work while the trader is only tuning the current move.
+const MAX_WICK_EXTENSION_BARS = 50;
 function renderBars(bars: Array<{ time: UTCTimestamp; open: number; high: number; low: number; close: number }>, max: number) {
   return bars.slice(-max);
 }
@@ -1307,7 +1311,11 @@ function Workspace() {
     if (!chart || !candles || !bars.length || (!showRsi && !showSsl && !showWickExtensions)) return null;
     const rsi = showRsi ? calculateRsi(bars, rsiPeriod) : [];
     const ssl = showSsl ? calculateSslChannel(bars, sslPeriod) : { up: [], down: [], bullish: [] };
-    const wickExtensions = showWickExtensions ? calculateWickExtensions(bars, 10, wickMultiplier) : { long: [], short: [] };
+    const wickLookback = 10;
+    const wickStart = Math.max(0, bars.length - (MAX_WICK_EXTENSION_BARS + wickLookback));
+    const wickBars = bars.slice(wickStart);
+    const wickExtensions = showWickExtensions ? calculateWickExtensions(wickBars, wickLookback, wickMultiplier) : { long: [], short: [] };
+    const wickVisibleStart = Math.max(0, bars.length - MAX_WICK_EXTENSION_BARS);
     const toPoint = (value: number | null, index: number) => {
       if (value === null || value === undefined) return null;
       const x = chart.timeScale().timeToCoordinate(bars[index].time);
@@ -1330,9 +1338,11 @@ function Workspace() {
       if (!point) return null;
       return <circle key={`rsi-${canvas}-${bars[index].time}`} cx={point.x} cy={point.y} r="5" className="rsi-marker" pointerEvents="all" onPointerEnter={() => setIndicatorHover({ canvas, x: point.x, y: point.y, label: `RSI(${rsiPeriod}) ${value.toFixed(2)}` })} onPointerLeave={() => setIndicatorHover(null)}><title>RSI({rsiPeriod}): {value.toFixed(2)}</title></circle>;
     });
-    const wickMarkers = bars.map((bar, index) => {
-      const longPoint = toPoint(wickExtensions.long[index], index);
-      const shortPoint = toPoint(wickExtensions.short[index], index);
+    const wickMarkers = bars.slice(wickVisibleStart).map((bar, visibleIndex) => {
+      const index = wickVisibleStart + visibleIndex;
+      const wickIndex = index - wickStart;
+      const longPoint = toPoint(wickExtensions.long[wickIndex], index);
+      const shortPoint = toPoint(wickExtensions.short[wickIndex], index);
       const timeLabel = new Date(Number(bar.time) * 1000).toLocaleString('es-MX', { timeZone: timezone, dateStyle: 'short', timeStyle: 'short' });
       return <g key={`wick-${canvas}-${bar.time}`} className="wick-extension-markers">
         {longPoint && <circle cx={longPoint.x} cy={longPoint.y} r="4.5" className="wick-extension-marker wick-extension-long" pointerEvents="all" onPointerEnter={() => setIndicatorHover({ canvas, x: longPoint.x, y: longPoint.y, label: `Long ${wickMultiplier.toFixed(1)}x · ${timeLabel}` })} onPointerLeave={() => setIndicatorHover(null)}><title>Long: extensión favorable {wickMultiplier.toFixed(1)}x</title></circle>}
