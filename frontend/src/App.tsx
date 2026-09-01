@@ -418,26 +418,50 @@ function accessTokenExpiresAt(token: string) {
 function AuthSessionKeeper({ client }: { client: AuthClient }) {
   const auth = useAuth();
   const refreshing = useRef(false);
+  const refreshFailures = useRef(0);
   useEffect(() => {
-    if (!auth.accessToken) return;
     const check = async () => {
       const stored = storedAuthTokens();
-      const expiresAt = stored ? accessTokenExpiresAt(stored.tokens.access_token) : null;
-      if (!stored || !expiresAt || expiresAt - Date.now() / 1000 > 120 || refreshing.current) return;
+      if (!stored || refreshing.current) return;
+      const now = Date.now();
+      const expiresAt = accessTokenExpiresAt(stored.tokens.access_token);
+      const lastRefresh = Number(localStorage.getItem('gm-auth-last-refresh') ?? 0);
+      const expiredOrNearExpiry = expiresAt !== null && expiresAt - now / 1000 <= 300;
+      const tokenWithoutExpiryNeedsCheck = expiresAt === null && now - lastRefresh >= 10 * 60_000;
+      if (!expiredOrNearExpiry && !tokenWithoutExpiryNeedsCheck) return;
       refreshing.current = true;
       try {
         const next = await client.refresh(stored.tokens.refresh_token);
-        stored.storage.setItem('gm-auth-tokens', JSON.stringify(next));
-        window.location.reload();
+        const serialized = JSON.stringify(next);
+        // Always persist refreshed credentials durably. This also repairs a
+        // session that was accidentally kept in sessionStorage after login.
+        localStorage.setItem('gm-auth-tokens', serialized);
+        sessionStorage.removeItem('gm-auth-tokens');
+        localStorage.setItem('gm-auth-last-refresh', String(now));
+        refreshFailures.current = 0;
+        if (next.access_token !== auth.accessToken) window.location.reload();
       } catch {
-        // Keep the current session visible and retry on the next interval.
+        refreshFailures.current += 1;
+        // A transient network failure must not log the user out. If an
+        // already expired token fails repeatedly, return to login cleanly
+        // instead of leaving the workspace in a stuck skeleton state.
+        if (expiresAt !== null && expiresAt <= now / 1000 && refreshFailures.current >= 3) {
+          localStorage.removeItem('gm-auth-tokens');
+          sessionStorage.removeItem('gm-auth-tokens');
+          localStorage.removeItem('gm-auth-last-refresh');
+          window.location.reload();
+        }
       } finally {
         refreshing.current = false;
       }
     };
     void check();
-    const timer = window.setInterval(() => void check(), 60_000);
-    return () => window.clearInterval(timer);
+    const timer = window.setInterval(() => void check(), 30_000);
+    const onWake = () => { if (document.visibilityState === 'visible') void check(); };
+    window.addEventListener('focus', onWake);
+    window.addEventListener('online', onWake);
+    document.addEventListener('visibilitychange', onWake);
+    return () => { window.clearInterval(timer); window.removeEventListener('focus', onWake); window.removeEventListener('online', onWake); document.removeEventListener('visibilitychange', onWake); };
   }, [auth.accessToken, client]);
   return null;
 }
