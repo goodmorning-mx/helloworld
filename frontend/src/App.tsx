@@ -24,7 +24,7 @@ const MAX_CHART_HISTORY_SECONDS = 2 * 86400;
 // Wick-extension/impulse markers are intentionally local to the latest
 // candles. Rendering a full month of them creates visual noise and needless
 // SVG work while the trader is only tuning the current move.
-const MAX_WICK_EXTENSION_BARS = 50;
+const MAX_WICK_EXTENSION_BARS = 10;
 function renderBars(bars: Array<{ time: UTCTimestamp; open: number; high: number; low: number; close: number }>, max: number) {
   return bars.slice(-max);
 }
@@ -960,7 +960,6 @@ function Workspace() {
         .then(response => response.ok ? response.json() as Promise<{ tick?: { price?: number; time?: number } }> : Promise.reject(new Error('tick unavailable')))
         .then(payload => {
           if (!active || !payload.tick?.price || !payload.tick.time) return;
-          const previousBarTime = candleBarsRef.current[candleBarsRef.current.length - 1]?.time;
           candleBarsRef.current = mergeTickBar(candleBarsRef.current, Number(payload.tick.time), Number(payload.tick.price), 60);
           const liveBar = candleBarsRef.current[candleBarsRef.current.length - 1];
           const lastCandleData = candleDataRef.current[candleDataRef.current.length - 1];
@@ -968,7 +967,7 @@ function Workspace() {
           else candleDataRef.current.push({ time: liveBar.time, close: liveBar.close });
           if (showHeikinAshi) candles.setData(calculateHeikinAshi(renderBars(candleBarsRef.current, MAX_ENTRY_RENDER_BARS)));
           else candles.update(liveBar);
-          if (candleBarsRef.current[candleBarsRef.current.length - 1]?.time !== previousBarTime) scheduleViewportRefresh();
+          scheduleViewportRefresh();
         }).catch(() => undefined);
       const candleTimer = window.setInterval(() => void loadCTrader(), 30_000);
       const tickTimer = window.setInterval(pollTick, 1_000);
@@ -1007,6 +1006,9 @@ function Workspace() {
       else if (isNewBar) candleDataRef.current.push({ time: next.time, close: next.close });
       if (showHeikinAshi) candles.setData(calculateHeikinAshi(renderBars(candleBarsRef.current, MAX_ENTRY_RENDER_BARS)));
       else candles.update(next);
+      // The rolling impulse average follows the active candle in real time;
+      // requestAnimationFrame coalesces bursts without repainting per tick.
+      scheduleViewportRefresh();
       // PNL and paper labels remain responsive, but do not force a React tree
       // reconciliation for every upstream kline update.
       const now = performance.now();
@@ -1059,7 +1061,6 @@ function Workspace() {
         }
         return updated;
       });
-      if (isNewBar) scheduleViewportRefresh();
     };
     return () => {
       active = false;
@@ -1149,7 +1150,6 @@ function Workspace() {
         .then(response => response.ok ? response.json() as Promise<{ tick?: { price?: number; time?: number } }> : Promise.reject(new Error('tick unavailable')))
         .then(payload => {
           if (!active || !payload.tick?.price || !payload.tick.time) return;
-          const previousBarTime = overviewBarsRef.current[overviewBarsRef.current.length - 1]?.time;
           overviewBarsRef.current = mergeTickBar(overviewBarsRef.current, Number(payload.tick.time), Number(payload.tick.price), interval === '1s' ? 60 : interval === '1m' ? 60 : interval === '3m' ? 180 : interval === '5m' ? 300 : 900);
           const liveBar = overviewBarsRef.current[overviewBarsRef.current.length - 1];
           const lastCandleData = overviewCandleDataRef.current[overviewCandleDataRef.current.length - 1];
@@ -1157,7 +1157,7 @@ function Workspace() {
           else overviewCandleDataRef.current.push({ time: liveBar.time, close: liveBar.close });
           if (showHeikinAshi) candles.setData(calculateHeikinAshi(renderBars(overviewBarsRef.current, MAX_CONTEXT_RENDER_BARS)));
           else candles.update(liveBar);
-          if (overviewBarsRef.current[overviewBarsRef.current.length - 1]?.time !== previousBarTime) scheduleOverviewRefresh();
+          scheduleOverviewRefresh();
         }).catch(() => undefined);
       const candleTimer = window.setInterval(() => void loadCTrader(), 30_000);
       const tickTimer = window.setInterval(pollTick, 1_000);
@@ -1192,6 +1192,7 @@ function Workspace() {
       else if (isNewBar) overviewCandleDataRef.current.push({ time: next.time, close: next.close });
       if (showHeikinAshi) candles.setData(calculateHeikinAshi(renderBars(overviewBarsRef.current, MAX_CONTEXT_RENDER_BARS)));
       else candles.update(next);
+      scheduleOverviewRefresh();
     };
     return () => { active = false; stream.close(); chart.timeScale().unsubscribeVisibleTimeRangeChange(refreshOverview); chart.timeScale().unsubscribeVisibleLogicalRangeChange(refreshOverview); overviewChartRef.current = null; overviewCandlesRef.current = null; overviewCandleDataRef.current = []; overviewBarsRef.current = []; overviewLoadingOlderRef.current = false; chart.remove(); };
   }, [auth.accessToken, binanceRules, broker, symbol, interval, timezone, mobilePwa, showHeikinAshi]);
