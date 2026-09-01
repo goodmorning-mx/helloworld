@@ -1291,7 +1291,15 @@ function Workspace() {
   function screenPoint(point: ChartPoint, canvas: ChartCanvas = 'entry') {
     const { chart, candles } = chartContext(canvas);
     if (!chart || !candles) return null;
-    const x = chart.timeScale().timeToCoordinate(point.time);
+    const bars = canvas === 'context' ? overviewBarsRef.current : candleBarsRef.current;
+    let x = chart.timeScale().timeToCoordinate(point.time);
+    // A paper position is opened on the 1m stream but is also drawn on the
+    // 5m chart. Its live timestamp will often not exist as an exact 5m item;
+    // project it to the nearest loaded candle instead of dropping the drawing.
+    if (x === null && bars.length > 0) {
+      const nearest = bars.reduce((best, bar) => Math.abs(Number(bar.time) - Number(point.time)) < Math.abs(Number(best.time) - Number(point.time)) ? bar : best, bars[0]);
+      x = chart.timeScale().timeToCoordinate(nearest.time);
+    }
     const y = candles.priceToCoordinate(point.price);
     return x === null || y === null ? null : { x, y };
   }
