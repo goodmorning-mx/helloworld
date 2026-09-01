@@ -213,10 +213,10 @@ function MobileSheet({ title, onClose, children }: { title: string; onClose: () 
 }
 
 function IndicatorSettingsModal({
-  showSessions, showRsi, showSsl, showTracker, showWickExtensions, rsiPeriod, rsiLowBand, rsiHighBand, sslPeriod, wickMultiplier, onClose, onSessions, onRsi, onSsl, onTracker, onWickExtensions, onRsiPeriod, onRsiLowBand, onRsiHighBand, onSslPeriod, onWickMultiplier,
-}: { showSessions: boolean; showRsi: boolean; showSsl: boolean; showTracker: boolean; showWickExtensions: boolean; rsiPeriod: number; rsiLowBand: number; rsiHighBand: number; sslPeriod: number; wickMultiplier: number; onClose: () => void; onSessions: () => void; onRsi: () => void; onSsl: () => void; onTracker: () => void; onWickExtensions: () => void; onRsiPeriod: (value: number) => void; onRsiLowBand: (value: number) => void; onRsiHighBand: (value: number) => void; onSslPeriod: (value: number) => void; onWickMultiplier: (value: number) => void }) {
+  showSessions, showRsi, showSsl, showTracker, showWickExtensions, rsiPeriod, rsiLowBand, rsiHighBand, sslPeriod, trackerPeriod, wickMultiplier, onClose, onSessions, onRsi, onSsl, onTracker, onWickExtensions, onRsiPeriod, onRsiLowBand, onRsiHighBand, onSslPeriod, onTrackerPeriod, onWickMultiplier,
+}: { showSessions: boolean; showRsi: boolean; showSsl: boolean; showTracker: boolean; showWickExtensions: boolean; rsiPeriod: number; rsiLowBand: number; rsiHighBand: number; sslPeriod: number; trackerPeriod: number; wickMultiplier: number; onClose: () => void; onSessions: () => void; onRsi: () => void; onSsl: () => void; onTracker: () => void; onWickExtensions: () => void; onRsiPeriod: (value: number) => void; onRsiLowBand: (value: number) => void; onRsiHighBand: (value: number) => void; onSslPeriod: (value: number) => void; onTrackerPeriod: (value: number) => void; onWickMultiplier: (value: number) => void }) {
   const row = (label: string, description: string, active: boolean, toggle: () => void, period?: number, setPeriod?: (value: number) => void) => <div className="indicator-setting-row"><button className={`indicator-toggle ${active ? 'indicator-toggle-active' : ''}`} onClick={toggle} aria-pressed={active}><span className="indicator-check">{active ? '✓' : ''}</span><span><b>{label}</b><small>{description}</small></span></button>{period !== undefined && setPeriod && <label className="indicator-period">Periodo<input type="number" min="2" max="200" value={period} onChange={event => setPeriod(Math.max(2, Math.min(200, Number(event.target.value) || 2)))} /></label>}</div>;
-  return <div className="indicator-modal-backdrop" role="presentation" onClick={onClose}><section className="indicator-modal" role="dialog" aria-modal="true" aria-label="Indicadores" onClick={event => event.stopPropagation()}><div className="indicator-modal-head"><div><span className="eyebrow">CHART · INDICATORS</span><h2>Indicadores</h2></div><button onClick={onClose} aria-label="Cerrar">×</button></div><p className="indicator-modal-help">Activa los indicadores que se dibujan directamente sobre el precio. La configuración se conserva por usuario.</p>{row('Sesiones de mercado', 'Tokyo, Londres, Nueva York y Sydney', showSessions, onSessions)}{row('RSI', 'Solo marca valores fuera de las bandas', showRsi, onRsi, rsiPeriod, onRsiPeriod)}{showRsi && <div className="indicator-band-row"><label>Low band<input type="number" min="1" max="49" value={rsiLowBand} onChange={event => onRsiLowBand(Math.max(1, Math.min(49, Number(event.target.value) || 1)))} /></label><label>High band<input type="number" min="51" max="99" value={rsiHighBand} onChange={event => onRsiHighBand(Math.max(51, Math.min(99, Number(event.target.value) || 99)))} /></label></div>}{row('SSL Channel', 'Canal dinámico sobre el precio', showSsl, onSsl, sslPeriod, onSslPeriod)}{row('Tracker', 'Price lines H2 · H1 · L1 · L2', showTracker, onTracker)}{row('Extensiones de mechazo', 'Puntos Long/Short según las mechas contrarias', showWickExtensions, onWickExtensions)}{showWickExtensions && <div className="indicator-band-row"><label>Multiplicador<input type="number" min="0" max="10" step="0.1" value={wickMultiplier} onChange={event => onWickMultiplier(Math.max(0, Math.min(10, Number(event.target.value) || 0)))} /></label><span className="indicator-modal-help">Long: mecha inferior · Short: mecha superior</span></div>}<button className="indicator-modal-done" onClick={onClose}>Listo</button></section></div>;
+  return <div className="indicator-modal-backdrop" role="presentation" onClick={onClose}><section className="indicator-modal" role="dialog" aria-modal="true" aria-label="Indicadores" onClick={event => event.stopPropagation()}><div className="indicator-modal-head"><div><span className="eyebrow">CHART · INDICATORS</span><h2>Indicadores</h2></div><button onClick={onClose} aria-label="Cerrar">×</button></div><p className="indicator-modal-help">Activa los indicadores que se dibujan directamente sobre el precio. La configuración se conserva por usuario.</p>{row('Sesiones de mercado', 'Tokyo, Londres, Nueva York y Sydney', showSessions, onSessions)}{row('RSI', 'Solo marca valores fuera de las bandas', showRsi, onRsi, rsiPeriod, onRsiPeriod)}{showRsi && <div className="indicator-band-row"><label>Low band<input type="number" min="1" max="49" value={rsiLowBand} onChange={event => onRsiLowBand(Math.max(1, Math.min(49, Number(event.target.value) || 1)))} /></label><label>High band<input type="number" min="51" max="99" value={rsiHighBand} onChange={event => onRsiHighBand(Math.max(51, Math.min(99, Number(event.target.value) || 99)))} /></label></div>}{row('SSL Channel', 'Canal dinámico sobre el precio', showSsl, onSsl, sslPeriod, onSslPeriod)}{row('Tracker', 'Price lines H2 · H1 · L1 · L2', showTracker, onTracker)}{showTracker && <div className="indicator-band-row"><label>Periodo (N velas)<input type="number" min="1" max="50" value={trackerPeriod} onChange={event => onTrackerPeriod(Math.max(1, Math.min(50, Number(event.target.value) || 1)))} /></label><span className="indicator-modal-help">Cada vela fija sus niveles usando las N anteriores</span></div>}{row('Extensiones de mechazo', 'Puntos Long/Short según las mechas contrarias', showWickExtensions, onWickExtensions)}{showWickExtensions && <div className="indicator-band-row"><label>Multiplicador<input type="number" min="0" max="10" step="0.1" value={wickMultiplier} onChange={event => onWickMultiplier(Math.max(0, Math.min(10, Number(event.target.value) || 0)))} /></label><span className="indicator-modal-help">Long: mecha inferior · Short: mecha superior</span></div>}<button className="indicator-modal-done" onClick={onClose}>Listo</button></section></div>;
 }
 
 type BinancePosition = {
@@ -590,6 +590,7 @@ function Workspace() {
   const [rsiLowBand, setRsiLowBand] = useState(() => Number(localStorage.getItem('helloworld-rsi-low-band') ?? 30) || 30);
   const [rsiHighBand, setRsiHighBand] = useState(() => Number(localStorage.getItem('helloworld-rsi-high-band') ?? 70) || 70);
   const [sslPeriod, setSslPeriod] = useState(9);
+  const [trackerPeriod, setTrackerPeriod] = useState(() => Number(localStorage.getItem('helloworld-tracker-period') ?? 5) || 5);
   const [wickMultiplier, setWickMultiplier] = useState(() => Number(localStorage.getItem('helloworld-wick-multiplier') ?? 1.5) || 1.5);
   const [showIndicatorSettings, setShowIndicatorSettings] = useState(false);
   const [indicatorHover, setIndicatorHover] = useState<{ canvas: ChartCanvas; x: number; y: number; label: string } | null>(null);
@@ -674,10 +675,11 @@ function Workspace() {
     localStorage.setItem('helloworld-rsi-low-band', String(rsiLowBand));
     localStorage.setItem('helloworld-rsi-high-band', String(rsiHighBand));
     localStorage.setItem('helloworld-ssl-period', String(sslPeriod));
+    localStorage.setItem('helloworld-tracker-period', String(trackerPeriod));
     localStorage.setItem('helloworld-wick-multiplier', String(wickMultiplier));
     setViewportRevision(value => value + 1);
     setOverviewRevision(value => value + 1);
-  }, [showRsi, showSsl, showTracker, showWickExtensions, showHeikinAshi, rsiPeriod, rsiLowBand, rsiHighBand, sslPeriod, wickMultiplier]);
+  }, [showRsi, showSsl, showTracker, showWickExtensions, showHeikinAshi, rsiPeriod, rsiLowBand, rsiHighBand, sslPeriod, trackerPeriod, wickMultiplier]);
 
   useEffect(() => {
     const syncAssist = () => {
@@ -857,22 +859,21 @@ function Workspace() {
       });
       if (!showTracker) return;
       const sourceBars = canvas === 'entry' ? candleBarsRef.current : overviewBarsRef.current;
-      const trackerWindow = sourceBars.slice(-15);
-      const trackerValues = calculateTrackerLevels(trackerWindow, 5);
+      const trackerWindow = sourceBars.slice(-(trackerPeriod + 1));
+      const trackerValues = calculateTrackerLevels(trackerWindow, trackerPeriod);
       const latest = trackerValues[trackerValues.length - 1];
       if (!latest) return;
       (['h2', 'h1', 'l1', 'l2'] as const).forEach(level => {
-        const colors = { h2: '#f27e7e', h1: '#f59e0b', l1: '#38d996', l2: '#22c55e' };
         const line = series.createPriceLine({
           id: `tracker-${level}-${canvas}`,
           price: latest[level],
-          color: colors[level],
+          color: '#f59e0b',
           lineWidth: 2,
-          lineStyle: 2,
+          lineStyle: 0,
           lineVisible: true,
           axisLabelVisible: true,
           title: level.toUpperCase(),
-          axisLabelColor: colors[level],
+          axisLabelColor: '#f59e0b',
           axisLabelTextColor: '#080a0d',
         });
         nativePriceLinesRef.current.push({ series, line });
@@ -884,7 +885,7 @@ function Workspace() {
       nativePriceLinesRef.current.forEach(({ series, line }) => series.removePriceLine(line));
       nativePriceLinesRef.current = [];
     };
-  }, [drawings, symbol, interval, mobilePwa, visibleClosedId, showTracker, trackerRevision]);
+  }, [drawings, symbol, interval, mobilePwa, visibleClosedId, showTracker, trackerPeriod, trackerRevision]);
 
   useEffect(() => {
     if (!chartStage.current) return;
@@ -1949,7 +1950,7 @@ function Workspace() {
   </div>;
 
   const avatarLabel = (auth.identity?.name ?? auth.identity?.email ?? 'U').slice(0, 1).toUpperCase();
-  const profileButton = <><button className="profile-avatar" onClick={() => setShowProfile(true)} aria-label="Abrir perfil" title="Perfil">{avatarLabel}</button>{showIndicatorSettings && <IndicatorSettingsModal showSessions={showSessions} showRsi={showRsi} showSsl={showSsl} showTracker={showTracker} showWickExtensions={showWickExtensions} rsiPeriod={rsiPeriod} rsiLowBand={rsiLowBand} rsiHighBand={rsiHighBand} sslPeriod={sslPeriod} wickMultiplier={wickMultiplier} onClose={() => setShowIndicatorSettings(false)} onSessions={() => setShowSessions(value => !value)} onRsi={() => setShowRsi(value => !value)} onSsl={() => setShowSsl(value => !value)} onTracker={() => setShowTracker(value => !value)} onWickExtensions={() => setShowWickExtensions(value => !value)} onRsiPeriod={setRsiPeriod} onRsiLowBand={setRsiLowBand} onRsiHighBand={setRsiHighBand} onSslPeriod={setSslPeriod} onWickMultiplier={setWickMultiplier} />}</>;
+  const profileButton = <><button className="profile-avatar" onClick={() => setShowProfile(true)} aria-label="Abrir perfil" title="Perfil">{avatarLabel}</button>{showIndicatorSettings && <IndicatorSettingsModal showSessions={showSessions} showRsi={showRsi} showSsl={showSsl} showTracker={showTracker} showWickExtensions={showWickExtensions} rsiPeriod={rsiPeriod} rsiLowBand={rsiLowBand} rsiHighBand={rsiHighBand} sslPeriod={sslPeriod} trackerPeriod={trackerPeriod} wickMultiplier={wickMultiplier} onClose={() => setShowIndicatorSettings(false)} onSessions={() => setShowSessions(value => !value)} onRsi={() => setShowRsi(value => !value)} onSsl={() => setShowSsl(value => !value)} onTracker={() => setShowTracker(value => !value)} onWickExtensions={() => setShowWickExtensions(value => !value)} onRsiPeriod={setRsiPeriod} onRsiLowBand={setRsiLowBand} onRsiHighBand={setRsiHighBand} onSslPeriod={setSslPeriod} onTrackerPeriod={setTrackerPeriod} onWickMultiplier={setWickMultiplier} />}</>;
   const labButton = <button className="indicator-bar-button" onClick={() => setShowIndicatorSettings(true)} aria-label="Configurar indicadores" title="Indicadores">◌</button>;
   const desktopHeader = <div className="symbol-bar"><select className="broker-select" value={broker} onChange={event => { const next = event.target.value as 'binance' | 'ctrader'; setBroker(next); setSymbol(next === 'ctrader' ? 'AUDUSD' : 'BTCUSDT'); }} aria-label="Broker"><option value="binance">Binance</option><option value="ctrader">cTrader</option></select><select className="symbol-select" value={symbol} onChange={event => setSymbol(event.target.value)} aria-label="Símbolo">
     {selectableSymbols.map(option => <option key={option}>{option}</option>)}
