@@ -12,6 +12,7 @@ const configuredApiUrl = import.meta.env.VITE_API_URL ?? 'http://localhost:8000'
 const apiUrl = configuredApiUrl === '/api' && window.location.hostname === 'dev.helloworld.goodmorning.mx'
   ? 'https://api.dev.helloworld.goodmorning.mx'
   : configuredApiUrl;
+const marketWsUrl = apiUrl.replace(/^http/, 'ws');
 
 // Keep the interactive charts responsive. The Lab keeps its own historical
 // dataset; these limits only control what is rendered in the live canvases.
@@ -46,7 +47,7 @@ function createBinanceKlineStream(symbol: string, interval: string) {
   };
   const connect = () => {
     if (stopped) return;
-    socket = new WebSocket(`wss://fstream.binance.com/ws/${symbol.toLowerCase()}@kline_${interval}`);
+    socket = new WebSocket(`${marketWsUrl}/market/binance/stream/${encodeURIComponent(symbol)}`);
     socket.onopen = () => { delay = 1000; };
     socket.onmessage = event => messageHandler?.(event);
     socket.onerror = () => socket?.close();
@@ -935,11 +936,12 @@ function Workspace() {
     // Futures WebSocket too. Spot streams can silently stop for Futures-only
     // scanner symbols after a symbol switch.
     const stream = createBinanceKlineStream(symbol, entryInterval);
-    fetch(`https://fapi.binance.com/fapi/v1/klines?symbol=${symbol}&interval=${entryInterval}&limit=500`)
+    fetch(`${apiUrl}/market/binance/candles/${encodeURIComponent(symbol)}?interval=${entryInterval}&limit=500`, { headers: auth.accessToken ? { Authorization: `Bearer ${auth.accessToken}` } : {}, credentials: 'include' })
       .then(response => response.json())
-      .then(rows => {
+      .then(payload => {
+        const rows = (payload as { bars?: Array<{ time: number; open: number; high: number; low: number; close: number }> }).bars;
         if (!active || !Array.isArray(rows)) return;
-        const parsed = rows.map(row => ({ time: Math.floor(Number(row[0]) / 1000) as UTCTimestamp, open: Number(row[1]), high: Number(row[2]), low: Number(row[3]), close: Number(row[4]) }));
+        const parsed = rows.map(row => ({ time: Number(row.time) as UTCTimestamp, open: Number(row.open), high: Number(row.high), low: Number(row.low), close: Number(row.close) }));
         candleBarsRef.current = parsed;
         void cacheBars(symbol, entryInterval, parsed);
         candleDataRef.current = parsed.map(({ time, close }) => ({ time, close }));
@@ -951,8 +953,10 @@ function Workspace() {
       .catch(() => undefined);
     stream.onmessage = event => {
       if (!active) return;
-      const candle = JSON.parse(event.data).k;
-      const next = { time: Math.floor(candle.t / 1000) as UTCTimestamp, open: Number(candle.o), high: Number(candle.h), low: Number(candle.l), close: Number(candle.c) };
+      const message = JSON.parse(event.data) as { type?: string; interval?: string; bar?: { time: number; open: number; high: number; low: number; close: number } };
+      if (message.type !== 'kline' || message.interval !== entryInterval || !message.bar) return;
+      const candle = message.bar;
+      const next = { time: Number(candle.time) as UTCTimestamp, open: Number(candle.open), high: Number(candle.high), low: Number(candle.low), close: Number(candle.close) };
       candleBarsRef.current = [...candleBarsRef.current.filter(value => value.time !== next.time), next].sort((left, right) => Number(left.time) - Number(right.time));
       void cacheBars(symbol, entryInterval, [next]);
       candleDataRef.current = candleBarsRef.current.map(({ time, close }) => ({ time, close }));
@@ -1110,11 +1114,13 @@ function Workspace() {
       return () => { active = false; window.clearInterval(candleTimer); window.clearInterval(tickTimer); chart.timeScale().unsubscribeVisibleTimeRangeChange(refreshOverview); chart.timeScale().unsubscribeVisibleLogicalRangeChange(refreshOverview); overviewChartRef.current = null; overviewCandlesRef.current = null; overviewCandleDataRef.current = []; overviewBarsRef.current = []; overviewLoadingOlderRef.current = false; chart.remove(); };
     }
     const stream = createBinanceKlineStream(symbol, interval);
-    fetch(`https://fapi.binance.com/fapi/v1/klines?symbol=${symbol}&interval=${interval}&limit=300`)
+    const gatewayInterval = interval === '1s' ? '1m' : interval;
+    fetch(`${apiUrl}/market/binance/candles/${encodeURIComponent(symbol)}?interval=${gatewayInterval}&limit=300`, { headers: auth.accessToken ? { Authorization: `Bearer ${auth.accessToken}` } : {}, credentials: 'include' })
       .then(response => response.json())
-      .then(rows => {
+      .then(payload => {
+        const rows = (payload as { bars?: Array<{ time: number; open: number; high: number; low: number; close: number }> }).bars;
         if (!active || !Array.isArray(rows)) return;
-        const parsed = rows.map(row => ({ time: Math.floor(Number(row[0]) / 1000) as UTCTimestamp, open: Number(row[1]), high: Number(row[2]), low: Number(row[3]), close: Number(row[4]) }));
+        const parsed = rows.map(row => ({ time: Number(row.time) as UTCTimestamp, open: Number(row.open), high: Number(row.high), low: Number(row.low), close: Number(row.close) }));
         overviewBarsRef.current = parsed;
         void cacheBars(symbol, interval, parsed);
         overviewCandleDataRef.current = parsed.map(({ time, close }) => ({ time, close }));
@@ -1124,8 +1130,10 @@ function Workspace() {
       }).catch(() => undefined);
     stream.onmessage = event => {
       if (!active) return;
-      const candle = JSON.parse(event.data).k;
-      const next = { time: Math.floor(candle.t / 1000) as UTCTimestamp, open: Number(candle.o), high: Number(candle.h), low: Number(candle.l), close: Number(candle.c) };
+      const message = JSON.parse(event.data) as { type?: string; interval?: string; bar?: { time: number; open: number; high: number; low: number; close: number } };
+      if (message.type !== 'kline' || message.interval !== gatewayInterval || !message.bar) return;
+      const candle = message.bar;
+      const next = { time: Number(candle.time) as UTCTimestamp, open: Number(candle.open), high: Number(candle.high), low: Number(candle.low), close: Number(candle.close) };
       overviewBarsRef.current = [...overviewBarsRef.current.filter(value => value.time !== next.time), next].sort((left, right) => Number(left.time) - Number(right.time));
       void cacheBars(symbol, interval, [next]);
       overviewCandleDataRef.current = [...overviewCandleDataRef.current.filter(value => value.time !== next.time), { time: next.time, close: next.close }];

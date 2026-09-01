@@ -5,7 +5,7 @@ import math
 from uuid import uuid4
 from urllib.parse import urlencode
 
-from fastapi import Depends, FastAPI, HTTPException
+from fastapi import Depends, FastAPI, HTTPException, WebSocket
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 from typing import Literal
@@ -25,6 +25,7 @@ from app.binance_account import BinanceAccountMonitor
 from app.ctrader_credentials import CTraderCredentialStore
 from app.ctrader_runtime import CTraderManager
 from app.paper_operations import PaperOperationStore
+from app.market_gateway import BinanceMarketGateway, SUPPORTED_INTERVALS
 
 settings = get_settings()
 engine = create_database_engine()
@@ -40,6 +41,7 @@ binance_manager = BinanceMonitorManager(binance_credentials, settings)
 ctrader_credentials = CTraderCredentialStore(engine, settings)
 ctrader_manager = CTraderManager(settings, ctrader_credentials)
 paper_operation_store = PaperOperationStore(engine)
+binance_market_gateway = BinanceMarketGateway()
 
 
 class FallbackProvider:
@@ -204,6 +206,11 @@ def initialize_auth_schema() -> None:
 def stop_binance_monitor() -> None:
     binance_manager.stop_all()
     ctrader_manager.stop_all()
+
+
+@app.on_event("shutdown")
+async def stop_market_gateway() -> None:
+    await binance_market_gateway.close()
 
 
 @app.post("/auth/register")
@@ -405,6 +412,47 @@ def binance_active_symbols(
         "leverage_source": leverage_source,
         "symbols": ranked[:limit],
     }
+
+
+@app.get("/market/binance/candles/{symbol}")
+async def binance_candles(
+    symbol: str,
+    interval: Literal["1m", "3m", "5m", "15m"] = "1m",
+    limit: int = 500,
+    identity: AuthIdentity = Depends(identity_dependency(auth_service)),
+) -> dict[str, object]:
+    """Serve historical candles and warm the same cache used by realtime."""
+    del identity
+    requested = symbol.upper()
+    limit = max(1, min(limit, 1500))
+    try:
+        async with httpx.AsyncClient(timeout=15) as client:
+            response = await client.get(
+                f"https://fapi.binance.com/fapi/v1/klines?symbol={requested}&interval={interval}&limit={limit}"
+            )
+            response.raise_for_status()
+            payload = response.json()
+    except (httpx.HTTPError, ValueError) as exc:
+        raise HTTPException(status_code=502, detail="No se pudieron cargar las velas de Binance Futures.") from exc
+    bars: list[dict[str, object]] = []
+    for row in payload if isinstance(payload, list) else []:
+        if not isinstance(row, list) or len(row) < 5:
+            continue
+        try:
+            bars.append({
+                "time": int(float(row[0]) / 1000),
+                "open": float(row[1]), "high": float(row[2]),
+                "low": float(row[3]), "close": float(row[4]), "closed": True,
+            })
+        except (TypeError, ValueError):
+            continue
+    binance_market_gateway.put_bars(requested, interval, bars)
+    return {"symbol": requested, "interval": interval, "bars": bars}
+
+
+@app.websocket("/market/binance/stream/{symbol}")
+async def binance_market_stream(websocket: WebSocket, symbol: str) -> None:
+    await binance_market_gateway.subscribe(symbol, websocket)
 
 
 @app.get("/market/binance/symbol-info/{symbol}")
