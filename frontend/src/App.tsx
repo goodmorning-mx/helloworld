@@ -899,7 +899,10 @@ function Workspace() {
       void pollTick();
       return () => { active = false; window.clearInterval(candleTimer); window.clearInterval(tickTimer); chart.timeScale().unsubscribeVisibleTimeRangeChange(refreshDrawings); chart.timeScale().unsubscribeVisibleLogicalRangeChange(refreshDrawings); chartRef.current = null; candlesRef.current = null; candleDataRef.current = []; candleBarsRef.current = []; loadingOlderRef.current = false; chart.remove(); };
     }
-    const stream = new WebSocket(`wss://stream.binance.com:9443/ws/${symbol.toLowerCase()}@kline_${entryInterval}`);
+    // The chart/history uses Binance Futures, so the live stream must use the
+    // Futures WebSocket too. Spot streams can silently stop for Futures-only
+    // scanner symbols after a symbol switch.
+    const stream = new WebSocket(`wss://fstream.binance.com/ws/${symbol.toLowerCase()}@kline_${entryInterval}`);
     fetch(`https://fapi.binance.com/fapi/v1/klines?symbol=${symbol}&interval=${entryInterval}&limit=500`)
       .then(response => response.json())
       .then(rows => {
@@ -1074,7 +1077,7 @@ function Workspace() {
       void pollTick();
       return () => { active = false; window.clearInterval(candleTimer); window.clearInterval(tickTimer); chart.timeScale().unsubscribeVisibleTimeRangeChange(refreshOverview); chart.timeScale().unsubscribeVisibleLogicalRangeChange(refreshOverview); overviewChartRef.current = null; overviewCandlesRef.current = null; overviewCandleDataRef.current = []; overviewBarsRef.current = []; overviewLoadingOlderRef.current = false; chart.remove(); };
     }
-    const stream = new WebSocket(`wss://stream.binance.com:9443/ws/${symbol.toLowerCase()}@kline_${interval}`);
+    const stream = new WebSocket(`wss://fstream.binance.com/ws/${symbol.toLowerCase()}@kline_${interval}`);
     fetch(`https://fapi.binance.com/fapi/v1/klines?symbol=${symbol}&interval=${interval}&limit=300`)
       .then(response => response.json())
       .then(rows => {
