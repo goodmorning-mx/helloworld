@@ -597,6 +597,7 @@ function Workspace() {
   const [tool, setTool] = useState<'line' | 'ruler' | 'long' | 'short' | 'zoom' | null>(null);
   const [viewportRevision, setViewportRevision] = useState(0);
   const [overviewRevision, setOverviewRevision] = useState(0);
+  const [trackerRevision, setTrackerRevision] = useState(0);
   const viewportRefreshPendingRef = useRef(false);
   const overviewRefreshPendingRef = useRef(false);
   const lastPaperVisualUpdateRef = useRef(0);
@@ -813,6 +814,7 @@ function Workspace() {
   }, [drawings, auth.accessToken, paperReady, symbol]);
 
   useEffect(() => {
+    void trackerRevision;
     nativePriceLinesRef.current.forEach(({ series, line }) => series.removePriceLine(line));
     nativePriceLinesRef.current = [];
     const addLines = (canvas: ChartCanvas, series: ReturnType<ReturnType<typeof createChart>['addSeries']> | null) => {
@@ -851,6 +853,28 @@ function Workspace() {
         });
         nativePriceLinesRef.current.push({ series, line: targetLine }, { series, line: stopLine });
       });
+      if (!showWickExtensions) return;
+      const sourceBars = canvas === 'entry' ? candleBarsRef.current : overviewBarsRef.current;
+      const trackerWindow = sourceBars.slice(-15);
+      const trackerValues = calculateTrackerLevels(trackerWindow, 5);
+      const latest = trackerValues[trackerValues.length - 1];
+      if (!latest) return;
+      (['h2', 'h1', 'l1', 'l2'] as const).forEach(level => {
+        const colors = { h2: '#f27e7e', h1: '#f59e0b', l1: '#38d996', l2: '#22c55e' };
+        const line = series.createPriceLine({
+          id: `tracker-${level}-${canvas}`,
+          price: latest[level],
+          color: colors[level],
+          lineWidth: 2,
+          lineStyle: 2,
+          lineVisible: true,
+          axisLabelVisible: true,
+          title: level.toUpperCase(),
+          axisLabelColor: colors[level],
+          axisLabelTextColor: '#080a0d',
+        });
+        nativePriceLinesRef.current.push({ series, line });
+      });
     };
     addLines('entry', candlesRef.current);
     if (!mobilePwa) addLines('context', overviewCandlesRef.current);
@@ -858,7 +882,7 @@ function Workspace() {
       nativePriceLinesRef.current.forEach(({ series, line }) => series.removePriceLine(line));
       nativePriceLinesRef.current = [];
     };
-  }, [drawings, symbol, interval, mobilePwa, visibleClosedId]);
+  }, [drawings, symbol, interval, mobilePwa, visibleClosedId, showWickExtensions, trackerRevision]);
 
   useEffect(() => {
     if (!chartStage.current) return;
@@ -952,6 +976,7 @@ function Workspace() {
           candles.setData(showHeikinAshi ? calculateHeikinAshi(visibleBars) : visibleBars);
           if (!polling) chart.timeScale().setVisibleLogicalRange({ from: Math.max(0, visibleBars.length - INITIAL_ENTRY_BARS), to: visibleBars.length - 1 });
           polling += 1;
+          setTrackerRevision(value => value + 1);
           if (polling === 1) setViewportRevision(value => value + 1);
         })
         .catch(() => undefined);
@@ -960,6 +985,7 @@ function Workspace() {
         .then(response => response.ok ? response.json() as Promise<{ tick?: { price?: number; time?: number } }> : Promise.reject(new Error('tick unavailable')))
         .then(payload => {
           if (!active || !payload.tick?.price || !payload.tick.time) return;
+          const previousBarTime = candleBarsRef.current[candleBarsRef.current.length - 1]?.time;
           candleBarsRef.current = mergeTickBar(candleBarsRef.current, Number(payload.tick.time), Number(payload.tick.price), 60);
           const liveBar = candleBarsRef.current[candleBarsRef.current.length - 1];
           const lastCandleData = candleDataRef.current[candleDataRef.current.length - 1];
@@ -968,6 +994,7 @@ function Workspace() {
           if (showHeikinAshi) candles.setData(calculateHeikinAshi(renderBars(candleBarsRef.current, MAX_ENTRY_RENDER_BARS)));
           else candles.update(liveBar);
           scheduleViewportRefresh();
+          if (candleBarsRef.current[candleBarsRef.current.length - 1]?.time !== previousBarTime) setTrackerRevision(value => value + 1);
         }).catch(() => undefined);
       const candleTimer = window.setInterval(() => void loadCTrader(), 30_000);
       const tickTimer = window.setInterval(pollTick, 1_000);
@@ -990,6 +1017,7 @@ function Workspace() {
         const visibleBars = renderBars(parsed, MAX_ENTRY_RENDER_BARS);
         candles.setData(showHeikinAshi ? calculateHeikinAshi(visibleBars) : visibleBars);
         chart.timeScale().setVisibleLogicalRange({ from: Math.max(0, parsed.length - INITIAL_ENTRY_BARS), to: parsed.length - 1 });
+        setTrackerRevision(value => value + 1);
         setViewportRevision(value => value + 1);
       })
       .catch(() => undefined);
@@ -1011,6 +1039,7 @@ function Workspace() {
       scheduleViewportRefresh();
       // PNL and paper labels remain responsive, but do not force a React tree
       // reconciliation for every upstream kline update.
+      if (isNewBar) setTrackerRevision(value => value + 1);
       const now = performance.now();
       if (now - lastPaperVisualUpdateRef.current < 250 && !isNewBar) return;
       lastPaperVisualUpdateRef.current = now;
@@ -1142,6 +1171,7 @@ function Workspace() {
           candles.setData(showHeikinAshi ? calculateHeikinAshi(visibleBars) : visibleBars);
           if (!polling) chart.timeScale().setVisibleLogicalRange({ from: Math.max(0, visibleBars.length - INITIAL_CONTEXT_BARS), to: visibleBars.length - 1 });
           polling += 1;
+          setTrackerRevision(value => value + 1);
           if (polling === 1) setOverviewRevision(value => value + 1);
         })
         .catch(() => undefined);
@@ -1150,6 +1180,7 @@ function Workspace() {
         .then(response => response.ok ? response.json() as Promise<{ tick?: { price?: number; time?: number } }> : Promise.reject(new Error('tick unavailable')))
         .then(payload => {
           if (!active || !payload.tick?.price || !payload.tick.time) return;
+          const previousBarTime = overviewBarsRef.current[overviewBarsRef.current.length - 1]?.time;
           overviewBarsRef.current = mergeTickBar(overviewBarsRef.current, Number(payload.tick.time), Number(payload.tick.price), interval === '1s' ? 60 : interval === '1m' ? 60 : interval === '3m' ? 180 : interval === '5m' ? 300 : 900);
           const liveBar = overviewBarsRef.current[overviewBarsRef.current.length - 1];
           const lastCandleData = overviewCandleDataRef.current[overviewCandleDataRef.current.length - 1];
@@ -1158,6 +1189,7 @@ function Workspace() {
           if (showHeikinAshi) candles.setData(calculateHeikinAshi(renderBars(overviewBarsRef.current, MAX_CONTEXT_RENDER_BARS)));
           else candles.update(liveBar);
           scheduleOverviewRefresh();
+          if (overviewBarsRef.current[overviewBarsRef.current.length - 1]?.time !== previousBarTime) setTrackerRevision(value => value + 1);
         }).catch(() => undefined);
       const candleTimer = window.setInterval(() => void loadCTrader(), 30_000);
       const tickTimer = window.setInterval(pollTick, 1_000);
@@ -1178,6 +1210,7 @@ function Workspace() {
         const visibleBars = renderBars(parsed, MAX_CONTEXT_RENDER_BARS);
         candles.setData(showHeikinAshi ? calculateHeikinAshi(visibleBars) : visibleBars);
         chart.timeScale().setVisibleLogicalRange({ from: Math.max(0, parsed.length - INITIAL_CONTEXT_BARS), to: parsed.length - 1 });
+        setTrackerRevision(value => value + 1);
       }).catch(() => undefined);
     stream.onmessage = event => {
       if (!active) return;
@@ -1193,6 +1226,7 @@ function Workspace() {
       if (showHeikinAshi) candles.setData(calculateHeikinAshi(renderBars(overviewBarsRef.current, MAX_CONTEXT_RENDER_BARS)));
       else candles.update(next);
       scheduleOverviewRefresh();
+      if (isNewBar) setTrackerRevision(value => value + 1);
     };
     return () => { active = false; stream.close(); chart.timeScale().unsubscribeVisibleTimeRangeChange(refreshOverview); chart.timeScale().unsubscribeVisibleLogicalRangeChange(refreshOverview); overviewChartRef.current = null; overviewCandlesRef.current = null; overviewCandleDataRef.current = []; overviewBarsRef.current = []; overviewLoadingOlderRef.current = false; chart.remove(); };
   }, [auth.accessToken, binanceRules, broker, symbol, interval, timezone, mobilePwa, showHeikinAshi]);
@@ -1366,10 +1400,6 @@ function Workspace() {
     const wickBars = bars.slice(wickStart);
     const wickExtensions = showWickExtensions ? calculateWickExtensions(wickBars, wickLookback, wickMultiplier) : { long: [], short: [] };
     const wickVisibleStart = Math.max(0, bars.length - MAX_WICK_EXTENSION_BARS);
-    const trackerLookback = 5;
-    const trackerStart = Math.max(0, bars.length - (MAX_WICK_EXTENSION_BARS + trackerLookback));
-    const trackerBars = bars.slice(trackerStart);
-    const trackerLevels = showWickExtensions ? calculateTrackerLevels(trackerBars, trackerLookback) : [];
     const toPoint = (value: number | null, index: number) => {
       if (value === null || value === undefined) return null;
       const x = chart.timeScale().timeToCoordinate(bars[index].time);
@@ -1403,15 +1433,8 @@ function Workspace() {
         {shortPoint && <circle cx={shortPoint.x} cy={shortPoint.y} r="4.5" className="wick-extension-marker wick-extension-short" pointerEvents="all" onPointerEnter={() => setIndicatorHover({ canvas, x: shortPoint.x, y: shortPoint.y, label: `Short ${wickMultiplier.toFixed(1)}x · ${timeLabel}` })} onPointerLeave={() => setIndicatorHover(null)}><title>Short: extensión favorable {wickMultiplier.toFixed(1)}x</title></circle>}
       </g>;
     });
-    const latestTracker = trackerLevels[trackerLevels.length - 1];
-    const trackerLabel = (key: 'h2' | 'h1' | 'l1' | 'l2', label: string, color: string) => {
-      if (!latestTracker) return null;
-      const point = toPoint(latestTracker[key], bars.length - 1);
-      return point ? <text x={Math.max(4, width - 62)} y={point.y - 5} fill={color} className="tracker-level-label">{label}</text> : null;
-    };
     return <g className={`price-indicators price-indicators-${canvas}`}>
       {showSsl && <><path d={path(ssl.up)} className="ssl-channel ssl-channel-up" /><path d={path(ssl.down)} className="ssl-channel ssl-channel-down" /></>}
-      {showWickExtensions && <g className="tracker-level-labels" aria-label="Tracker"><title>Tracker H2 H1 L1 L2</title>{trackerLabel('h2', 'H2', '#f27e7e')}{trackerLabel('h1', 'H1', '#f59e0b')}{trackerLabel('l1', 'L1', '#38d996')}{trackerLabel('l2', 'L2', '#22c55e')}</g>}
       {showRsi && <g className="rsi-markers">{rsiMarkers}</g>}
       {showWickExtensions && <g className="wick-extension-layer">{wickMarkers}</g>}
       {indicatorHover?.canvas === canvas && <g className="indicator-hover-label" pointerEvents="none"><rect x={Math.max(4, Math.min(width - 160, indicatorHover.x + 10))} y={Math.max(8, Math.min(height - 32, indicatorHover.y - 28))} width="150" height="24" rx="4" /><text x={Math.max(14, Math.min(width - 150, indicatorHover.x + 20))} y={Math.max(24, Math.min(height - 16, indicatorHover.y - 12))}>{indicatorHover.label}</text></g>}
