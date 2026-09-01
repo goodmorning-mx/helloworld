@@ -1403,16 +1403,6 @@ function Workspace() {
         {shortPoint && <circle cx={shortPoint.x} cy={shortPoint.y} r="4.5" className="wick-extension-marker wick-extension-short" pointerEvents="all" onPointerEnter={() => setIndicatorHover({ canvas, x: shortPoint.x, y: shortPoint.y, label: `Short ${wickMultiplier.toFixed(1)}x · ${timeLabel}` })} onPointerLeave={() => setIndicatorHover(null)}><title>Short: extensión favorable {wickMultiplier.toFixed(1)}x</title></circle>}
       </g>;
     });
-    const trackerVisibleStart = Math.max(trackerLookback, trackerBars.length - MAX_WICK_EXTENSION_BARS);
-    const trackerPath = (key: 'h2' | 'h1' | 'l1' | 'l2') => trackerLevels.slice(trackerVisibleStart).map((levels, visibleIndex) => {
-      if (!levels) return '';
-      const localIndex = trackerVisibleStart + visibleIndex;
-      const index = trackerStart + localIndex;
-      const nextIndex = Math.min(bars.length - 1, index + 1);
-      const from = toPoint(levels[key], index);
-      const to = toPoint(levels[key], nextIndex);
-      return from && to ? `M ${from.x} ${from.y} L ${to.x} ${to.y}` : '';
-    }).filter(Boolean).join(' ');
     const latestTracker = trackerLevels[trackerLevels.length - 1];
     const trackerLabel = (key: 'h2' | 'h1' | 'l1' | 'l2', label: string, color: string) => {
       if (!latestTracker) return null;
@@ -1421,7 +1411,7 @@ function Workspace() {
     };
     return <g className={`price-indicators price-indicators-${canvas}`}>
       {showSsl && <><path d={path(ssl.up)} className="ssl-channel ssl-channel-up" /><path d={path(ssl.down)} className="ssl-channel ssl-channel-down" /></>}
-      {showWickExtensions && <g className="tracker-levels" aria-label="Tracker"><path d={trackerPath('h2')} className="tracker-level tracker-h2" /><path d={trackerPath('h1')} className="tracker-level tracker-h1" /><path d={trackerPath('l1')} className="tracker-level tracker-l1" /><path d={trackerPath('l2')} className="tracker-level tracker-l2" />{trackerLabel('h2', 'H2', '#f27e7e')}{trackerLabel('h1', 'H1', '#f59e0b')}{trackerLabel('l1', 'L1', '#38d996')}{trackerLabel('l2', 'L2', '#22c55e')}</g>}
+      {showWickExtensions && <g className="tracker-level-labels" aria-label="Tracker"><title>Tracker H2 H1 L1 L2</title>{trackerLabel('h2', 'H2', '#f27e7e')}{trackerLabel('h1', 'H1', '#f59e0b')}{trackerLabel('l1', 'L1', '#38d996')}{trackerLabel('l2', 'L2', '#22c55e')}</g>}
       {showRsi && <g className="rsi-markers">{rsiMarkers}</g>}
       {showWickExtensions && <g className="wick-extension-layer">{wickMarkers}</g>}
       {indicatorHover?.canvas === canvas && <g className="indicator-hover-label" pointerEvents="none"><rect x={Math.max(4, Math.min(width - 160, indicatorHover.x + 10))} y={Math.max(8, Math.min(height - 32, indicatorHover.y - 28))} width="150" height="24" rx="4" /><text x={Math.max(14, Math.min(width - 150, indicatorHover.x + 20))} y={Math.max(24, Math.min(height - 16, indicatorHover.y - 12))}>{indicatorHover.label}</text></g>}
