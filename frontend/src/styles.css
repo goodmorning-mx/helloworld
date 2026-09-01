@@ -82,6 +82,12 @@
 .session-line { stroke-width: 2.5; stroke-dasharray: 5 4; opacity: .7; }
 .session-label { font: 20px 'DM Mono', monospace; opacity: .95; }
 .ny-interest-marker { fill: #22d3ee; stroke: #e0f2fe; stroke-width: 2; }
+.tracker-level { fill: none; stroke-width: 2; vector-effect: non-scaling-stroke; stroke-linecap: butt; opacity: .8; stroke-dasharray: 5 4; }
+.tracker-h2 { stroke: #f27e7e; }
+.tracker-h1 { stroke: #f59e0b; }
+.tracker-l1 { stroke: #38d996; }
+.tracker-l2 { stroke: #22c55e; }
+.tracker-level-label { font: 11px 'DM Mono', monospace; font-weight: 700; paint-order: stroke; stroke: #080a0d; stroke-width: 3px; }
 .drawing-selected .drawing-line { stroke-width: 3; filter: drop-shadow(0 0 4px #f5b84b); }
 .drawing-selected .measurement-box { stroke-width: 3; filter: drop-shadow(0 0 7px #60a5fa) drop-shadow(0 0 3px #fff); }.selection-lasso { fill: #60a5fa22; stroke: #60a5fa; stroke-width: 1.5; stroke-dasharray: 6 4; pointer-events: none; }
 .drawing-selected .position-profit, .drawing-selected .position-risk { stroke-width: 2; }

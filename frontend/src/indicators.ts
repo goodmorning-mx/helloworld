@@ -86,3 +86,26 @@ export function calculateWickExtensions(bars: OhlcBar[], lookback = 10, multipli
 
   return { long, short };
 }
+
+/**
+ * Calculates the four fixed tracker levels used by the legacy Dash strategy.
+ * Each row only inspects the N candles immediately before it, so once a row
+ * exists its levels do not change when later candles arrive.
+ *
+ * H2/L2 are the wick extremes and H1/L1 are the body extremes.
+ */
+export type TrackerLevel = { h2: number; h1: number; l1: number; l2: number };
+export function calculateTrackerLevels(bars: OhlcBar[], lookback = 5): Array<TrackerLevel | null> {
+  const length = Math.max(1, Math.round(lookback));
+  const levels: Array<TrackerLevel | null> = Array.from({ length: bars.length }, () => null);
+  for (let index = length; index < bars.length; index += 1) {
+    const window = bars.slice(index - length, index);
+    levels[index] = {
+      h2: Math.max(...window.map(bar => bar.high)),
+      h1: Math.max(...window.map(bar => Math.max(bar.open, bar.close))),
+      l1: Math.min(...window.map(bar => Math.min(bar.open, bar.close))),
+      l2: Math.min(...window.map(bar => bar.low)),
+    };
+  }
+  return levels;
+}
