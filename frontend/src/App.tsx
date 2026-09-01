@@ -34,6 +34,22 @@ function mergeTickBar(bars: Array<{ time: UTCTimestamp; open: number; high: numb
   return [...bars, { time: bucket, open: price, high: price, low: price, close: price }];
 }
 
+type LiveBar = { time: UTCTimestamp; open: number; high: number; low: number; close: number };
+function upsertLiveBar(bars: LiveBar[], next: LiveBar) {
+  const last = bars[bars.length - 1];
+  if (!last || next.time > last.time) {
+    bars.push(next);
+    return true;
+  }
+  if (last.time === next.time) {
+    bars[bars.length - 1] = next;
+    return false;
+  }
+  const index = bars.findIndex(bar => bar.time === next.time);
+  if (index >= 0) bars[index] = next;
+  return false;
+}
+
 function createBinanceKlineStream(symbol: string, interval: string) {
   let socket: WebSocket | null = null;
   let reconnectTimer: number | null = null;
@@ -578,6 +594,25 @@ function Workspace() {
   const [tool, setTool] = useState<'line' | 'ruler' | 'long' | 'short' | 'zoom' | null>(null);
   const [viewportRevision, setViewportRevision] = useState(0);
   const [overviewRevision, setOverviewRevision] = useState(0);
+  const viewportRefreshPendingRef = useRef(false);
+  const overviewRefreshPendingRef = useRef(false);
+  const lastPaperVisualUpdateRef = useRef(0);
+  const scheduleViewportRefresh = () => {
+    if (viewportRefreshPendingRef.current) return;
+    viewportRefreshPendingRef.current = true;
+    requestAnimationFrame(() => {
+      viewportRefreshPendingRef.current = false;
+      setViewportRevision(value => value + 1);
+    });
+  };
+  const scheduleOverviewRefresh = () => {
+    if (overviewRefreshPendingRef.current) return;
+    overviewRefreshPendingRef.current = true;
+    requestAnimationFrame(() => {
+      overviewRefreshPendingRef.current = false;
+      setOverviewRevision(value => value + 1);
+    });
+  };
   type ChartPoint = { time: UTCTimestamp; price: number };
   type ChartCanvas = 'entry' | 'context';
   type Drawing = { id?: string; symbol?: string; type: 'line' | 'ruler' | 'long' | 'short' | 'zoom'; start: ChartPoint; end: ChartPoint; stop?: ChartPoint; target?: ChartPoint; chart?: ChartCanvas; paper?: boolean; closed?: boolean; closeReason?: 'TP' | 'SL' | 'MANUAL'; status?: 'OPEN' | 'CLOSED - WIN' | 'CLOSED - FAILED'; riskPercent?: number; quantity?: number; notional?: number; margin?: number; pnl?: number };
@@ -924,12 +959,13 @@ function Workspace() {
           if (!active || !payload.tick?.price || !payload.tick.time) return;
           const previousBarTime = candleBarsRef.current[candleBarsRef.current.length - 1]?.time;
           candleBarsRef.current = mergeTickBar(candleBarsRef.current, Number(payload.tick.time), Number(payload.tick.price), 60);
-          candleDataRef.current = candleBarsRef.current.map(({ time, close }) => ({ time, close }));
-          const visibleBars = renderBars(candleBarsRef.current, MAX_ENTRY_RENDER_BARS);
-          const displayBars = showHeikinAshi ? calculateHeikinAshi(visibleBars) : visibleBars;
-          if (!displayBars.length) return;
-          candles.update(displayBars[displayBars.length - 1]);
-          if (candleBarsRef.current[candleBarsRef.current.length - 1]?.time !== previousBarTime) setViewportRevision(value => value + 1);
+          const liveBar = candleBarsRef.current[candleBarsRef.current.length - 1];
+          const lastCandleData = candleDataRef.current[candleDataRef.current.length - 1];
+          if (lastCandleData?.time === liveBar.time) lastCandleData.close = liveBar.close;
+          else candleDataRef.current.push({ time: liveBar.time, close: liveBar.close });
+          if (showHeikinAshi) candles.setData(calculateHeikinAshi(renderBars(candleBarsRef.current, MAX_ENTRY_RENDER_BARS)));
+          else candles.update(liveBar);
+          if (candleBarsRef.current[candleBarsRef.current.length - 1]?.time !== previousBarTime) scheduleViewportRefresh();
         }).catch(() => undefined);
       const candleTimer = window.setInterval(() => void loadCTrader(), 30_000);
       const tickTimer = window.setInterval(pollTick, 1_000);
@@ -961,11 +997,18 @@ function Workspace() {
       if (message.type !== 'kline' || message.interval !== entryInterval || !message.bar) return;
       const candle = message.bar;
       const next = { time: Number(candle.time) as UTCTimestamp, open: Number(candle.open), high: Number(candle.high), low: Number(candle.low), close: Number(candle.close) };
-      candleBarsRef.current = [...candleBarsRef.current.filter(value => value.time !== next.time), next].sort((left, right) => Number(left.time) - Number(right.time));
+      const isNewBar = upsertLiveBar(candleBarsRef.current, next);
       void cacheBars(symbol, entryInterval, [next]);
-      candleDataRef.current = candleBarsRef.current.map(({ time, close }) => ({ time, close }));
-      const visibleBars = renderBars(candleBarsRef.current, MAX_ENTRY_RENDER_BARS);
-      candles.setData(showHeikinAshi ? calculateHeikinAshi(visibleBars) : visibleBars);
+      const lastCandleData = candleDataRef.current[candleDataRef.current.length - 1];
+      if (lastCandleData?.time === next.time) lastCandleData.close = next.close;
+      else if (isNewBar) candleDataRef.current.push({ time: next.time, close: next.close });
+      if (showHeikinAshi) candles.setData(calculateHeikinAshi(renderBars(candleBarsRef.current, MAX_ENTRY_RENDER_BARS)));
+      else candles.update(next);
+      // PNL and paper labels remain responsive, but do not force a React tree
+      // reconciliation for every upstream kline update.
+      const now = performance.now();
+      if (now - lastPaperVisualUpdateRef.current < 250 && !isNewBar) return;
+      lastPaperVisualUpdateRef.current = now;
       setDrawings(current => {
         let anyOpen = false;
         const updated = current.map(drawing => {
@@ -1013,7 +1056,7 @@ function Workspace() {
         }
         return updated;
       });
-      setViewportRevision(value => value + 1);
+      if (isNewBar) scheduleViewportRefresh();
     };
     return () => {
       active = false;
@@ -1105,12 +1148,13 @@ function Workspace() {
           if (!active || !payload.tick?.price || !payload.tick.time) return;
           const previousBarTime = overviewBarsRef.current[overviewBarsRef.current.length - 1]?.time;
           overviewBarsRef.current = mergeTickBar(overviewBarsRef.current, Number(payload.tick.time), Number(payload.tick.price), interval === '1s' ? 60 : interval === '1m' ? 60 : interval === '3m' ? 180 : interval === '5m' ? 300 : 900);
-          overviewCandleDataRef.current = overviewBarsRef.current.map(({ time, close }) => ({ time, close }));
-          const visibleBars = renderBars(overviewBarsRef.current, MAX_CONTEXT_RENDER_BARS);
-          const displayBars = showHeikinAshi ? calculateHeikinAshi(visibleBars) : visibleBars;
-          if (!displayBars.length) return;
-          candles.update(displayBars[displayBars.length - 1]);
-          if (overviewBarsRef.current[overviewBarsRef.current.length - 1]?.time !== previousBarTime) setOverviewRevision(value => value + 1);
+          const liveBar = overviewBarsRef.current[overviewBarsRef.current.length - 1];
+          const lastCandleData = overviewCandleDataRef.current[overviewCandleDataRef.current.length - 1];
+          if (lastCandleData?.time === liveBar.time) lastCandleData.close = liveBar.close;
+          else overviewCandleDataRef.current.push({ time: liveBar.time, close: liveBar.close });
+          if (showHeikinAshi) candles.setData(calculateHeikinAshi(renderBars(overviewBarsRef.current, MAX_CONTEXT_RENDER_BARS)));
+          else candles.update(liveBar);
+          if (overviewBarsRef.current[overviewBarsRef.current.length - 1]?.time !== previousBarTime) scheduleOverviewRefresh();
         }).catch(() => undefined);
       const candleTimer = window.setInterval(() => void loadCTrader(), 30_000);
       const tickTimer = window.setInterval(pollTick, 1_000);
@@ -1138,11 +1182,13 @@ function Workspace() {
       if (message.type !== 'kline' || message.interval !== gatewayInterval || !message.bar) return;
       const candle = message.bar;
       const next = { time: Number(candle.time) as UTCTimestamp, open: Number(candle.open), high: Number(candle.high), low: Number(candle.low), close: Number(candle.close) };
-      overviewBarsRef.current = [...overviewBarsRef.current.filter(value => value.time !== next.time), next].sort((left, right) => Number(left.time) - Number(right.time));
+      const isNewBar = upsertLiveBar(overviewBarsRef.current, next);
       void cacheBars(symbol, interval, [next]);
-      overviewCandleDataRef.current = [...overviewCandleDataRef.current.filter(value => value.time !== next.time), { time: next.time, close: next.close }];
-      const visibleBars = renderBars(overviewBarsRef.current, MAX_CONTEXT_RENDER_BARS);
-      candles.setData(showHeikinAshi ? calculateHeikinAshi(visibleBars) : visibleBars);
+      const lastCandleData = overviewCandleDataRef.current[overviewCandleDataRef.current.length - 1];
+      if (lastCandleData?.time === next.time) lastCandleData.close = next.close;
+      else if (isNewBar) overviewCandleDataRef.current.push({ time: next.time, close: next.close });
+      if (showHeikinAshi) candles.setData(calculateHeikinAshi(renderBars(overviewBarsRef.current, MAX_CONTEXT_RENDER_BARS)));
+      else candles.update(next);
     };
     return () => { active = false; stream.close(); chart.timeScale().unsubscribeVisibleTimeRangeChange(refreshOverview); chart.timeScale().unsubscribeVisibleLogicalRangeChange(refreshOverview); overviewChartRef.current = null; overviewCandlesRef.current = null; overviewCandleDataRef.current = []; overviewBarsRef.current = []; overviewLoadingOlderRef.current = false; chart.remove(); };
   }, [auth.accessToken, binanceRules, broker, symbol, interval, timezone, mobilePwa, showHeikinAshi]);
