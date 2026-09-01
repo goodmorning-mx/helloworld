@@ -9,6 +9,7 @@ from typing import Any
 
 from fastapi import WebSocket, WebSocketDisconnect
 from websockets.asyncio.client import connect
+import httpx
 
 logger = logging.getLogger("helloworld.market_gateway")
 SUPPORTED_INTERVALS = ("1m", "3m", "5m", "15m")
@@ -21,6 +22,7 @@ class BinanceMarketGateway:
         self._bars: dict[str, dict[str, list[dict[str, Any]]]] = defaultdict(lambda: defaultdict(list))
         self._clients: dict[str, set[WebSocket]] = defaultdict(set)
         self._tasks: dict[str, asyncio.Task[None]] = {}
+        self._last_event_ms: dict[str, int] = {}
         self._lock = asyncio.Lock()
 
     @staticmethod
@@ -54,39 +56,62 @@ class BinanceMarketGateway:
             if isinstance(result, Exception):
                 self._clients[symbol].discard(client)
 
+    async def _rest_fallback(self, symbol: str) -> None:
+        """Recover a silent upstream socket without polling while it is live."""
+        async with httpx.AsyncClient(timeout=5) as client:
+            while self._clients[symbol]:
+                await asyncio.sleep(3)
+                last_event = self._last_event_ms.get(symbol, 0)
+                if last_event and int(time.time() * 1000) - last_event < 8_000:
+                    continue
+                for interval in SUPPORTED_INTERVALS:
+                    try:
+                        response = await client.get(f"https://fapi.binance.com/fapi/v1/klines?symbol={symbol}&interval={interval}&limit=1")
+                        response.raise_for_status()
+                        rows = response.json()
+                        row = rows[-1] if isinstance(rows, list) and rows else None
+                        if not isinstance(row, list) or len(row) < 5:
+                            continue
+                        bar = {"time": int(float(row[0]) / 1000), "open": float(row[1]), "high": float(row[2]), "low": float(row[3]), "close": float(row[4]), "closed": False}
+                        previous = self._bars[symbol][interval][-1] if self._bars[symbol][interval] else None
+                        self.put_bars(symbol, interval, [bar])
+                        if previous != bar:
+                            await self._broadcast(symbol, {"type": "kline", "symbol": symbol, "interval": interval, "bar": bar, "source": "rest-fallback", "server_time": time.time_ns() // 1_000_000})
+                    except (httpx.HTTPError, ValueError, TypeError):
+                        logger.warning("binance_rest_fallback_error symbol=%s interval=%s", symbol, interval)
+
     async def _consume(self, symbol: str) -> None:
         delay = 1.0
-        while self._clients[symbol]:
-            try:
-                logger.info("binance_stream_connect symbol=%s", symbol)
-                async with connect(self._stream_url(symbol), ping_interval=20, ping_timeout=20, close_timeout=5) as socket:
-                    delay = 1.0
-                    await self._broadcast(symbol, {"type": "status", "symbol": symbol, "status": "LIVE", "server_time": time.time_ns() // 1_000_000})
-                    async for raw in socket:
-                        message = json.loads(raw)
-                        kline = (message.get("data") or {}).get("k")
-                        if not kline:
-                            continue
-                        interval = str(kline.get("i", ""))
-                        if interval not in SUPPORTED_INTERVALS:
-                            continue
-                        bar = {
-                            "time": int(kline["t"]) // 1000,
-                            "open": float(kline["o"]),
-                            "high": float(kline["h"]),
-                            "low": float(kline["l"]),
-                            "close": float(kline["c"]),
-                            "closed": bool(kline.get("x", False)),
-                        }
-                        self.put_bars(symbol, interval, [bar])
-                        await self._broadcast(symbol, {"type": "kline", "symbol": symbol, "interval": interval, "bar": bar, "server_time": time.time_ns() // 1_000_000})
-            except asyncio.CancelledError:
-                raise
-            except Exception as exc:
-                logger.warning("binance_stream_error symbol=%s error=%s retry_seconds=%.1f", symbol, exc, delay)
-                await self._broadcast(symbol, {"type": "status", "symbol": symbol, "status": "RECONNECTING", "retry_seconds": delay, "server_time": time.time_ns() // 1_000_000})
-                await asyncio.sleep(delay)
-                delay = min(delay * 2, 30.0)
+        fallback_task = asyncio.create_task(self._rest_fallback(symbol), name=f"binance-fallback-{symbol}")
+        try:
+            while self._clients[symbol]:
+                try:
+                    logger.info("binance_stream_connect symbol=%s", symbol)
+                    async with connect(self._stream_url(symbol), ping_interval=20, ping_timeout=20, close_timeout=5) as socket:
+                        delay = 1.0
+                        await self._broadcast(symbol, {"type": "status", "symbol": symbol, "status": "LIVE", "server_time": time.time_ns() // 1_000_000})
+                        async for raw in socket:
+                            message = json.loads(raw)
+                            kline = (message.get("data") or {}).get("k")
+                            if not kline:
+                                continue
+                            interval = str(kline.get("i", ""))
+                            if interval not in SUPPORTED_INTERVALS:
+                                continue
+                            bar = {"time": int(kline["t"]) // 1000, "open": float(kline["o"]), "high": float(kline["h"]), "low": float(kline["l"]), "close": float(kline["c"]), "closed": bool(kline.get("x", False))}
+                            self._last_event_ms[symbol] = int(time.time() * 1000)
+                            self.put_bars(symbol, interval, [bar])
+                            await self._broadcast(symbol, {"type": "kline", "symbol": symbol, "interval": interval, "bar": bar, "source": "websocket", "server_time": time.time_ns() // 1_000_000})
+                except asyncio.CancelledError:
+                    raise
+                except Exception as exc:
+                    logger.warning("binance_stream_error symbol=%s error=%s retry_seconds=%.1f", symbol, exc, delay)
+                    await self._broadcast(symbol, {"type": "status", "symbol": symbol, "status": "RECONNECTING", "retry_seconds": delay, "server_time": time.time_ns() // 1_000_000})
+                    await asyncio.sleep(delay)
+                    delay = min(delay * 2, 30.0)
+        finally:
+            fallback_task.cancel()
+            await asyncio.gather(fallback_task, return_exceptions=True)
 
     async def subscribe(self, symbol: str, websocket: WebSocket) -> None:
         symbol = self._symbol(symbol)
@@ -121,4 +146,3 @@ class BinanceMarketGateway:
             task.cancel()
         if tasks:
             await asyncio.gather(*tasks, return_exceptions=True)
-
