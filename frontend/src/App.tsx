@@ -640,7 +640,7 @@ function Workspace() {
   const [lassoEnd, setLassoEnd] = useState<{ x: number; y: number } | null>(null);
   const [drawingCanvas, setDrawingCanvas] = useState<ChartCanvas>('entry');
   const [moveStart, setMoveStart] = useState<{ index: number; point: ChartPoint; drawing: Drawing } | null>(null);
-  const [panStart, setPanStart] = useState<{ canvas: ChartCanvas; xLogical: number; yPrice: number; xRange: { from: number; to: number }; priceRange: { from: number; to: number } } | null>(null);
+  const panStartRef = useRef<{ canvas: ChartCanvas; x: number; y: number; xLogicalPerPixel: number; yPricePerPixel: number; xRange: { from: number; to: number }; priceRange: { from: number; to: number } } | null>(null);
   const [mobileSheet, setMobileSheet] = useState<'indicators' | 'tools' | null>(null);
   const [, setActivePositionIndex] = useState<number | null>(null);
   const activePositionIndexRef = useRef<number | null>(null);
@@ -1599,15 +1599,17 @@ function Workspace() {
         }
       } else {
         const { chart, candles } = chartContext(canvas);
-        const xLogical = chart?.timeScale().coordinateToLogical(point.x);
-        const yPrice = candles?.coordinateToPrice(point.y);
         const xRange = chart?.timeScale().getVisibleLogicalRange();
         const priceRange = chart?.priceScale('right').getVisibleRange();
-        if (chart && candles && xLogical !== null && xLogical !== undefined && yPrice !== null && yPrice !== undefined && xRange && priceRange) {
+        const xLogical = chart?.timeScale().coordinateToLogical(point.x);
+        const xLogicalNext = chart?.timeScale().coordinateToLogical(point.x + 1);
+        const yPrice = candles?.coordinateToPrice(point.y);
+        const yPriceNext = candles?.coordinateToPrice(point.y + 1);
+        if (chart && candles && xLogical !== null && xLogical !== undefined && xLogicalNext !== null && xLogicalNext !== undefined && yPrice !== null && yPrice !== undefined && yPriceNext !== null && yPriceNext !== undefined && xRange && priceRange) {
           event.preventDefault();
           event.stopPropagation();
           event.currentTarget.setPointerCapture(event.pointerId);
-          setPanStart({ canvas, xLogical: Number(xLogical), yPrice, xRange, priceRange });
+          panStartRef.current = { canvas, x: point.x, y: point.y, xLogicalPerPixel: Number(xLogicalNext) - Number(xLogical), yPricePerPixel: yPriceNext - yPrice, xRange, priceRange };
         }
       }
       return;
@@ -1627,16 +1629,17 @@ function Workspace() {
       setLassoEnd(pointFromEvent(event));
       return;
     }
-    if (panStart) {
+    if (panStartRef.current) {
       const point = pointFromEvent(event);
-      const { chart, candles } = chartContext(panStart.canvas);
-      const xLogical = chart?.timeScale().coordinateToLogical(point.x);
-      const yPrice = candles?.coordinateToPrice(point.y);
-      if (chart && candles && xLogical !== null && xLogical !== undefined && yPrice !== null && yPrice !== undefined) {
-        const xDelta = panStart.xLogical - Number(xLogical);
-        chart.timeScale().setVisibleLogicalRange({ from: panStart.xRange.from + xDelta, to: panStart.xRange.to + xDelta });
-        const yDelta = panStart.yPrice - yPrice;
-        chart.priceScale('right').setVisibleRange({ from: panStart.priceRange.from + yDelta, to: panStart.priceRange.to + yDelta });
+      const pan = panStartRef.current;
+      const { chart } = chartContext(pan.canvas);
+      if (chart) {
+        const xDelta = -(point.x - pan.x) * pan.xLogicalPerPixel;
+        const yDelta = (point.y - pan.y) * pan.yPricePerPixel;
+        // Apply both axes from the original range in one pass. Reading the
+        // already-shifted range here causes diagonal drags to oscillate.
+        chart.timeScale().setVisibleLogicalRange({ from: pan.xRange.from + xDelta, to: pan.xRange.to + xDelta });
+        chart.priceScale('right').setVisibleRange({ from: pan.priceRange.from + yDelta, to: pan.priceRange.to + yDelta });
       }
       return;
     }
@@ -1712,8 +1715,8 @@ function Workspace() {
       if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
       return;
     }
-    if (panStart) {
-      setPanStart(null);
+    if (panStartRef.current) {
+      panStartRef.current = null;
       if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
       return;
     }
@@ -2042,7 +2045,7 @@ function Workspace() {
     return <g key={index} className={`${selectedClass ?? ''} ${paperClass}`}>{drawing.paper && canvas === 'context' && <><line x1={start.x} y1={0} x2={start.x} y2={overviewSize.height} className="paper-opening-index" /><text x={start.x + 6} y={18} className="paper-opening-label">Apertura · {chartTimeLabel(drawing.start.time, timezone, false)}</text></>}<rect x={left} y={targetTop} width={width} height={targetHeight} className={targetPercent >= 0 ? 'position-profit' : 'position-risk'} /><rect x={left} y={stopTop} width={width} height={stopHeight} className={riskPercent <= 0 ? 'position-risk' : 'position-profit'} /><line x1={left} y1={start.y} x2={left + width} y2={start.y} className="position-entry" /><line x1={left} y1={end.y} x2={left + width} y2={end.y} className="paper-current-price" />{drawing.paper && <><text x={left + 8} y={Math.max(14, start.y - 8)} className={`paper-operation-label ${paperStatusClass}`}>Paper Operation · {paperStatusLabel}</text><text x={left + 8} y={targetPoint.y - 10} className="paper-target-label">TP {targetLabel} · +{tpAmount.toFixed(2)} USDT{feeLabel}</text><text x={left + 8} y={stop.y + 18} className="paper-stop-label">SL {riskLabel} · -{slAmount.toFixed(2)} USDT{feeLabel}</text><text x={left + width + 8} y={end.y - 8} className={`paper-current-label ${livePnl >= 0 ? 'paper-current-profit' : 'paper-current-loss'}`}>PNL {livePnl >= 0 ? '+' : ''}{livePnl.toFixed(2)} USDT</text></>}{!drawing.paper && <><text x={left + 8} y={targetTop + 18} className="position-label">TP {targetLabel}</text><text x={left + 8} y={stopTop + 18} className="position-label">SL {riskLabel}</text><text x={left + 8} y={Math.max(targetTop, stopTop) + 34} className="position-label">R:R {rr.toFixed(2)}:1</text></>}{drawing.paper ? handleNodes : null}{drawing.paper ? null : handleNodes}</g>;
   };
 
-  const chartStageView = <div ref={chartStage} className={`chart-stage ${tool ? 'drawing-mode' : ''}`} onWheelCapture={event => handleChartWheel(event, 'entry')} onPointerDownCapture={startDrawing} onPointerMoveCapture={updateDrawing} onPointerUpCapture={finishDrawing} onPointerCancelCapture={() => { setDrawingStart(null); setDrawingEnd(null); setMoveStart(null); setPanStart(null); setResizeStart(null); setLassoStart(null); setLassoEnd(null); }}>
+  const chartStageView = <div ref={chartStage} className={`chart-stage ${tool ? 'drawing-mode' : ''}`} onWheelCapture={event => handleChartWheel(event, 'entry')} onPointerDownCapture={startDrawing} onPointerMoveCapture={updateDrawing} onPointerUpCapture={finishDrawing} onPointerCancelCapture={() => { setDrawingStart(null); setDrawingEnd(null); setMoveStart(null); panStartRef.current = null; setResizeStart(null); setLassoStart(null); setLassoEnd(null); }}>
     <div ref={chartContainer} className="candlestick-chart" /><svg className="drawing-overlay" viewBox={`0 0 ${stageSize.width} ${stageSize.height}`} preserveAspectRatio="none" aria-hidden="true">{renderSessionIndicator()}{renderInterestMarkers()}{renderPriceLineHitAreas('entry')}{drawings.map((drawing, index) => (!drawing.paper || !drawing.closed || drawing.id === visibleClosedId) && (!drawing.paper || !drawing.symbol || drawing.symbol === symbol) && (drawing.chart !== 'context' || drawing.paper) ? renderDrawing(drawing, index, 'entry') : null)}{tool && drawingStart && drawingEnd && drawingCanvas === 'entry' && renderDrawing({ type: tool, chart: 'entry', start: drawingStart, end: drawingEnd }, 'preview', 'entry')}{lassoStart && lassoEnd && drawingCanvas === 'entry' && <rect x={Math.min(lassoStart.x, lassoEnd.x)} y={Math.min(lassoStart.y, lassoEnd.y)} width={Math.abs(lassoEnd.x - lassoStart.x)} height={Math.abs(lassoEnd.y - lassoStart.y)} className="selection-lasso" />}</svg><div className="chart-bottom-controls"><span className="timezone-icon" aria-hidden="true">◷</span><select className="timezone-select" value={timezone} onChange={event => setTimezone(event.target.value)} aria-label="Zona horaria">{TIMEZONES.map(([label, value]) => <option key={value} value={value}>{label}</option>)}</select></div>
     <div className="floating-order-buttons" aria-label="Abrir operación simulada"><button className="open-long-button" disabled={!paperReady} onClick={() => void openSimulatedPosition('long')}>▲ <span>Abrir Long</span><small>{labRecommendations ? `${labRecommendations.long.label} · R:R ${labRecommendations.long.rr.toFixed(2)}:1` : 'Calculando recomendación…'}</small></button><button className="open-short-button" disabled={!paperReady} onClick={() => void openSimulatedPosition('short')}>▼ <span>Abrir Short</span><small>{labRecommendations ? `${labRecommendations.short.label} · R:R ${labRecommendations.short.rr.toFixed(2)}:1` : 'Calculando recomendación…'}</small></button></div>
   </div>;
@@ -2061,7 +2064,7 @@ function Workspace() {
     const marketScanner = broker === 'binance' ? <section className="market-scanner" aria-label="Criptomonedas activas"><div className="market-scanner-head"><div><span className="positions-kicker">MARKET SCANNER · BINANCE FUTURES</span><strong>Mayor variación acumulada cierre a cierre</strong></div><small>{activeMarketLoading ? 'Actualizando…' : activeMarketError || `${activeMarketSymbols.length} símbolos · 10 cambios ${activeMarketSymbols[0]?.interval ?? '5m'}`}</small></div>{activeMarketSymbols.length > 0 ? <div className="market-scanner-list">{activeMarketSymbols.map(candidate => <button key={candidate.symbol} type="button" className={`market-scanner-item ${candidate.symbol === symbol ? 'active' : ''}`} onClick={() => { setLabRecommendations(null); setSymbol(candidate.symbol); }}><b>{candidate.symbol}</b><span className="value-positive">Σ {candidate.variation_sum_pct.toFixed(2)}%</span><small>Leverage máximo {candidate.max_leverage != null ? `${candidate.max_leverage}x` : '—'}</small><small>Prom. x vela {candidate.variation_average_pct.toFixed(3)}%</small></button>)}</div> : <p className="market-scanner-empty">{activeMarketError || 'Buscando mercados activos…'}</p>}</section> : null;
 
   const toolOptions = [['line', '╱', 'Línea'], ['ruler', '▥', 'Medir'], ['long', 'L', 'Long'], ['short', 'S', 'Short'], ['zoom', '⌗', 'Zoom lazo']] as const;
-  const chartsRow = <div className="charts-row"><section ref={overviewStage} className={`secondary-chart ${tool ? 'drawing-mode' : ''}`} onWheelCapture={event => handleChartWheel(event, 'context')} onPointerDownCapture={event => startDrawing(event, 'context')} onPointerMoveCapture={updateDrawing} onPointerUpCapture={finishDrawing} onPointerCancelCapture={() => { setDrawingStart(null); setDrawingEnd(null); setMoveStart(null); setPanStart(null); setResizeStart(null); setLassoStart(null); setLassoEnd(null); }}><div className="chart-panel-label">5M · CONTEXTO · BTCUSDT</div><div ref={overviewChartContainer} className="overview-chart" /><svg className="overview-overlay" viewBox={`0 0 ${overviewSize.width} ${overviewSize.height}`} preserveAspectRatio="none" aria-hidden="true">{renderOverviewSessions()}{renderOverviewInterestMarkers()}{renderPriceLineHitAreas('context')}{drawings.map((drawing, index) => (!drawing.paper || !drawing.closed || drawing.id === visibleClosedId) && (!drawing.paper || !drawing.symbol || drawing.symbol === symbol) && (drawing.chart === 'context' || drawing.paper) ? renderDrawing(drawing, index, 'context') : null)}{tool && drawingStart && drawingEnd && drawingCanvas === 'context' && renderDrawing({ type: tool, chart: 'context', start: drawingStart, end: drawingEnd }, 'preview', 'context')}{lassoStart && lassoEnd && drawingCanvas === 'context' && <rect x={Math.min(lassoStart.x, lassoEnd.x)} y={Math.min(lassoStart.y, lassoEnd.y)} width={Math.abs(lassoEnd.x - lassoStart.x)} height={Math.abs(lassoEnd.y - lassoStart.y)} className="selection-lasso" />}</svg></section><section className="primary-chart"><div className="chart-panel-label">1M · AJUSTE DE ENTRADA</div>{chartStageView}</section></div>;
+  const chartsRow = <div className="charts-row"><section ref={overviewStage} className={`secondary-chart ${tool ? 'drawing-mode' : ''}`} onWheelCapture={event => handleChartWheel(event, 'context')} onPointerDownCapture={event => startDrawing(event, 'context')} onPointerMoveCapture={updateDrawing} onPointerUpCapture={finishDrawing} onPointerCancelCapture={() => { setDrawingStart(null); setDrawingEnd(null); setMoveStart(null); panStartRef.current = null; setResizeStart(null); setLassoStart(null); setLassoEnd(null); }}><div className="chart-panel-label">5M · CONTEXTO · BTCUSDT</div><div ref={overviewChartContainer} className="overview-chart" /><svg className="overview-overlay" viewBox={`0 0 ${overviewSize.width} ${overviewSize.height}`} preserveAspectRatio="none" aria-hidden="true">{renderOverviewSessions()}{renderOverviewInterestMarkers()}{renderPriceLineHitAreas('context')}{drawings.map((drawing, index) => (!drawing.paper || !drawing.closed || drawing.id === visibleClosedId) && (!drawing.paper || !drawing.symbol || drawing.symbol === symbol) && (drawing.chart === 'context' || drawing.paper) ? renderDrawing(drawing, index, 'context') : null)}{tool && drawingStart && drawingEnd && drawingCanvas === 'context' && renderDrawing({ type: tool, chart: 'context', start: drawingStart, end: drawingEnd }, 'preview', 'context')}{lassoStart && lassoEnd && drawingCanvas === 'context' && <rect x={Math.min(lassoStart.x, lassoEnd.x)} y={Math.min(lassoStart.y, lassoEnd.y)} width={Math.abs(lassoEnd.x - lassoStart.x)} height={Math.abs(lassoEnd.y - lassoStart.y)} className="selection-lasso" />}</svg></section><section className="primary-chart"><div className="chart-panel-label">1M · AJUSTE DE ENTRADA</div>{chartStageView}</section></div>;
 
   return mobilePwa ? <main className="trading-shell pwa-shell">
     <header className="pwa-mobile-header"><div><span className="pwa-brand">helloworld</span><span className="pwa-market">{broker.toUpperCase()} · {entryInterval.toUpperCase()} ENTRADA · {interval.toUpperCase()} CONTEXTO</span></div><select className="pwa-symbol-select" value={broker} onChange={event => { const next = event.target.value as 'binance' | 'ctrader'; setBroker(next); setSymbol(next === 'ctrader' ? 'AUDUSD' : 'BTCUSDT'); }} aria-label="Broker"><option value="binance">Binance</option><option value="ctrader">cTrader</option></select><select className="pwa-symbol-select" value={symbol} onChange={event => setSymbol(event.target.value)} aria-label="Símbolo">{selectableSymbols.map(option => <option key={option}>{option}</option>)}</select>{profileButton}</header>
