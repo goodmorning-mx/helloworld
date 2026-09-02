@@ -31,7 +31,7 @@ class BinanceMarketGateway:
 
     @staticmethod
     def _stream_url(symbol: str) -> str:
-        streams = "/".join(f"{symbol.lower()}@kline_{interval}" for interval in SUPPORTED_INTERVALS)
+        streams = "/".join([f"{symbol.lower()}@aggTrade", *(f"{symbol.lower()}@kline_{interval}" for interval in SUPPORTED_INTERVALS)])
         return f"wss://fstream.binance.com/stream?streams={streams}"
 
     def snapshot(self, symbol: str, interval: str) -> list[dict[str, Any]]:
@@ -92,7 +92,13 @@ class BinanceMarketGateway:
                         await self._broadcast(symbol, {"type": "status", "symbol": symbol, "status": "LIVE", "server_time": time.time_ns() // 1_000_000})
                         async for raw in socket:
                             message = json.loads(raw)
-                            kline = (message.get("data") or {}).get("k")
+                            data = message.get("data") or {}
+                            aggregate_trade = data.get("p")
+                            if aggregate_trade is not None and data.get("T") is not None:
+                                self._last_event_ms[symbol] = int(time.time() * 1000)
+                                await self._broadcast(symbol, {"type": "trade", "symbol": symbol, "price": float(aggregate_trade), "time": int(data["T"]) // 1000, "source": "websocket", "server_time": time.time_ns() // 1_000_000})
+                                continue
+                            kline = data.get("k")
                             if not kline:
                                 continue
                             interval = str(kline.get("i", ""))

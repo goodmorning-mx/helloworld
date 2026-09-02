@@ -39,6 +39,7 @@ function mergeTickBar(bars: Array<{ time: UTCTimestamp; open: number; high: numb
 }
 
 type LiveBar = { time: UTCTimestamp; open: number; high: number; low: number; close: number };
+type BinanceLivePrice = { symbol: string; price: number; time: number; receivedAt: number };
 function upsertLiveBar(bars: LiveBar[], next: LiveBar) {
   const last = bars[bars.length - 1];
   if (!last || next.time > last.time) {
@@ -584,6 +585,7 @@ function Workspace() {
   const chartRef = useRef<ReturnType<typeof createChart> | null>(null);
   const candlesRef = useRef<ReturnType<ReturnType<typeof createChart>['addSeries']> | null>(null);
   const candleBarsRef = useRef<Array<{ time: UTCTimestamp; open: number; high: number; low: number; close: number }>>([]);
+  const binanceLivePriceRef = useRef<BinanceLivePrice | null>(null);
   const loadingOlderRef = useRef(false);
   const candleDataRef = useRef<Array<{ time: UTCTimestamp; close: number }>>([]);
   const [symbol, setSymbol] = useState(() => localStorage.getItem('helloworld-selected-symbol') ?? 'BTCUSDT');
@@ -1050,10 +1052,26 @@ function Workspace() {
       .catch(() => undefined);
     stream.onmessage = event => {
       if (!active) return;
-      const message = JSON.parse(event.data) as { type?: string; interval?: string; bar?: { time: number; open: number; high: number; low: number; close: number } };
+      const message = JSON.parse(event.data) as { type?: string; symbol?: string; price?: number; time?: number; interval?: string; bar?: { time: number; open: number; high: number; low: number; close: number } };
+      if (message.type === 'trade' && message.price && message.time) {
+        binanceLivePriceRef.current = { symbol, price: Number(message.price), time: Number(message.time), receivedAt: Date.now() };
+        const liveBars = mergeTickBar(candleBarsRef.current, Number(message.time), Number(message.price), 60);
+        const liveBar = liveBars[liveBars.length - 1];
+        if (liveBar) {
+          candleBarsRef.current = mergeTickBar(candleBarsRef.current, Number(message.time), Number(message.price), 60);
+          candleDataRef.current = candleBarsRef.current.map(({ time, close }) => ({ time, close }));
+          if (showHeikinAshi) setDataPreservingRange(calculateHeikinAshi(renderBars(candleBarsRef.current, MAX_ENTRY_RENDER_BARS)));
+          else candles.update(liveBar);
+          scheduleViewportRefresh();
+        }
+        return;
+      }
       if (message.type !== 'kline' || message.interval !== entryInterval || !message.bar) return;
       const candle = message.bar;
-      const next = { time: Number(candle.time) as UTCTimestamp, open: Number(candle.open), high: Number(candle.high), low: Number(candle.low), close: Number(candle.close) };
+      const rawNext = { time: Number(candle.time) as UTCTimestamp, open: Number(candle.open), high: Number(candle.high), low: Number(candle.low), close: Number(candle.close) };
+      const sharedLive = binanceLivePriceRef.current;
+      const useSharedPrice = sharedLive?.symbol === symbol && Date.now() - sharedLive.receivedAt < 10_000;
+      const next = useSharedPrice ? { ...rawNext, high: Math.max(rawNext.high, sharedLive.price), low: Math.min(rawNext.low, sharedLive.price), close: sharedLive.price } : rawNext;
       const isNewBar = upsertLiveBar(candleBarsRef.current, next);
       void cacheBars(symbol, entryInterval, [next]);
       const lastCandleData = candleDataRef.current[candleDataRef.current.length - 1];
@@ -1078,14 +1096,14 @@ function Workspace() {
           const direction = drawing.type === 'long' ? 1 : -1;
           const targetPrice = drawing.target?.price ?? drawing.end.price;
           const stopPrice = drawing.stop?.price ?? drawing.start.price;
-          // Kline high/low catches a touch even when the candle closes back inside
-          // the position. If both boundaries were touched in one update, use the
-          // current close as a deterministic tie-breaker.
-          const targetTouched = direction === 1 ? next.high >= targetPrice : next.low <= targetPrice;
-          const stopTouched = direction === 1 ? next.low <= stopPrice : next.high >= stopPrice;
-          const bothTouched = targetTouched && stopTouched;
-          const hitTarget = bothTouched ? (direction === 1 ? next.close >= targetPrice : next.close <= targetPrice) : targetTouched;
-          const hitStop = bothTouched ? !hitTarget : stopTouched;
+          // Execution is driven by the shared last trade, not by the 1m/5m
+          // candle high/low. This prevents a different timeframe snapshot
+          // from closing a paper position at a price the live feed did not
+          // actually reach.
+          const targetTouched = direction === 1 ? next.close >= targetPrice : next.close <= targetPrice;
+          const stopTouched = direction === 1 ? next.close <= stopPrice : next.close >= stopPrice;
+          const hitTarget = targetTouched;
+          const hitStop = !hitTarget && stopTouched;
           const closeReason: 'TP' | 'SL' | undefined = hitTarget ? 'TP' : hitStop ? 'SL' : undefined;
           const status: Drawing['status'] = closeReason === 'TP' ? 'CLOSED - WIN' : closeReason === 'SL' ? 'CLOSED - FAILED' : 'OPEN';
           const stopDistance = Math.abs(drawing.start.price - stopPrice);
@@ -1251,7 +1269,20 @@ function Workspace() {
       }).catch(() => undefined);
     stream.onmessage = event => {
       if (!active) return;
-      const message = JSON.parse(event.data) as { type?: string; interval?: string; bar?: { time: number; open: number; high: number; low: number; close: number } };
+      const message = JSON.parse(event.data) as { type?: string; symbol?: string; price?: number; time?: number; interval?: string; bar?: { time: number; open: number; high: number; low: number; close: number } };
+      if (message.type === 'trade' && message.price && message.time) {
+        binanceLivePriceRef.current = { symbol, price: Number(message.price), time: Number(message.time), receivedAt: Date.now() };
+        const liveBars = mergeTickBar(overviewBarsRef.current, Number(message.time), Number(message.price), gatewayInterval === '1m' ? 60 : gatewayInterval === '3m' ? 180 : gatewayInterval === '5m' ? 300 : 900);
+        const liveBar = liveBars[liveBars.length - 1];
+        if (liveBar) {
+          overviewBarsRef.current = mergeTickBar(overviewBarsRef.current, Number(message.time), Number(message.price), gatewayInterval === '1m' ? 60 : gatewayInterval === '3m' ? 180 : gatewayInterval === '5m' ? 300 : 900);
+          overviewCandleDataRef.current = overviewBarsRef.current.map(({ time, close }) => ({ time, close }));
+          if (showHeikinAshi) setDataPreservingRange(calculateHeikinAshi(renderBars(overviewBarsRef.current, MAX_CONTEXT_RENDER_BARS)));
+          else candles.update(liveBar);
+          scheduleOverviewRefresh();
+        }
+        return;
+      }
       if (message.type !== 'kline' || message.interval !== gatewayInterval || !message.bar) return;
       const candle = message.bar;
       const next = { time: Number(candle.time) as UTCTimestamp, open: Number(candle.open), high: Number(candle.high), low: Number(candle.low), close: Number(candle.close) };
@@ -1983,7 +2014,6 @@ function Workspace() {
   const recentClosedPanel = paperTab === 'open' && recentClosedPositions.length > 0 && <div className="recent-closed-panel"><div className="recent-closed-head"><strong>Últimas 5 cerradas</strong><small>Más recientes por hora de cierre</small></div><div className="positions-table-scroll"><table className="positions-table recent-closed-table"><thead><tr><th>Instrumento</th><th>Lado</th><th>Cierre</th><th>PNL neto</th></tr></thead><tbody>{recentClosedPositions.map((position, index) => { const positionSymbol = position.symbol ?? symbol; const pnl = paperPnl(position); return <tr key={`${position.id ?? position.start.time}-${index}`}><td><button type="button" className="paper-symbol-link" onClick={() => { setSymbol(positionSymbol); localStorage.setItem('helloworld-selected-symbol', positionSymbol); }}>{positionSymbol}</button></td><td><span className={`position-side ${position.type}`}>{position.type.toUpperCase()}</span></td><td>{chartTimeLabel(position.end.time, timezone, true)}</td><td className={pnl >= 0 ? 'value-positive' : 'value-negative'}>{pnl >= 0 ? '+' : ''}{pnl.toFixed(8)} USDT</td></tr>; })}</tbody></table></div></div>;
   const labAssistPanel = labRecommendations && <section className="live-lab-assist" aria-label="Recomendaciones MAE MFE en tiempo real"><div className="live-lab-assist-head"><div><span className="positions-kicker">MAE·MFE LIVE ASSIST</span><h2>Recomendación de la vela actual</h2><p className="live-lab-meta">Horizonte: {labRecommendations.horizon} velas · Vela actual: {labRecommendations.long.label} · Intervalo: {labRecommendations.resolution}m</p></div><div className="live-lab-controls"><button type="button" className={labResolution === 1 ? 'live-lab-time-active' : ''} onClick={() => setLabResolution(1)}>1m</button><button type="button" className={labResolution === 5 ? 'live-lab-time-active' : ''} onClick={() => setLabResolution(5)}>5m</button></div></div><div className="live-lab-direction-grid">{(['long', 'short'] as const).map(type => { const recommendation = labRecommendations[type]; return <article key={type} className={`live-lab-direction ${type}`}><h3>{type === 'long' ? 'LONG' : 'SHORT'}</h3><div className="live-lab-assist-grid"><div><small>MAE</small><strong className="value-negative">-{recommendation.mae.toFixed(4)}%</strong></div><div><small>MFE</small><strong className="value-positive">+{recommendation.mfe.toFixed(4)}%</strong></div><div><small>R:R</small><strong>{recommendation.rr.toFixed(2)}:1</strong></div><div><small>Leverage sugerido</small><strong>{recommendation.leverage.toFixed(1)}x</strong></div><div><small>Riesgo máximo</small><strong>{recommendation.riskAmount.toFixed(2)} USD</strong></div><div><small>Notional sugerido</small><strong>{recommendation.notional.toFixed(2)} USD</strong></div><div><small>Margen teórico</small><strong>{recommendation.margin.toFixed(2)} USD</strong></div><div><small>TP esperado</small><strong className="value-positive">+{recommendation.expectedProfit.toFixed(2)} USD</strong></div></div></article>; })}</div></section>;
   const positionsTable = <section className="positions-panel" aria-label="Posiciones abiertas">
-    {recentClosedPanel}
     <div className="positions-panel-head"><div><span className="positions-kicker">TRADING</span><h2>Paper operations</h2></div><div className="paper-actions"><span className="paper-risk-indicator">Riesgo {paperRiskPercent.toFixed(2)}%</span><button type="button" className="paper-settings-button" onClick={() => setShowPaperSettings(true)} aria-label="Ajustar Paper">⚙</button><span className="paper-badge">PAPER</span></div></div>{paperSyncError && <p className="paper-sync-error" role="status">{paperSyncError}</p>}<div className="paper-tabs" role="tablist" aria-label="Paper operations"><button role="tab" aria-selected={paperTab === 'open'} className={paperTab === 'open' ? 'paper-tab-active' : ''} onClick={() => setPaperTab('open')}>Abiertas <b>{paperPositions.filter(position => !position.closed).length}</b></button><button role="tab" aria-selected={paperTab === 'closed'} className={paperTab === 'closed' ? 'paper-tab-active' : ''} onClick={() => setPaperTab('closed')}>Cerradas <b>{paperPositions.filter(position => position.closed).length}</b></button></div>
     <div className="paper-balance-grid"><div><small>Balance paper</small><strong>{paperEquity.toFixed(2)} USD</strong></div><div><small>Leverage máximo · {symbol}</small><strong>{brokerMaxLeverage.toFixed(0)}x</strong></div><div><small>Leverage paper efectivo</small><strong>{paperLeverage.toFixed(1)}x</strong></div><div><small>Costos comisión + slippage</small><strong>{paperCosts.toFixed(2)} USD</strong></div><div><small>PNL realizado</small><strong>{realizedPnl.toFixed(2)} USD</strong></div><div><small>PNL abierto</small><strong>{unrealizedPnl.toFixed(2)} USD</strong></div></div>
     {displayedPaperPositions.length === 0 ? <p className="positions-empty">{paperTab === 'open' ? 'No hay operaciones abiertas.' : 'No hay operaciones cerradas.'}</p> : <div className="positions-table-scroll"><table className="positions-table"><thead><tr><th>Instrumento</th><th>Lado</th><th>Entrada</th><th>Actual</th><th>SL %</th><th>TP %</th><th>Leverage</th><th>Margen</th><th>Notional</th><th>Fee</th><th>R:R</th><th>PNL</th><th>ROE</th><th>Acción</th></tr></thead><tbody>{displayedPaperPositions.map((position, index) => {
@@ -2105,12 +2135,12 @@ function Workspace() {
 
   return mobilePwa ? <main className="trading-shell pwa-shell">
     <header className="pwa-mobile-header"><div><span className="pwa-brand">helloworld</span><span className="pwa-market">{broker.toUpperCase()} · {entryInterval.toUpperCase()} ENTRADA · {interval.toUpperCase()} CONTEXTO</span></div><select className="pwa-symbol-select" value={broker} onChange={event => { const next = event.target.value as 'binance' | 'ctrader'; setBroker(next); setSymbol(next === 'ctrader' ? 'AUDUSD' : 'BTCUSDT'); }} aria-label="Broker"><option value="binance">Binance</option><option value="ctrader">cTrader</option></select><select className="pwa-symbol-select" value={symbol} onChange={event => setSymbol(event.target.value)} aria-label="Símbolo">{selectableSymbols.map(option => <option key={option}>{option}</option>)}</select>{profileButton}</header>
-    <section className="pwa-chart-wrap">{chartStageView}</section>{positionsTable}{labAssistPanel}<BalanceSummary paperBalance={paperEquity} revision={profileRevision} /><BinanceAccountPanel revision={profileRevision} /><CTraderAccountPanel revision={profileRevision} />
+    <section className="pwa-chart-wrap">{chartStageView}</section>{positionsTable}{recentClosedPanel}{labAssistPanel}<BalanceSummary paperBalance={paperEquity} revision={profileRevision} /><BinanceAccountPanel revision={profileRevision} /><CTraderAccountPanel revision={profileRevision} />
     <nav className="pwa-bottom-nav" aria-label="Controles PWA"><button onClick={() => setTool(null)} className={!tool ? 'pwa-nav-active' : ''}>↖<span>Seleccionar</span></button><button onClick={() => setMobileSheet('indicators')} className={showSessions ? 'pwa-nav-active' : ''}>◉<span>Indicadores</span></button><button onClick={() => setShowHeikinAshi(value => !value)} className={showHeikinAshi ? 'pwa-nav-active' : ''}>HA<span>Heikin Ashi</span></button><button onClick={() => setMobileSheet('tools')} className={tool ? 'pwa-nav-active' : ''}>⌁<span>Herramientas</span></button><button onClick={() => void auth.logout()}>⇥<span>Salir</span></button></nav>
     {mobileSheet === 'indicators' && <MobileSheet title="Indicadores" onClose={() => setMobileSheet(null)}><button className={`mobile-option ${showSessions ? 'option-active' : ''}`} onClick={() => setShowSessions(value => !value)}><span><b>Sesiones de mercado</b><small>Tokyo, Londres, Nueva York y Sydney</small></span><i>{showSessions ? '✓' : ''}</i></button><label className="mobile-field">Intervalo<select value={interval} onChange={event => setInterval(event.target.value as typeof interval)}>{(['1s', '1m', '3m', '5m', '15m'] as const).map(value => <option key={value}>{value}</option>)}</select></label><label className="mobile-field">Zona horaria<select value={timezone} onChange={event => setTimezone(event.target.value)}>{TIMEZONES.map(([label, value]) => <option key={value} value={value}>{label}</option>)}</select></label></MobileSheet>}
     {mobileSheet === 'tools' && <MobileSheet title="Herramientas" onClose={() => setMobileSheet(null)}><div className="mobile-tool-grid"><button className={!tool ? 'option-active' : ''} onClick={() => { setTool(null); setMobileSheet(null); }}>↖<span>Seleccionar</span></button>{toolOptions.map(([key, icon, label]) => <button key={key} className={tool === key ? 'option-active' : ''} onClick={() => { chooseTool(key); setMobileSheet(null); }}>{icon}<span>{label}</span></button>)}<button onClick={() => { setDrawings(current => current.filter(drawing => drawing.paper)); activePositionIndexRef.current = null; setActivePositionIndex(null); }}>×<span>Borrar dibujos</span></button></div></MobileSheet>}
     {showProfile && <ProfileModal onClose={() => setShowProfile(false)} onSaved={() => setProfileRevision(value => value + 1)} />}{pnlCalendarModal}
-  </main> : <main className="trading-shell">{desktopHeader}{chartsRow}{marketScanner}{positionsTable}{labAssistPanel}<BalanceSummary paperBalance={paperEquity} revision={profileRevision} /><BinanceAccountPanel revision={profileRevision} /><CTraderAccountPanel revision={profileRevision} /><section ref={labSection} className="lab-layout-section"><LabWindow key={`${broker}:${symbol}`} activeSymbol={symbol} broker={broker} apiUrl={apiUrl} accessToken={auth.accessToken} initialBars={candleBarsRef.current} paperBalance={paperEquity} resolutionOverride={labResolution} onRecommendation={value => { setLabRecommendations(value); if (value) setLabResolution(value.resolution); }} /></section>{showProfile && <ProfileModal onClose={() => setShowProfile(false)} onSaved={() => setProfileRevision(value => value + 1)} />}{pnlCalendarModal}</main>;
+  </main> : <main className="trading-shell">{desktopHeader}{chartsRow}{marketScanner}{positionsTable}{recentClosedPanel}{labAssistPanel}<BalanceSummary paperBalance={paperEquity} revision={profileRevision} /><BinanceAccountPanel revision={profileRevision} /><CTraderAccountPanel revision={profileRevision} /><section ref={labSection} className="lab-layout-section"><LabWindow key={`${broker}:${symbol}`} activeSymbol={symbol} broker={broker} apiUrl={apiUrl} accessToken={auth.accessToken} initialBars={candleBarsRef.current} paperBalance={paperEquity} resolutionOverride={labResolution} onRecommendation={value => { setLabRecommendations(value); if (value) setLabResolution(value.resolution); }} /></section>{showProfile && <ProfileModal onClose={() => setShowProfile(false)} onSaved={() => setProfileRevision(value => value + 1)} />}{pnlCalendarModal}</main>;
 }
 
 function App() {
