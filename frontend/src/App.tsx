@@ -1635,7 +1635,7 @@ function Workspace() {
       const { chart } = chartContext(pan.canvas);
       if (chart) {
         const xDelta = -(point.x - pan.x) * pan.xLogicalPerPixel;
-        const yDelta = (point.y - pan.y) * pan.yPricePerPixel;
+        const yDelta = -(point.y - pan.y) * pan.yPricePerPixel;
         // Apply both axes from the original range in one pass. Reading the
         // already-shifted range here causes diagonal drags to oscillate.
         chart.timeScale().setVisibleLogicalRange({ from: pan.xRange.from + xDelta, to: pan.xRange.to + xDelta });
