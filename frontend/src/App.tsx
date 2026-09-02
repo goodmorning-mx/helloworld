@@ -928,6 +928,8 @@ function Workspace() {
       grid: { vertLines: { color: '#151a20' }, horzLines: { color: '#151a20' } },
       rightPriceScale: { borderColor: '#252a31' },
       localization: { locale: 'es-MX', timeFormatter: (time: Time) => chartTimeLabel(time, timezone, true), priceFormatter: formatPaperPrice },
+      handleScroll: { mouseWheel: true, pressedMouseMove: true, horzTouchDrag: true, vertTouchDrag: true },
+      handleScale: { axisPressedMouseMove: true, mouseWheel: true, pinch: true },
       timeScale: { borderColor: '#252a31', timeVisible: true, secondsVisible: false, tickMarkFormatter: (time: Time) => chartTimeLabel(time, timezone, false) },
     });
     const candles = chart.addSeries(CandlestickSeries, { upColor: '#64d39a', downColor: '#f27e7e', borderVisible: false, wickUpColor: '#64d39a', wickDownColor: '#f27e7e', priceFormat: { type: 'price', precision: binanceRules?.price_precision ?? 8, minMove: binanceRules?.tick_size || 0.00000001 } });
@@ -1132,6 +1134,8 @@ function Workspace() {
       grid: { vertLines: { color: '#151a20' }, horzLines: { color: '#151a20' } },
       rightPriceScale: { borderColor: '#252a31' },
       localization: { locale: 'es-MX', timeFormatter: (time: Time) => chartTimeLabel(time, timezone, true), priceFormatter: formatPaperPrice },
+      handleScroll: { mouseWheel: true, pressedMouseMove: true, horzTouchDrag: true, vertTouchDrag: true },
+      handleScale: { axisPressedMouseMove: true, mouseWheel: true, pinch: true },
       timeScale: { borderColor: '#252a31', timeVisible: true, secondsVisible: false, tickMarkFormatter: (time: Time) => chartTimeLabel(time, timezone, false) },
     });
     const candles = chart.addSeries(CandlestickSeries, { upColor: '#64d39a', downColor: '#f27e7e', borderVisible: false, wickUpColor: '#64d39a', wickDownColor: '#f27e7e', priceFormat: { type: 'price', precision: binanceRules?.price_precision ?? 8, minMove: binanceRules?.tick_size || 0.00000001 } });
@@ -1592,11 +1596,6 @@ function Workspace() {
           event.currentTarget.setPointerCapture(event.pointerId);
           setMoveStart({ index: hit, point: chartPoint, drawing: drawings[hit] });
         }
-      } else {
-        event.preventDefault();
-        event.currentTarget.setPointerCapture(event.pointerId);
-        setLassoStart(point);
-        setLassoEnd(point);
       }
       return;
     }
