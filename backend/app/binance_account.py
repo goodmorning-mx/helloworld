@@ -78,6 +78,17 @@ class BinanceAccountMonitor:
                 result[symbol] = max(values)
         return result
 
+    def symbol_config(self, symbol: str) -> dict[str, object]:
+        """Return the account-specific margin mode and leverage for a symbol."""
+        requested = symbol.strip().upper()
+        payload = self._request("GET", "/fapi/v1/symbolConfig", {"symbol": requested}, signed=True)
+        item = next((row for row in payload if str(row.get("symbol", "")).upper() == requested), {}) if isinstance(payload, list) else {}
+        return {
+            "symbol": requested,
+            "margin_type": str(item.get("marginType", "")).upper() or None,
+            "leverage": int(item["leverage"]) if item.get("leverage") is not None else None,
+        }
+
     def _run(self) -> None:
         if connect is None:
             self._set(error="La dependencia WebSocket no está disponible")

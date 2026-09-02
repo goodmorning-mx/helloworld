@@ -57,6 +57,16 @@ def test_max_leverages_reads_first_bracket_per_symbol(monkeypatch):
     assert instance.max_leverages() == {"BTCUSDT": 125, "XRPUSDT": 75}
 
 
+def test_symbol_config_reads_account_specific_margin_and_leverage(monkeypatch):
+    instance = monitor()
+    monkeypatch.setattr(instance, "_request", lambda method, path, params, signed: [
+        {"symbol": "BTCUSDT", "marginType": "isolated", "leverage": 20},
+    ])
+    assert instance.symbol_config("btcusdt") == {
+        "symbol": "BTCUSDT", "margin_type": "ISOLATED", "leverage": 20,
+    }
+
+
 def test_invalid_api_key_or_ip_gets_actionable_message():
     instance = monitor()
     response = HTTPError("https://fapi.example.test/fapi/v2/account", 401, "Unauthorized", {}, None)

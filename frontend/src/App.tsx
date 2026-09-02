@@ -251,6 +251,7 @@ type BinanceAccount = {
   total_unrealized_pnl?: string | null; positions?: BinancePosition[];
   events?: Array<{ time?: string; type?: string; symbol?: string; status?: string }>;
 };
+type BinanceSymbolConfig = { configured?: boolean; symbol?: string; margin_type?: string | null; leverage?: number | null; error?: string | null };
 type CTraderAccount = {
   enabled?: boolean; configured?: boolean; healthy?: boolean; stream_connected?: boolean;
   account_id?: number | string | null; trader_login?: number | string | null; balance?: number | null; money_digits?: number | null; broker?: string | null;
@@ -601,6 +602,7 @@ function Workspace() {
   const candleDataRef = useRef<Array<{ time: UTCTimestamp; close: number }>>([]);
   const [symbol, setSymbol] = useState(() => localStorage.getItem('helloworld-selected-symbol') ?? 'BTCUSDT');
   const [binanceRules, setBinanceRules] = useState<BinanceSymbolRules | null>(null);
+  const [binanceSymbolConfig, setBinanceSymbolConfig] = useState<BinanceSymbolConfig | null>(null);
   const [broker, setBroker] = useState<'binance' | 'ctrader'>('binance');
   const [interval, setInterval] = useState<'1s' | '1m' | '3m' | '5m' | '15m'>('5m');
   const entryInterval = '1m' as const;
@@ -690,6 +692,18 @@ function Workspace() {
       .then(rules => { if (active) setBinanceRules(rules); })
       .catch(() => { if (active) setBinanceRules(null); });
     return () => { active = false; };
+  }, [auth.accessToken, broker, symbol]);
+
+  useEffect(() => {
+    if (broker !== 'binance') { setBinanceSymbolConfig(null); return; }
+    let active = true;
+    const load = () => fetch(`${apiUrl}/trading/binance/symbol-config/${encodeURIComponent(symbol)}`, { headers: auth.accessToken ? { Authorization: `Bearer ${auth.accessToken}` } : undefined, credentials: 'include' })
+      .then(response => response.ok ? response.json() as Promise<BinanceSymbolConfig> : Promise.reject(new Error('No se pudo cargar la configuración del símbolo.')))
+      .then(config => { if (active) setBinanceSymbolConfig(config); })
+      .catch(() => { if (active) setBinanceSymbolConfig(null); });
+    void load();
+    const timer = window.setInterval(load, 15_000);
+    return () => { active = false; window.clearInterval(timer); };
   }, [auth.accessToken, broker, symbol]);
 
   useEffect(() => {
@@ -2133,7 +2147,7 @@ function Workspace() {
   const pnlCalendarButton = <button className="indicator-bar-button" onClick={() => setShowPnlCalendar(true)} aria-label="Abrir calendario PNL" title="Calendario PNL">▦</button>;
   const desktopHeader = <div className="symbol-bar"><select className="broker-select" value={broker} onChange={event => { const next = event.target.value as 'binance' | 'ctrader'; setBroker(next); setSymbol(next === 'ctrader' ? 'AUDUSD' : 'BTCUSDT'); }} aria-label="Broker"><option value="binance">Binance</option><option value="ctrader">cTrader</option></select><select className="symbol-select" value={symbol} onChange={event => setSymbol(event.target.value)} aria-label="Símbolo">
     {selectableSymbols.map(option => <option key={option}>{option}</option>)}
-  </select><select className="interval-select" value={interval} onChange={event => setInterval(event.target.value as typeof interval)} aria-label="Intervalo de contexto">{(['1s', '1m', '3m', '5m', '15m'] as const).map(value => <option key={value} value={value}>{value}</option>)}</select><span className="chart-source">{broker.toUpperCase()} · {entryInterval.toUpperCase()} ENTRADA · {interval.toUpperCase()} CONTEXTO</span><button className={`session-toggle ${showSessions ? 'session-active' : ''}`} onClick={() => setShowSessions(value => !value)} aria-label="Mostrar sesiones" title="Mostrar sesiones">Sesiones</button><div className="chart-tools" aria-label="Herramientas del gráfico">
+  </select><select className="interval-select" value={interval} onChange={event => setInterval(event.target.value as typeof interval)} aria-label="Intervalo de contexto">{(['1s', '1m', '3m', '5m', '15m'] as const).map(value => <option key={value} value={value}>{value}</option>)}</select><span className="chart-source">{broker.toUpperCase()} · {entryInterval.toUpperCase()} ENTRADA · {interval.toUpperCase()} CONTEXTO</span>{broker === 'binance' && <div className="symbol-risk-indicators" aria-label={`Configuración Binance de ${symbol}`}><span className="symbol-risk-mode">{binanceSymbolConfig?.margin_type === 'ISOLATED' ? 'ISOLATED' : binanceSymbolConfig?.margin_type ?? 'MARGIN —'}</span><span>LEV {binanceSymbolConfig?.leverage != null ? `${binanceSymbolConfig.leverage}x` : '—'}</span></div>}<button className={`session-toggle ${showSessions ? 'session-active' : ''}`} onClick={() => setShowSessions(value => !value)} aria-label="Mostrar sesiones" title="Mostrar sesiones">Sesiones</button><div className="chart-tools" aria-label="Herramientas del gráfico">
     {labButton}{pnlCalendarButton}<button className={`indicator-bar-button ${showHeikinAshi ? 'indicator-toggle-active' : ''}`} onClick={() => setShowHeikinAshi(value => !value)} aria-pressed={showHeikinAshi} aria-label="Alternar Heikin Ashi" title="Heikin Ashi">HA</button><button className={!tool ? 'tool-active' : ''} onClick={() => setTool(null)} aria-label="Seleccionar y navegar" title="Seleccionar y navegar">↖</button>
     {([['line', '╱', 'Línea'], ['ruler', '▥', 'Regla'], ['long', 'L', 'Long'], ['short', 'S', 'Short'], ['zoom', '⌗', 'Zoom lazo']] as const).map(([key, icon, label]) => <button key={key} className={tool === key ? 'tool-active' : ''} onClick={() => chooseTool(key)} aria-label={label} title={label}>{icon}</button>)}<button onClick={() => { resetChartZoom('entry'); resetChartZoom('context'); }} aria-label="Restablecer zoom" title="Restablecer zoom">↺</button>
     <button onClick={() => setDrawings(current => current.filter(drawing => drawing.paper))} aria-label="Borrar dibujos" title="Borrar dibujos">×</button>

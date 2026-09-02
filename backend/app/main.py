@@ -277,6 +277,14 @@ def binance_account(identity: AuthIdentity = Depends(identity_dependency(auth_se
     return binance_manager.snapshot(identity.user_id)
 
 
+@app.get("/trading/binance/symbol-config/{symbol}")
+def binance_symbol_config(symbol: str, identity: AuthIdentity = Depends(identity_dependency(auth_service))) -> dict[str, object]:
+    """Return account-specific margin mode and leverage for one Binance future."""
+    if not settings.binance_account_monitor_enabled:
+        return {"configured": False, "symbol": symbol.upper(), "margin_type": None, "leverage": None}
+    return binance_manager.symbol_config(identity.user_id, symbol)
+
+
 @app.get("/market/binance/active-symbols")
 def binance_active_symbols(
     limit: int = 30,
