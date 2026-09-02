@@ -91,10 +91,14 @@ class BinanceAccountMonitor:
                     self._set(healthy=True, stream_connected=True, error=None)
                     retry = 1
                     last_keepalive = time.monotonic()
+                    last_account_refresh = time.monotonic()
                     while not self._stop.is_set():
                         if time.monotonic() - last_keepalive > 25 * 60:
                             self._keepalive(listen_key)
                             last_keepalive = time.monotonic()
+                        if time.monotonic() - last_account_refresh >= 15:
+                            self._refresh_account()
+                            last_account_refresh = time.monotonic()
                         try:
                             raw = socket.recv(timeout=2)
                         except TimeoutError:
