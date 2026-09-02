@@ -1893,26 +1893,19 @@ function Workspace() {
   function handleChartWheel(event: ReactWheelEvent<HTMLElement>, canvas: ChartCanvas) {
     // Trackpad pinch gestures arrive as ctrl+wheel in Chromium. Keep regular
     // wheel scrolling available for the chart, but use pinch to zoom both
-    // scales around the pointer just like Plotly's scrollZoom.
+    // the time scale around the pointer just like Plotly's scrollZoom.
     if (!event.ctrlKey && !event.metaKey) return;
     const { chart, candles } = chartContext(canvas);
     if (!chart || !candles) return;
     const bounds = event.currentTarget.getBoundingClientRect();
     const x = event.clientX - bounds.left;
-    const y = event.clientY - bounds.top;
     const xCenter = chart.timeScale().coordinateToLogical(x);
-    const yCenter = candles.coordinateToPrice(y);
     const xRange = chart.timeScale().getVisibleLogicalRange();
-    const yRange = chart.priceScale('right').getVisibleRange();
-    if (xCenter === null || xCenter === undefined || yCenter === null || yCenter === undefined || !xRange || !yRange) return;
+    if (xCenter === null || xCenter === undefined || !xRange) return;
     const factor = event.deltaY > 0 ? 1.15 : 0.87;
     chart.timeScale().setVisibleLogicalRange({
       from: Number(xCenter) + (xRange.from - Number(xCenter)) * factor,
       to: Number(xCenter) + (xRange.to - Number(xCenter)) * factor,
-    });
-    chart.priceScale('right').setVisibleRange({
-      from: yCenter + (yRange.from - yCenter) * factor,
-      to: yCenter + (yRange.to - yCenter) * factor,
     });
     event.preventDefault();
     event.stopPropagation();
