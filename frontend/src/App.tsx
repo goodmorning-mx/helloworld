@@ -25,6 +25,7 @@ const MAX_CHART_HISTORY_SECONDS = 2 * 86400;
 // candles. Rendering a full month of them creates visual noise and needless
 // SVG work while the trader is only tuning the current move.
 const MAX_WICK_EXTENSION_BARS = 10;
+const FIXED_BINANCE_STOP_PERCENT = 0.20;
 function renderBars(bars: Array<{ time: UTCTimestamp; open: number; high: number; low: number; close: number }>, max: number) {
   return bars.slice(-max);
 }
@@ -1733,7 +1734,13 @@ function Workspace() {
     const direction = type === 'long' ? 1 : -1;
     const recommendation = labRecommendations?.[type];
     const storedAssist = JSON.parse(localStorage.getItem('helloworld-paper-assist') ?? '{}') as { stopPercent?: number; targetPercent?: number };
-    const stopDistance = recommendation?.mae ? recommendation.mae / 100 : Number.isFinite(storedAssist.stopPercent) && (storedAssist.stopPercent ?? 0) > 0 ? (storedAssist.stopPercent as number) / 100 : 0.00087;
+    const stopDistance = broker === 'binance'
+      ? FIXED_BINANCE_STOP_PERCENT / 100
+      : recommendation?.mae
+        ? recommendation.mae / 100
+        : Number.isFinite(storedAssist.stopPercent) && (storedAssist.stopPercent ?? 0) > 0
+          ? (storedAssist.stopPercent as number) / 100
+          : 0.00087;
     const targetDistance = recommendation?.mfe ? recommendation.mfe / 100 : Number.isFinite(storedAssist.targetPercent) && (storedAssist.targetPercent ?? 0) > 0 ? (storedAssist.targetPercent as number) / 100 : stopDistance * 4;
     const rawTarget = entry * (1 + direction * targetDistance);
     const rawStop = entry * (1 - direction * stopDistance);
