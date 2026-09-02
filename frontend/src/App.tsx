@@ -1744,11 +1744,13 @@ function Workspace() {
     const riskPercent = Number((JSON.parse(localStorage.getItem('helloworld-paper-assist') ?? '{}') as { riskPercent?: number }).riskPercent) || paperRiskPercent;
     const riskAmount = paperInitialBalance * riskPercent / 100;
     const stopPercent = Math.abs(entry - stop) / entry;
+    // Binance risk is defined by the price excursion (MAE). Fees and
+    // slippage are settled separately in PNL; they must not shrink the
+    // crypto exposure target. cTrader keeps its existing fee-aware sizing.
+    const sizingStop = broker === 'binance' ? stopPercent : stopPercent + tradingCostRate(broker);
+    const riskBoundNotional = sizingStop > 0 ? riskAmount / sizingStop : 0;
     const operationLeverage = Math.min(recommendation?.leverage ?? paperLeverage, brokerMaxLeverage);
-    const effectiveStop = stopPercent + tradingCostRate(broker);
-    const riskBoundNotional = effectiveStop > 0 ? riskAmount / effectiveStop : 0;
-    const feeAwareLeverage = riskAmount > 0 ? riskBoundNotional / riskAmount : operationLeverage;
-    const effectiveLeverage = Math.min(operationLeverage, feeAwareLeverage, brokerMaxLeverage);
+    const effectiveLeverage = broker === 'binance' ? brokerMaxLeverage : operationLeverage;
     const requestedNotional = Math.min(riskBoundNotional, paperInitialBalance * effectiveLeverage);
     const quantity = broker === 'binance' && binanceRules
       ? roundToBinance(requestedNotional / entry, binanceRules.step_size, binanceRules.quantity_precision)
