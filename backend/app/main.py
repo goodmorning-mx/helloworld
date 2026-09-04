@@ -207,6 +207,15 @@ class BinanceLeverageInput(BaseModel):
     leverage: int = Field(ge=1, le=125)
 
 
+class BinanceRealOrderInput(BaseModel):
+    symbol: str = Field(min_length=3, max_length=32)
+    side: Literal["LONG", "SHORT"]
+    quantity: float = Field(gt=0)
+    stop_loss: float = Field(gt=0)
+    take_profit: float = Field(gt=0)
+    confirmed: bool = False
+
+
 @app.on_event("startup")
 def initialize_auth_schema() -> None:
     auth_service.create_schema()
@@ -301,6 +310,40 @@ def binance_runtime(identity: AuthIdentity = Depends(identity_dependency(auth_se
 def list_binance_execution_intents(identity: AuthIdentity = Depends(identity_dependency(auth_service))) -> list[dict[str, object]]:
     """List durable execution intents; no exchange order is created by this endpoint."""
     return binance_execution_store.list(identity.user_id)
+
+
+@app.post("/trading/binance/real/operations")
+def open_binance_real_operation(payload: BinanceRealOrderInput, identity: AuthIdentity = Depends(identity_dependency(auth_service))) -> dict[str, object]:
+    """Open one real isolated position with exchange-side SL/TP protection."""
+    if not settings.binance_real_trading_enabled:
+        raise HTTPException(status_code=503, detail="El trading real de Binance está bloqueado en este entorno.")
+    if not payload.confirmed:
+        raise HTTPException(status_code=409, detail="Confirma explícitamente la operación real.")
+    symbol = payload.symbol.upper()
+    order_side = "BUY" if payload.side == "LONG" else "SELL"
+    close_side = "SELL" if order_side == "BUY" else "BUY"
+    intent = binance_execution_store.create(identity.user_id, {
+        "symbol": symbol, "side": payload.side, "quantity": payload.quantity,
+        "stop_loss": payload.stop_loss, "take_profit": payload.take_profit,
+    })
+    entry = None
+    try:
+        entry = binance_manager.place_market_order(identity.user_id, symbol, order_side, payload.quantity, str(intent["client_order_id"]))
+        binance_execution_store.update(intent["id"], identity.user_id, status="ENTRY_SUBMITTED", exchange_order_id=str(entry.get("orderId")))
+        stop = binance_manager.place_close_protection(identity.user_id, symbol, close_side, payload.stop_loss, f"{intent['client_order_id']}_sl", "STOP_MARKET")
+        target = binance_manager.place_close_protection(identity.user_id, symbol, close_side, payload.take_profit, f"{intent['client_order_id']}_tp", "TAKE_PROFIT_MARKET")
+        saved = binance_execution_store.update(intent["id"], identity.user_id, status="PROTECTED", last_error=None)
+        return {"broker": "binance", "mode": "real", "operation": saved, "entry": entry, "stop": stop, "target": target}
+    except Exception as exc:
+        emergency_error = None
+        if entry is not None:
+            try:
+                binance_manager.place_market_order(identity.user_id, symbol, close_side, payload.quantity, f"{intent['client_order_id']}_emergency")
+            except Exception as close_exc:  # surface this prominently for manual intervention
+                emergency_error = str(close_exc)
+        message = str(exc) if emergency_error is None else f"{exc}; cierre de emergencia falló: {emergency_error}"
+        binance_execution_store.update(intent["id"], identity.user_id, status="ERROR", last_error=message)
+        raise HTTPException(status_code=502, detail=f"Binance rechazó la operación; revisa el estado antes de reintentar: {message}") from exc
 
 
 @app.get("/trading/binance/symbol-config/{symbol}")

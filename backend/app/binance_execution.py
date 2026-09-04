@@ -13,7 +13,7 @@ import threading
 import time
 from uuid import uuid4
 
-from sqlalchemy import insert, select
+from sqlalchemy import insert, select, update
 from sqlalchemy.engine import Engine
 from sqlalchemy.sql import column, table
 
@@ -55,6 +55,19 @@ class BinanceExecutionStore:
         with self._engine.begin() as connection:
             connection.execute(insert(execution_intents_table).values(**intent))
         return intent
+
+    def update(self, intent_id: str, user_id: str, **values: object) -> dict[str, object] | None:
+        values["updated_at"] = datetime.now(timezone.utc)
+        with self._engine.begin() as connection:
+            connection.execute(update(execution_intents_table).where(
+                execution_intents_table.c.id == intent_id,
+                execution_intents_table.c.user_id == user_id,
+            ).values(**values))
+            row = connection.execute(select(execution_intents_table).where(
+                execution_intents_table.c.id == intent_id,
+                execution_intents_table.c.user_id == user_id,
+            )).mappings().first()
+        return dict(row) if row else None
 
 
 class BinanceExecutionSupervisor:
@@ -103,4 +116,3 @@ class BinanceExecutionSupervisor:
             except Exception:
                 logger.exception("binance_execution_supervisor_cycle_failed")
             self._stop.wait(delay)
-

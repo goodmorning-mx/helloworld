@@ -122,6 +122,31 @@ class BinanceAccountMonitor:
         self._request("POST", "/fapi/v1/leverage", {"symbol": requested, "leverage": value}, signed=True)
         return self.symbol_config(requested)
 
+    def place_market_order(self, symbol: str, side: str, quantity: float, client_order_id: str) -> dict:
+        """Submit one market entry. Caller must pass the production safety gate."""
+        requested = symbol.strip().upper()
+        order_side = side.strip().upper()
+        if order_side not in {"BUY", "SELL"} or quantity <= 0:
+            raise ValueError("Orden Binance inválida.")
+        return self._request("POST", "/fapi/v1/order", {
+            "symbol": requested, "side": order_side, "type": "MARKET",
+            "quantity": format(quantity, ".16g"), "newClientOrderId": client_order_id,
+            "newOrderRespType": "RESULT",
+        }, signed=True)
+
+    def place_close_protection(self, symbol: str, side: str, stop_price: float, client_order_id: str, order_type: str) -> dict:
+        """Place a reduce-only-by-close-position protective trigger."""
+        requested = symbol.strip().upper()
+        trigger_type = order_type.strip().upper()
+        if trigger_type not in {"STOP_MARKET", "TAKE_PROFIT_MARKET"} or stop_price <= 0:
+            raise ValueError("Protección Binance inválida.")
+        return self._request("POST", "/fapi/v1/order", {
+            "symbol": requested, "side": side.strip().upper(), "type": trigger_type,
+            "stopPrice": format(stop_price, ".16g"), "closePosition": "true",
+            "workingType": "MARK_PRICE", "priceProtect": "TRUE",
+            "newClientOrderId": client_order_id,
+        }, signed=True)
+
     def _run(self) -> None:
         if connect is None:
             self._set(error="La dependencia WebSocket no está disponible")
@@ -185,7 +210,8 @@ class BinanceAccountMonitor:
             order = event.get("o", {})
             item = {"time": self._now(), "type": event_type, "symbol": order.get("s"),
                     "side": order.get("S"), "status": order.get("X"), "order_type": order.get("o"),
-                    "price": order.get("ap") or order.get("p"), "quantity": order.get("z") or order.get("q")}
+                    "price": order.get("ap") or order.get("p"), "quantity": order.get("z") or order.get("q"),
+                    "client_order_id": order.get("c"), "exchange_order_id": order.get("i")}
             with self._lock:
                 events = list(self._snapshot["events"])
                 events.append(item)

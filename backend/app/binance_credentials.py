@@ -191,6 +191,14 @@ class BinanceMonitorManager:
                 monitor.start()
         return {"configured": True, **monitor.set_leverage(symbol, leverage)}
 
+    def place_market_order(self, user_id: str, symbol: str, side: str, quantity: float, client_order_id: str) -> dict:
+        monitor = self._monitor_for_user(user_id)
+        return monitor.place_market_order(symbol, side, quantity, client_order_id)
+
+    def place_close_protection(self, user_id: str, symbol: str, side: str, stop_price: float, client_order_id: str, order_type: str) -> dict:
+        monitor = self._monitor_for_user(user_id)
+        return monitor.place_close_protection(symbol, side, stop_price, client_order_id, order_type)
+
     def save(self, user_id: str, api_key: str, api_secret: str) -> dict[str, object]:
         self._validate(api_key, api_secret)
         self._store.save(user_id, api_key, api_secret)
@@ -213,6 +221,23 @@ class BinanceMonitorManager:
             self._fingerprints.pop(user_id, None)
         if monitor is not None:
             monitor.stop()
+
+    def _monitor_for_user(self, user_id: str) -> BinanceAccountMonitor:
+        credentials = self._store.get(user_id)
+        if credentials is None:
+            raise RuntimeError("Cuenta Binance no configurada.")
+        api_key, api_secret = credentials
+        fingerprint = hashlib.sha256(f"{api_key}\0{api_secret}".encode()).hexdigest()
+        with self._lock:
+            monitor = self._monitors.get(user_id)
+            if monitor is None or self._fingerprints.get(user_id) != fingerprint:
+                if monitor is not None:
+                    monitor.stop()
+                monitor = BinanceAccountMonitor(api_key, api_secret, self._settings.binance_base_url)
+                self._monitors[user_id] = monitor
+                self._fingerprints[user_id] = fingerprint
+                monitor.start()
+        return monitor
 
     @staticmethod
     def _validate(api_key: str, api_secret: str) -> None:
