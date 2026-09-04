@@ -686,6 +686,7 @@ function Workspace() {
   const [, setActivePositionIndex] = useState<number | null>(null);
   const activePositionIndexRef = useRef<number | null>(null);
   const nativePriceLinesRef = useRef<Array<{ series: ReturnType<ReturnType<typeof createChart>['addSeries']>; line: IPriceLine }>>([]);
+  const trackerPriceLinesRef = useRef<Array<{ line: IPriceLine; canvas: ChartCanvas; level: 'h2' | 'h1' | 'l1' | 'l2'; price: number }>>([]);
   const paperReadyRef = useRef(false);
   const [paperReady, setPaperReady] = useState(false);
   const [paperSyncError, setPaperSyncError] = useState('');
@@ -903,10 +904,24 @@ function Workspace() {
     return () => window.clearTimeout(timer);
   }, [drawings, auth.accessToken, paperReady, symbol]);
 
+  const trackerLabel = (level: 'h2' | 'h1' | 'l1' | 'l2', price: number, close?: number) => {
+    if ((level !== 'h2' && level !== 'l2') || !close || close <= 0) return level.toUpperCase();
+    const distance = (price - close) / close * 100;
+    return `${level.toUpperCase()} ${distance >= 0 ? '+' : ''}${distance.toFixed(3)}%`;
+  };
+
+  const updateTrackerLabels = (canvas: ChartCanvas, close: number) => {
+    if (!showTracker || !Number.isFinite(close) || close <= 0) return;
+    trackerPriceLinesRef.current.forEach(item => {
+      if (item.canvas === canvas) item.line.applyOptions({ title: trackerLabel(item.level, item.price, close) });
+    });
+  };
+
   useEffect(() => {
     void trackerRevision;
     nativePriceLinesRef.current.forEach(({ series, line }) => series.removePriceLine(line));
     nativePriceLinesRef.current = [];
+    trackerPriceLinesRef.current = [];
     const addLines = (canvas: ChartCanvas, series: ReturnType<ReturnType<typeof createChart>['addSeries']> | null) => {
       if (!series) return;
       drawings.forEach((drawing, index) => {
@@ -958,11 +973,12 @@ function Workspace() {
           lineStyle: 0,
           lineVisible: true,
           axisLabelVisible: true,
-          title: level.toUpperCase(),
+          title: trackerLabel(level, latest[level], sourceBars[sourceBars.length - 1]?.close),
           axisLabelColor: '#f59e0b',
           axisLabelTextColor: '#080a0d',
         });
         nativePriceLinesRef.current.push({ series, line });
+        trackerPriceLinesRef.current.push({ line, canvas, level, price: latest[level] });
       });
     };
     addLines('entry', candlesRef.current);
@@ -970,6 +986,7 @@ function Workspace() {
     return () => {
       nativePriceLinesRef.current.forEach(({ series, line }) => series.removePriceLine(line));
       nativePriceLinesRef.current = [];
+      trackerPriceLinesRef.current = [];
     };
   }, [drawings, symbol, interval, mobilePwa, visibleClosedId, showTracker, trackerPeriod, trackerRevision]);
 
@@ -1091,6 +1108,7 @@ function Workspace() {
           else candleDataRef.current.push({ time: liveBar.time, close: liveBar.close });
           if (showHeikinAshi) setDataPreservingRange(calculateHeikinAshi(renderBars(candleBarsRef.current, MAX_ENTRY_RENDER_BARS)));
           else candles.update(liveBar);
+          updateTrackerLabels('entry', liveBar.close);
           scheduleViewportRefresh();
           if (candleBarsRef.current[candleBarsRef.current.length - 1]?.time !== previousBarTime) setTrackerRevision(value => value + 1);
         }).catch(() => undefined);
@@ -1132,6 +1150,7 @@ function Workspace() {
           candleDataRef.current = candleBarsRef.current.map(({ time, close }) => ({ time, close }));
           if (showHeikinAshi) setDataPreservingRange(calculateHeikinAshi(renderBars(candleBarsRef.current, MAX_ENTRY_RENDER_BARS)));
           else candles.update(liveBar);
+          updateTrackerLabels('entry', liveBar.close);
           scheduleViewportRefresh();
         }
         return;
@@ -1149,6 +1168,7 @@ function Workspace() {
       else if (isNewBar) candleDataRef.current.push({ time: next.time, close: next.close });
       if (showHeikinAshi) setDataPreservingRange(calculateHeikinAshi(renderBars(candleBarsRef.current, MAX_ENTRY_RENDER_BARS)));
       else candles.update(next);
+      updateTrackerLabels('entry', next.close);
       // The rolling impulse average follows the active candle in real time;
       // requestAnimationFrame coalesces bursts without repainting per tick.
       scheduleViewportRefresh();
@@ -1312,6 +1332,7 @@ function Workspace() {
           else overviewCandleDataRef.current.push({ time: liveBar.time, close: liveBar.close });
           if (showHeikinAshi) setDataPreservingRange(calculateHeikinAshi(renderBars(overviewBarsRef.current, MAX_CONTEXT_RENDER_BARS)));
           else candles.update(liveBar);
+          updateTrackerLabels('context', liveBar.close);
           scheduleOverviewRefresh();
           if (overviewBarsRef.current[overviewBarsRef.current.length - 1]?.time !== previousBarTime) setTrackerRevision(value => value + 1);
         }).catch(() => undefined);
@@ -1349,6 +1370,7 @@ function Workspace() {
           overviewCandleDataRef.current = overviewBarsRef.current.map(({ time, close }) => ({ time, close }));
           if (showHeikinAshi) setDataPreservingRange(calculateHeikinAshi(renderBars(overviewBarsRef.current, MAX_CONTEXT_RENDER_BARS)));
           else candles.update(liveBar);
+          updateTrackerLabels('context', liveBar.close);
           scheduleOverviewRefresh();
         }
         return;
@@ -1363,6 +1385,7 @@ function Workspace() {
       else if (isNewBar) overviewCandleDataRef.current.push({ time: next.time, close: next.close });
       if (showHeikinAshi) setDataPreservingRange(calculateHeikinAshi(renderBars(overviewBarsRef.current, MAX_CONTEXT_RENDER_BARS)));
       else candles.update(next);
+      updateTrackerLabels('context', next.close);
       scheduleOverviewRefresh();
       if (isNewBar) setTrackerRevision(value => value + 1);
     };
