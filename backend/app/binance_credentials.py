@@ -59,6 +59,12 @@ class BinanceCredentialStore:
             return None
         return self._cipher.decrypt(row.encrypted_api_key), self._cipher.decrypt(row.encrypted_api_secret)
 
+    def user_ids(self) -> list[str]:
+        """Return configured users so backend workers do not depend on a UI request."""
+        with self._engine.connect() as connection:
+            rows = connection.execute(select(credentials_table.c.user_id)).all()
+        return [str(row.user_id) for row in rows]
+
     def status(self, user_id: str) -> dict[str, object]:
         query = select(credentials_table.c.encrypted_api_key, credentials_table.c.updated_at).where(credentials_table.c.user_id == user_id)
         with self._engine.connect() as connection:

@@ -26,6 +26,7 @@ from app.ctrader_credentials import CTraderCredentialStore
 from app.ctrader_runtime import CTraderManager
 from app.paper_operations import PaperOperationStore
 from app.market_gateway import BinanceMarketGateway, SUPPORTED_INTERVALS
+from app.binance_execution import BinanceExecutionStore, BinanceExecutionSupervisor
 
 settings = get_settings()
 engine = create_database_engine()
@@ -42,6 +43,8 @@ ctrader_credentials = CTraderCredentialStore(engine, settings)
 ctrader_manager = CTraderManager(settings, ctrader_credentials)
 paper_operation_store = PaperOperationStore(engine)
 binance_market_gateway = BinanceMarketGateway()
+binance_execution_store = BinanceExecutionStore(engine)
+binance_execution_supervisor = BinanceExecutionSupervisor(settings, binance_credentials, binance_manager)
 
 
 class FallbackProvider:
@@ -208,10 +211,12 @@ class BinanceLeverageInput(BaseModel):
 def initialize_auth_schema() -> None:
     auth_service.create_schema()
     ctrader_manager.start_configured()
+    binance_execution_supervisor.start()
 
 
 @app.on_event("shutdown")
 def stop_binance_monitor() -> None:
+    binance_execution_supervisor.stop()
     binance_manager.stop_all()
     ctrader_manager.stop_all()
 
@@ -283,6 +288,19 @@ def binance_account(identity: AuthIdentity = Depends(identity_dependency(auth_se
     if not settings.binance_account_monitor_enabled:
         return {"enabled": False, "configured": False, "healthy": False, "error": "Monitor Binance deshabilitado"}
     return binance_manager.snapshot(identity.user_id)
+
+
+@app.get("/trading/binance/runtime")
+def binance_runtime(identity: AuthIdentity = Depends(identity_dependency(auth_service))) -> dict[str, object]:
+    """Expose backend worker health without exposing credentials or secrets."""
+    snapshot = binance_manager.snapshot(identity.user_id)
+    return {"worker": binance_execution_supervisor.status(), "account": snapshot}
+
+
+@app.get("/trading/binance/execution-intents")
+def list_binance_execution_intents(identity: AuthIdentity = Depends(identity_dependency(auth_service))) -> list[dict[str, object]]:
+    """List durable execution intents; no exchange order is created by this endpoint."""
+    return binance_execution_store.list(identity.user_id)
 
 
 @app.get("/trading/binance/symbol-config/{symbol}")
