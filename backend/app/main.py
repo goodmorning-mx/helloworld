@@ -303,7 +303,7 @@ def binance_account(identity: AuthIdentity = Depends(identity_dependency(auth_se
 def binance_runtime(identity: AuthIdentity = Depends(identity_dependency(auth_service))) -> dict[str, object]:
     """Expose backend worker health without exposing credentials or secrets."""
     snapshot = binance_manager.snapshot(identity.user_id)
-    return {"worker": binance_execution_supervisor.status(), "account": snapshot}
+    return {"real_trading_enabled": settings.binance_real_trading_enabled, "worker": binance_execution_supervisor.status(), "account": snapshot}
 
 
 @app.get("/trading/binance/execution-intents")
