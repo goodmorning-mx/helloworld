@@ -736,9 +736,20 @@ function Workspace() {
   useEffect(() => {
     if (broker !== 'binance') { setBinanceSymbolConfig(null); setBinanceLeverageDraft(''); return; }
     let active = true;
+    let applyingIsolated = false;
     const load = () => fetch(`${apiUrl}/trading/binance/symbol-config/${encodeURIComponent(symbol)}`, { headers: auth.accessToken ? { Authorization: `Bearer ${auth.accessToken}` } : undefined, credentials: 'include' })
       .then(response => response.ok ? response.json() as Promise<BinanceSymbolConfig> : Promise.reject(new Error('No se pudo cargar la configuración del símbolo.')))
-      .then(config => { if (active) { setBinanceSymbolConfig(config); setBinanceLeverageDraft(config.leverage != null ? String(config.leverage) : ''); } })
+      .then(async config => {
+        if (active) { setBinanceSymbolConfig(config); setBinanceLeverageDraft(config.leverage != null ? String(config.leverage) : ''); }
+        if (!active || applyingIsolated || !config.configured || config.margin_type !== 'CROSSED') return;
+        applyingIsolated = true;
+        try {
+          const updated = await fetchJson<BinanceSymbolConfig>(`${apiUrl}/trading/binance/symbol-config/${encodeURIComponent(symbol)}/margin-type`, { method: 'POST', headers: { ...(auth.accessToken ? { Authorization: `Bearer ${auth.accessToken}` } : {}), 'Content-Type': 'application/json' }, credentials: 'include', body: JSON.stringify({ margin_type: 'ISOLATED' }) });
+          if (active) setBinanceSymbolConfig(updated);
+        } catch (error) {
+          console.warn('No se pudo activar margen aislado para el símbolo', symbol, error);
+        } finally { applyingIsolated = false; }
+      })
       .catch(() => { if (active) setBinanceSymbolConfig(null); });
     void load();
     const timer = window.setInterval(load, 15_000);
