@@ -154,6 +154,11 @@ function roundToBinance(value: number, step: number, precision: number) {
   const rounded = step > 0 ? Math.floor((value + step * 1e-9) / step) * step : value;
   return Number(rounded.toFixed(Math.max(0, precision)));
 }
+function roundUpToBinance(value: number, step: number, precision: number) {
+  if (!Number.isFinite(value)) return 0;
+  const rounded = step > 0 ? Math.ceil((value - step * 1e-9) / step) * step : value;
+  return Number(rounded.toFixed(Math.max(0, precision)));
+}
 
 type CTraderCandleRow = { timestamp: number; low: number; delta_open: number; delta_high: number; delta_close: number };
 function parseCTraderCandles(payload: unknown): Array<{ time: UTCTimestamp; open: number; high: number; low: number; close: number }> {
@@ -1977,7 +1982,7 @@ function Workspace() {
       ? binanceRules.min_notional
       : Math.min(riskBoundNotional, paperInitialBalance * effectiveLeverage);
     const quantity = broker === 'binance' && binanceRules
-      ? roundToBinance(requestedNotional / entry, binanceRules.step_size, binanceRules.quantity_precision)
+      ? roundUpToBinance(requestedNotional / entry, binanceRules.step_size, binanceRules.quantity_precision)
       : (entry > 0 ? requestedNotional / entry : 0);
     const notional = quantity * entry;
     if (broker === 'binance' && binanceRules && (quantity < binanceRules.min_qty || notional < binanceRules.min_notional)) {
