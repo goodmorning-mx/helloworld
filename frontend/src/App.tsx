@@ -603,9 +603,9 @@ function Workspace() {
   const [symbol, setSymbol] = useState(() => localStorage.getItem('helloworld-selected-symbol') ?? 'BTCUSDT');
   const [binanceRules, setBinanceRules] = useState<BinanceSymbolRules | null>(null);
   const [binanceSymbolConfig, setBinanceSymbolConfig] = useState<BinanceSymbolConfig | null>(null);
-  const [binanceMarginDraft, setBinanceMarginDraft] = useState<'ISOLATED' | 'CROSSED' | ''>('');
-  const [binanceMarginBusy, setBinanceMarginBusy] = useState(false);
-  const [binanceMarginError, setBinanceMarginError] = useState('');
+  const [binanceLeverageDraft, setBinanceLeverageDraft] = useState('');
+  const [binanceLeverageBusy, setBinanceLeverageBusy] = useState(false);
+  const [binanceLeverageError, setBinanceLeverageError] = useState('');
   const [broker, setBroker] = useState<'binance' | 'ctrader'>('binance');
   const [interval, setInterval] = useState<'1s' | '1m' | '3m' | '5m' | '15m'>('5m');
   const entryInterval = '1m' as const;
@@ -697,29 +697,30 @@ function Workspace() {
     return () => { active = false; };
   }, [auth.accessToken, broker, symbol]);
 
-  const applyBinanceMarginType = async () => {
-    if (broker !== 'binance' || binanceMarginBusy || !binanceMarginDraft) return;
-    setBinanceMarginBusy(true);
-    setBinanceMarginError('');
+  const applyBinanceLeverage = async () => {
+    const leverage = Number(binanceLeverageDraft);
+    if (broker !== 'binance' || binanceLeverageBusy || !Number.isInteger(leverage) || leverage < 1 || leverage > 125) return;
+    setBinanceLeverageBusy(true);
+    setBinanceLeverageError('');
     try {
-      const response = await fetch(`${apiUrl}/trading/binance/symbol-config/${encodeURIComponent(symbol)}/margin-type`, { method: 'POST', headers: { ...(auth.accessToken ? { Authorization: `Bearer ${auth.accessToken}` } : {}), 'Content-Type': 'application/json' }, credentials: 'include', body: JSON.stringify({ margin_type: binanceMarginDraft }) });
+      const response = await fetch(`${apiUrl}/trading/binance/symbol-config/${encodeURIComponent(symbol)}/leverage`, { method: 'POST', headers: { ...(auth.accessToken ? { Authorization: `Bearer ${auth.accessToken}` } : {}), 'Content-Type': 'application/json' }, credentials: 'include', body: JSON.stringify({ leverage }) });
       const payload = await response.json() as BinanceSymbolConfig & { detail?: string };
-      if (!response.ok) throw new Error(payload.detail ?? 'Binance no pudo cambiar el margen.');
+      if (!response.ok) throw new Error(payload.detail ?? 'Binance no pudo cambiar el leverage.');
       setBinanceSymbolConfig(payload);
-      setBinanceMarginDraft((payload.margin_type as 'ISOLATED' | 'CROSSED' | null) ?? '');
+      setBinanceLeverageDraft(payload.leverage != null ? String(payload.leverage) : '');
     } catch (reason) {
-      setBinanceMarginError(reason instanceof Error ? reason.message : 'No se pudo cambiar el margen en Binance.');
+      setBinanceLeverageError(reason instanceof Error ? reason.message : 'No se pudo cambiar el leverage en Binance.');
     } finally {
-      setBinanceMarginBusy(false);
+      setBinanceLeverageBusy(false);
     }
   };
 
   useEffect(() => {
-    if (broker !== 'binance') { setBinanceSymbolConfig(null); setBinanceMarginDraft(''); return; }
+    if (broker !== 'binance') { setBinanceSymbolConfig(null); setBinanceLeverageDraft(''); return; }
     let active = true;
     const load = () => fetch(`${apiUrl}/trading/binance/symbol-config/${encodeURIComponent(symbol)}`, { headers: auth.accessToken ? { Authorization: `Bearer ${auth.accessToken}` } : undefined, credentials: 'include' })
       .then(response => response.ok ? response.json() as Promise<BinanceSymbolConfig> : Promise.reject(new Error('No se pudo cargar la configuración del símbolo.')))
-      .then(config => { if (active) { setBinanceSymbolConfig(config); setBinanceMarginDraft((config.margin_type as 'ISOLATED' | 'CROSSED' | null) ?? ''); } })
+      .then(config => { if (active) { setBinanceSymbolConfig(config); setBinanceLeverageDraft(config.leverage != null ? String(config.leverage) : ''); } })
       .catch(() => { if (active) setBinanceSymbolConfig(null); });
     void load();
     const timer = window.setInterval(load, 15_000);
@@ -2167,7 +2168,7 @@ function Workspace() {
   const pnlCalendarButton = <button className="indicator-bar-button" onClick={() => setShowPnlCalendar(true)} aria-label="Abrir calendario PNL" title="Calendario PNL">▦</button>;
   const desktopHeader = <div className="symbol-bar"><select className="broker-select" value={broker} onChange={event => { const next = event.target.value as 'binance' | 'ctrader'; setBroker(next); setSymbol(next === 'ctrader' ? 'AUDUSD' : 'BTCUSDT'); }} aria-label="Broker"><option value="binance">Binance</option><option value="ctrader">cTrader</option></select><select className="symbol-select" value={symbol} onChange={event => setSymbol(event.target.value)} aria-label="Símbolo">
     {selectableSymbols.map(option => <option key={option}>{option}</option>)}
-  </select><select className="interval-select" value={interval} onChange={event => setInterval(event.target.value as typeof interval)} aria-label="Intervalo de contexto">{(['1s', '1m', '3m', '5m', '15m'] as const).map(value => <option key={value} value={value}>{value}</option>)}</select><span className="chart-source">{broker.toUpperCase()} · {entryInterval.toUpperCase()} ENTRADA · {interval.toUpperCase()} CONTEXTO</span>{broker === 'binance' && <div className="symbol-risk-indicators" aria-label={`Configuración Binance de ${symbol}`} aria-live="polite"><label className="symbol-risk-select-label">Margen<select className="symbol-risk-select" value={binanceMarginDraft} onChange={event => setBinanceMarginDraft(event.target.value as 'ISOLATED' | 'CROSSED' | '')} disabled={!binanceSymbolConfig?.configured || binanceMarginBusy} aria-label={`Modo de margen de ${symbol}`}><option value="">—</option><option value="ISOLATED">ISOLATED</option><option value="CROSSED">CROSSED</option></select></label><span>LEV {binanceSymbolConfig?.leverage != null ? `${binanceSymbolConfig.leverage}x` : '—'}</span><button type="button" className="symbol-risk-action" onClick={() => void applyBinanceMarginType()} disabled={!binanceMarginDraft || binanceMarginDraft === binanceSymbolConfig?.margin_type || binanceMarginBusy} title="Aplicar modo de margen en Binance">{binanceMarginBusy ? '…' : 'Aplicar'}</button>{binanceMarginError && <span className="symbol-risk-error" title={binanceMarginError}>⚠</span>}</div>}<button className={`session-toggle ${showSessions ? 'session-active' : ''}`} onClick={() => setShowSessions(value => !value)} aria-label="Mostrar sesiones" title="Mostrar sesiones">Sesiones</button><div className="chart-tools" aria-label="Herramientas del gráfico">
+  </select><select className="interval-select" value={interval} onChange={event => setInterval(event.target.value as typeof interval)} aria-label="Intervalo de contexto">{(['1s', '1m', '3m', '5m', '15m'] as const).map(value => <option key={value} value={value}>{value}</option>)}</select>{broker === 'binance' && <div className="symbol-risk-indicators" aria-label={`Leverage Binance de ${symbol}`} aria-live="polite"><label className="symbol-risk-select-label">LEV<select className="symbol-risk-select" value={binanceLeverageDraft} onChange={event => setBinanceLeverageDraft(event.target.value)} disabled={!binanceSymbolConfig?.configured || binanceLeverageBusy} aria-label={`Leverage de ${symbol}`}>{Array.from({ length: 125 }, (_, index) => index + 1).map(value => <option key={value} value={value}>{value}x</option>)}</select></label><button type="button" className="symbol-risk-action" onClick={() => void applyBinanceLeverage()} disabled={!binanceLeverageDraft || Number(binanceLeverageDraft) === binanceSymbolConfig?.leverage || binanceLeverageBusy} title="Aplicar leverage en Binance">{binanceLeverageBusy ? '…' : 'Aplicar'}</button>{binanceLeverageError && <span className="symbol-risk-error" title={binanceLeverageError}>⚠</span>}</div>}<button className={`session-toggle ${showSessions ? 'session-active' : ''}`} onClick={() => setShowSessions(value => !value)} aria-label="Mostrar sesiones" title="Mostrar sesiones">Sesiones</button><div className="chart-tools" aria-label="Herramientas del gráfico">
     {labButton}{pnlCalendarButton}<button className={`indicator-bar-button ${showHeikinAshi ? 'indicator-toggle-active' : ''}`} onClick={() => setShowHeikinAshi(value => !value)} aria-pressed={showHeikinAshi} aria-label="Alternar Heikin Ashi" title="Heikin Ashi">HA</button><button className={!tool ? 'tool-active' : ''} onClick={() => setTool(null)} aria-label="Seleccionar y navegar" title="Seleccionar y navegar">↖</button>
     {([['line', '╱', 'Línea'], ['ruler', '▥', 'Regla'], ['long', 'L', 'Long'], ['short', 'S', 'Short'], ['zoom', '⌗', 'Zoom lazo']] as const).map(([key, icon, label]) => <button key={key} className={tool === key ? 'tool-active' : ''} onClick={() => chooseTool(key)} aria-label={label} title={label}>{icon}</button>)}<button onClick={() => { resetChartZoom('entry'); resetChartZoom('context'); }} aria-label="Restablecer zoom" title="Restablecer zoom">↺</button>
     <button onClick={() => setDrawings(current => current.filter(drawing => drawing.paper))} aria-label="Borrar dibujos" title="Borrar dibujos">×</button>

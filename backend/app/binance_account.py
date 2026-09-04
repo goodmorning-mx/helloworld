@@ -110,6 +110,15 @@ class BinanceAccountMonitor:
                 raise
         return self.symbol_config(requested)
 
+    def set_leverage(self, symbol: str, leverage: int) -> dict[str, object]:
+        """Change the account leverage for one Binance Futures symbol."""
+        requested = symbol.strip().upper()
+        value = int(leverage)
+        if not 1 <= value <= 125:
+            raise ValueError("El leverage debe estar entre 1x y 125x.")
+        self._request("POST", "/fapi/v1/leverage", {"symbol": requested, "leverage": value}, signed=True)
+        return self.symbol_config(requested)
+
     def _run(self) -> None:
         if connect is None:
             self._set(error="La dependencia WebSocket no está disponible")
