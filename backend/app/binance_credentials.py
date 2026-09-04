@@ -144,7 +144,9 @@ class BinanceMonitorManager:
                 self._fingerprints[user_id] = fingerprint
                 monitor.start()
         try:
-            return {"configured": True, **monitor.symbol_config(symbol)}
+            config = monitor.symbol_config(symbol)
+            config["futures_balance"] = monitor.snapshot().get("futures_balance")
+            return {"configured": True, **config}
         except Exception as exc:
             logger.warning("Binance symbol config unavailable symbol=%s error=%s", symbol, exc)
             return {"configured": True, "symbol": symbol.upper(), "margin_type": None, "leverage": None, "error": str(exc)}
