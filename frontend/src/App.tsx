@@ -2252,7 +2252,7 @@ function Workspace() {
     const targetPercent = labRecommendations?.[side === 'LONG' ? 'long' : 'short']?.mfe ?? FIXED_BINANCE_STOP_PERCENT * 4;
     const target = roundToBinance(liveReferencePrice * (1 + direction * targetPercent / 100), binanceRules.tick_size, binanceRules.price_precision);
     const notional = binanceRules.min_notional;
-    const leverage = 1;
+    const leverage = Number(binanceLeverageDraft) || 1;
     return { side, entry: liveReferencePrice, stop, target, targetPercent, notional, leverage, margin: leverage > 0 ? notional / leverage : 0 };
   }) : [];
   const chartStageView = <div ref={chartStage} className={`chart-stage ${tool ? 'drawing-mode' : ''}`} onWheelCapture={event => handleChartWheel(event, 'entry')} onPointerDownCapture={startDrawing} onPointerMoveCapture={updateDrawing} onPointerUpCapture={finishDrawing} onPointerCancelCapture={() => { setDrawingStart(null); setDrawingEnd(null); setMoveStart(null); panStartRef.current = null; setResizeStart(null); setLassoStart(null); setLassoEnd(null); }}>
