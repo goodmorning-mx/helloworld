@@ -629,6 +629,7 @@ function Workspace() {
   const [binanceLeverageError, setBinanceLeverageError] = useState('');
   const [binanceProductionAvailable, setBinanceProductionAvailable] = useState(false);
   const [executionMode, setExecutionMode] = useState<'paper' | 'production'>('paper');
+  const [binanceLiveAccount, setBinanceLiveAccount] = useState<BinanceAccount | null>(null);
   const [broker, setBroker] = useState<'binance' | 'ctrader'>('binance');
   const [interval, setInterval] = useState<'1s' | '1m' | '3m' | '5m' | '15m'>('5m');
   const entryInterval = '1m' as const;
@@ -732,6 +733,18 @@ function Workspace() {
       .catch(() => { if (active) setBinanceRules(null); });
     return () => { active = false; };
   }, [auth.accessToken, broker, symbol]);
+
+  useEffect(() => {
+    if (broker !== 'binance' || !auth.accessToken) { setBinanceLiveAccount(null); return; }
+    let active = true;
+    const load = () => fetch(`${apiUrl}/trading/binance`, { headers: { Authorization: `Bearer ${auth.accessToken}` }, credentials: 'include' })
+      .then(response => response.ok ? response.json() as Promise<BinanceAccount> : Promise.reject(new Error('account unavailable')))
+      .then(account => { if (active) setBinanceLiveAccount(account); })
+      .catch(() => { if (active) setBinanceLiveAccount(null); });
+    void load();
+    const timer = window.setInterval(load, 5_000);
+    return () => { active = false; window.clearInterval(timer); };
+  }, [auth.accessToken, broker]);
 
   const applyBinanceLeverage = async () => {
     const leverage = Number(binanceLeverageDraft);
@@ -2250,6 +2263,10 @@ function Workspace() {
   const trainingOperations = paperPositions.filter(position => calendarDayKey(position.end.time) === trainingTodayKey);
   const trainingPnl = trainingOperations.filter(position => position.closed).reduce((sum, position) => sum + paperPnl(position), 0);
   const trainingProgress = Math.max(0, Math.min(1, trainingPnl / 40));
+  const productionPositions = (binanceLiveAccount?.positions ?? []).filter(position => Math.abs(Number(position.quantity ?? 0)) > 0);
+  const productionPositionLabel = productionPositions.length > 0
+    ? productionPositions.map(position => `${position.symbol ?? '—'} ${String(position.side ?? '').toUpperCase()} PNL ${Number(position.unrealized_pnl ?? 0) >= 0 ? '+' : ''}${Number(position.unrealized_pnl ?? 0).toFixed(2)}`).join(' · ')
+    : '';
   const selectedMarket = activeMarketSymbols.find(candidate => candidate.symbol === symbol);
   const minimumBinanceNotional = binanceRules?.min_notional ?? 0;
   const appliedBinanceLeverage = Number(binanceLeverageDraft) || 0;
@@ -2264,7 +2281,7 @@ function Workspace() {
   const formatMargin = (value: number | null) => value == null ? '—' : `${value.toFixed(4)} USDT`;
   const desktopHeader = <div className="symbol-bar"><select className="broker-select" value={broker} onChange={event => { const next = event.target.value as 'binance' | 'ctrader'; setBroker(next); setSymbol(next === 'ctrader' ? 'AUDUSD' : 'BTCUSDT'); }} aria-label="Broker"><option value="binance">Binance</option><option value="ctrader">cTrader</option></select><select className="symbol-select" value={symbol} onChange={event => setSymbol(event.target.value)} aria-label="Símbolo">
     {selectableSymbols.map(option => <option key={option}>{option}</option>)}
-  </select><select className="interval-select" value={interval} onChange={event => setInterval(event.target.value as typeof interval)} aria-label="Intervalo de contexto">{(['1s', '1m', '3m', '5m', '15m'] as const).map(value => <option key={value} value={value}>{value}</option>)}</select>{broker === 'binance' && <div className="symbol-risk-indicators" aria-label={`Configuración Binance de ${symbol}`} aria-live="polite"><span className="symbol-risk-balance">MARGIN REC. {formatMargin(recommendedBinanceMargin)}</span><span className="symbol-risk-balance">MARGIN FINAL {formatMargin(finalBinanceMargin)}</span><span className="symbol-risk-balance">MAX LEV {maximumBinanceLeverage > 0 ? `${maximumBinanceLeverage}x` : '—'}</span><span className="symbol-risk-balance">LEV REC. {recommendedBinanceLeverage > 0 ? `${recommendedBinanceLeverage}x` : '—'}</span><span className="symbol-risk-card risk-sl">SL −{FIXED_BINANCE_STOP_PERCENT.toFixed(2)}%</span><span className="symbol-risk-card risk-tp">TP L +{longPreview?.targetPercent.toFixed(2) ?? '—'}% · S +{shortPreview?.targetPercent.toFixed(2) ?? '—'}%</span><button type="button" className={`symbol-risk-action ${executionMode === 'production' ? 'production-mode-active' : ''}`} disabled={!binanceProductionAvailable} onClick={() => { if (executionMode === 'paper' && window.confirm('Producción enviará órdenes reales a Binance. ¿Continuar?')) setExecutionMode('production'); else if (executionMode === 'production') setExecutionMode('paper'); }} title={binanceProductionAvailable ? 'Cambiar modo Paper/Producción' : 'Producción deshabilitada por el backend'}>{executionMode === 'production' ? 'PRODUCCIÓN' : 'PAPER'}{!binanceProductionAvailable ? ' · bloqueada' : ''}</button><label className="symbol-risk-select-label">LEV<select className="symbol-risk-select" value={binanceLeverageDraft} onChange={event => setBinanceLeverageDraft(event.target.value)} disabled={!binanceSymbolConfig?.configured || binanceLeverageBusy} aria-label={`Leverage de ${symbol}`}>{Array.from({ length: 125 }, (_, index) => index + 1).map(value => <option key={value} value={value}>{value}x</option>)}</select></label><button type="button" className="symbol-risk-action" onClick={() => void applyBinanceLeverage()} disabled={!binanceLeverageDraft || Number(binanceLeverageDraft) === binanceSymbolConfig?.leverage || binanceLeverageBusy} title="Aplicar leverage en Binance">{binanceLeverageBusy ? '…' : 'Aplicar'}</button>{binanceLeverageError && <span className="symbol-risk-error" title={binanceLeverageError}>⚠</span>}</div>}<button className={`session-toggle ${showSessions ? 'session-active' : ''}`} onClick={() => setShowSessions(value => !value)} aria-label="Mostrar sesiones" title="Mostrar sesiones">Sesiones</button><div className="chart-tools" aria-label="Herramientas del gráfico">
+  </select><select className="interval-select" value={interval} onChange={event => setInterval(event.target.value as typeof interval)} aria-label="Intervalo de contexto">{(['1s', '1m', '3m', '5m', '15m'] as const).map(value => <option key={value} value={value}>{value}</option>)}</select>{broker === 'binance' && <><span className={`production-position-summary ${productionPositions.some(position => Number(position.unrealized_pnl ?? 0) >= 0) ? 'production-profit' : 'production-loss'}`}>{productionPositionLabel || 'BINANCE'}</span><button type="button" className={`production-mode-icon ${executionMode === 'production' ? 'production-mode-active' : ''}`} disabled={!binanceProductionAvailable} onClick={() => { if (executionMode === 'paper' && window.confirm('Producción enviará órdenes reales a Binance. ¿Continuar?')) setExecutionMode('production'); else if (executionMode === 'production') setExecutionMode('paper'); }} aria-label="Cambiar Paper/Producción" title={binanceProductionAvailable ? 'Cambiar Paper/Producción' : 'Producción deshabilitada'}>◉</button></>}<button className={`session-toggle ${showSessions ? 'session-active' : ''}`} onClick={() => setShowSessions(value => !value)} aria-label="Mostrar sesiones" title="Mostrar sesiones">Sesiones</button><div className="chart-tools" aria-label="Herramientas del gráfico">
     {labButton}{pnlCalendarButton}<button className={`indicator-bar-button ${showHeikinAshi ? 'indicator-toggle-active' : ''}`} onClick={() => setShowHeikinAshi(value => !value)} aria-pressed={showHeikinAshi} aria-label="Alternar Heikin Ashi" title="Heikin Ashi">HA</button><button className={!tool ? 'tool-active' : ''} onClick={() => setTool(null)} aria-label="Seleccionar y navegar" title="Seleccionar y navegar">↖</button>
     {([['line', '╱', 'Línea'], ['ruler', '▥', 'Regla'], ['long', 'L', 'Long'], ['short', 'S', 'Short'], ['zoom', '⌗', 'Zoom lazo']] as const).map(([key, icon, label]) => <button key={key} className={tool === key ? 'tool-active' : ''} onClick={() => chooseTool(key)} aria-label={label} title={label}>{icon}</button>)}<button onClick={() => { resetChartZoom('entry'); resetChartZoom('context'); }} aria-label="Restablecer zoom" title="Restablecer zoom">↺</button>
     <button onClick={() => setDrawings(current => current.filter(drawing => drawing.paper))} aria-label="Borrar dibujos" title="Borrar dibujos">×</button>
