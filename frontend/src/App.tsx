@@ -2240,7 +2240,7 @@ function App() {
   const client = useMemo(() => createAuthClient(apiUrl), []);
   const labRoute = window.location.pathname === '/lab';
   const ctraderCallbackRoute = window.location.pathname === '/ctrader/callback';
-  return <PwaRuntime config={{ appName: 'helloworld', version: '0.1.13', serviceWorkerUrl: '/sw.js?v=0.1.13', updateIntervalMs: 60_000 }}><AuthProvider client={client}><AuthSessionKeeper client={client} /><AuthGuard fallback={<Access />}>{ctraderCallbackRoute ? <CTraderOAuthCallback /> : labRoute ? <LabWindow /> : <Workspace />}</AuthGuard></AuthProvider></PwaRuntime>;
+  return <PwaRuntime config={{ appName: 'helloworld', version: '0.1.14', serviceWorkerUrl: '/sw.js?v=0.1.14', updateIntervalMs: 60_000 }}><AuthProvider client={client}><AuthSessionKeeper client={client} /><AuthGuard fallback={<Access />}>{ctraderCallbackRoute ? <CTraderOAuthCallback /> : labRoute ? <LabWindow /> : <Workspace />}</AuthGuard></AuthProvider></PwaRuntime>;
 }
 
 export default App;
