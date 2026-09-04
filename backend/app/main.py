@@ -44,7 +44,7 @@ ctrader_manager = CTraderManager(settings, ctrader_credentials)
 paper_operation_store = PaperOperationStore(engine)
 binance_market_gateway = BinanceMarketGateway()
 binance_execution_store = BinanceExecutionStore(engine)
-binance_execution_supervisor = BinanceExecutionSupervisor(settings, binance_credentials, binance_manager)
+binance_execution_supervisor = BinanceExecutionSupervisor(settings, binance_credentials, binance_manager, binance_execution_store)
 
 
 class FallbackProvider:

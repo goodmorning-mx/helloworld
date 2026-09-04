@@ -88,10 +88,11 @@ class BinanceExecutionStore:
 class BinanceExecutionSupervisor:
     """Ensure every configured user's account stream runs independently of UI."""
 
-    def __init__(self, settings: Settings, credentials: BinanceCredentialStore, monitors: BinanceMonitorManager):
+    def __init__(self, settings: Settings, credentials: BinanceCredentialStore, monitors: BinanceMonitorManager, store: BinanceExecutionStore):
         self._settings = settings
         self._credentials = credentials
         self._monitors = monitors
+        self._store = store
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
         self._status = {"enabled": settings.binance_execution_worker_enabled, "running": False, "last_cycle": None, "users": 0}
