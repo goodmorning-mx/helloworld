@@ -149,6 +149,23 @@ class BinanceMonitorManager:
             logger.warning("Binance symbol config unavailable symbol=%s error=%s", symbol, exc)
             return {"configured": True, "symbol": symbol.upper(), "margin_type": None, "leverage": None, "error": str(exc)}
 
+    def set_symbol_margin_type(self, user_id: str, symbol: str, margin_type: str) -> dict[str, object]:
+        credentials = self._store.get(user_id)
+        if credentials is None:
+            raise RuntimeError("Cuenta Binance no configurada.")
+        api_key, api_secret = credentials
+        fingerprint = hashlib.sha256(f"{api_key}\0{api_secret}".encode()).hexdigest()
+        with self._lock:
+            monitor = self._monitors.get(user_id)
+            if monitor is None or self._fingerprints.get(user_id) != fingerprint:
+                if monitor is not None:
+                    monitor.stop()
+                monitor = BinanceAccountMonitor(api_key, api_secret, self._settings.binance_base_url)
+                self._monitors[user_id] = monitor
+                self._fingerprints[user_id] = fingerprint
+                monitor.start()
+        return {"configured": True, **monitor.set_margin_type(symbol, margin_type)}
+
     def save(self, user_id: str, api_key: str, api_secret: str) -> dict[str, object]:
         self._validate(api_key, api_secret)
         self._store.save(user_id, api_key, api_secret)

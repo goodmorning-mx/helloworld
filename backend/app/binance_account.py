@@ -89,6 +89,27 @@ class BinanceAccountMonitor:
             "leverage": int(item["leverage"]) if item.get("leverage") is not None else None,
         }
 
+    def set_margin_type(self, symbol: str, margin_type: str = "ISOLATED") -> dict[str, object]:
+        """Change the margin mode for one Binance Futures symbol."""
+        requested = symbol.strip().upper()
+        mode = margin_type.strip().upper()
+        if mode not in {"ISOLATED", "CROSSED"}:
+            raise ValueError("El modo de margen debe ser ISOLATED o CROSSED.")
+        try:
+            self._request("POST", "/fapi/v1/marginType", {"symbol": requested, "marginType": mode}, signed=True)
+        except HTTPError as exc:
+            # Binance returns -4046 when the symbol is already in the target
+            # mode; the desired state is already satisfied in that case.
+            if getattr(exc, "code", None) != 400:
+                raise
+            try:
+                payload = json.loads(exc.read().decode("utf-8"))
+            except (ValueError, UnicodeDecodeError, OSError):
+                payload = {}
+            if payload.get("code") != -4046:
+                raise
+        return self.symbol_config(requested)
+
     def _run(self) -> None:
         if connect is None:
             self._set(error="La dependencia WebSocket no está disponible")

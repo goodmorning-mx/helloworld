@@ -196,6 +196,10 @@ class PaperOperationInput(BaseModel):
     close_reason: Literal["TP", "SL", "MANUAL"] | None = None
 
 
+class BinanceMarginTypeInput(BaseModel):
+    margin_type: Literal["ISOLATED", "CROSSED"] = "ISOLATED"
+
+
 @app.on_event("startup")
 def initialize_auth_schema() -> None:
     auth_service.create_schema()
@@ -283,6 +287,17 @@ def binance_symbol_config(symbol: str, identity: AuthIdentity = Depends(identity
     if not settings.binance_account_monitor_enabled:
         return {"configured": False, "symbol": symbol.upper(), "margin_type": None, "leverage": None}
     return binance_manager.symbol_config(identity.user_id, symbol)
+
+
+@app.post("/trading/binance/symbol-config/{symbol}/margin-type")
+def set_binance_margin_type(symbol: str, payload: BinanceMarginTypeInput, identity: AuthIdentity = Depends(identity_dependency(auth_service))) -> dict[str, object]:
+    """Set the margin mode for one Binance Futures symbol after explicit UI action."""
+    if not settings.binance_account_monitor_enabled:
+        raise HTTPException(status_code=503, detail="El monitor de Binance está deshabilitado.")
+    try:
+        return binance_manager.set_symbol_margin_type(identity.user_id, symbol, payload.margin_type)
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"Binance no pudo cambiar el margen de {symbol.upper()}: {exc}") from exc
 
 
 @app.get("/market/binance/active-symbols")

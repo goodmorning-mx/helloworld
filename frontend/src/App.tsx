@@ -603,6 +603,8 @@ function Workspace() {
   const [symbol, setSymbol] = useState(() => localStorage.getItem('helloworld-selected-symbol') ?? 'BTCUSDT');
   const [binanceRules, setBinanceRules] = useState<BinanceSymbolRules | null>(null);
   const [binanceSymbolConfig, setBinanceSymbolConfig] = useState<BinanceSymbolConfig | null>(null);
+  const [binanceMarginBusy, setBinanceMarginBusy] = useState(false);
+  const [binanceMarginError, setBinanceMarginError] = useState('');
   const [broker, setBroker] = useState<'binance' | 'ctrader'>('binance');
   const [interval, setInterval] = useState<'1s' | '1m' | '3m' | '5m' | '15m'>('5m');
   const entryInterval = '1m' as const;
@@ -693,6 +695,22 @@ function Workspace() {
       .catch(() => { if (active) setBinanceRules(null); });
     return () => { active = false; };
   }, [auth.accessToken, broker, symbol]);
+
+  const setBinanceIsolated = async () => {
+    if (broker !== 'binance' || binanceMarginBusy) return;
+    setBinanceMarginBusy(true);
+    setBinanceMarginError('');
+    try {
+      const response = await fetch(`${apiUrl}/trading/binance/symbol-config/${encodeURIComponent(symbol)}/margin-type`, { method: 'POST', headers: { ...(auth.accessToken ? { Authorization: `Bearer ${auth.accessToken}` } : {}), 'Content-Type': 'application/json' }, credentials: 'include', body: JSON.stringify({ margin_type: 'ISOLATED' }) });
+      const payload = await response.json() as BinanceSymbolConfig & { detail?: string };
+      if (!response.ok) throw new Error(payload.detail ?? 'Binance no pudo cambiar el margen.');
+      setBinanceSymbolConfig(payload);
+    } catch (reason) {
+      setBinanceMarginError(reason instanceof Error ? reason.message : 'No se pudo cambiar el margen en Binance.');
+    } finally {
+      setBinanceMarginBusy(false);
+    }
+  };
 
   useEffect(() => {
     if (broker !== 'binance') { setBinanceSymbolConfig(null); return; }
@@ -2147,7 +2165,7 @@ function Workspace() {
   const pnlCalendarButton = <button className="indicator-bar-button" onClick={() => setShowPnlCalendar(true)} aria-label="Abrir calendario PNL" title="Calendario PNL">▦</button>;
   const desktopHeader = <div className="symbol-bar"><select className="broker-select" value={broker} onChange={event => { const next = event.target.value as 'binance' | 'ctrader'; setBroker(next); setSymbol(next === 'ctrader' ? 'AUDUSD' : 'BTCUSDT'); }} aria-label="Broker"><option value="binance">Binance</option><option value="ctrader">cTrader</option></select><select className="symbol-select" value={symbol} onChange={event => setSymbol(event.target.value)} aria-label="Símbolo">
     {selectableSymbols.map(option => <option key={option}>{option}</option>)}
-  </select><select className="interval-select" value={interval} onChange={event => setInterval(event.target.value as typeof interval)} aria-label="Intervalo de contexto">{(['1s', '1m', '3m', '5m', '15m'] as const).map(value => <option key={value} value={value}>{value}</option>)}</select><span className="chart-source">{broker.toUpperCase()} · {entryInterval.toUpperCase()} ENTRADA · {interval.toUpperCase()} CONTEXTO</span>{broker === 'binance' && <div className="symbol-risk-indicators" aria-label={`Configuración Binance de ${symbol}`}><span className="symbol-risk-mode">{binanceSymbolConfig?.margin_type === 'ISOLATED' ? 'ISOLATED' : binanceSymbolConfig?.margin_type ?? 'MARGIN —'}</span><span>LEV {binanceSymbolConfig?.leverage != null ? `${binanceSymbolConfig.leverage}x` : '—'}</span></div>}<button className={`session-toggle ${showSessions ? 'session-active' : ''}`} onClick={() => setShowSessions(value => !value)} aria-label="Mostrar sesiones" title="Mostrar sesiones">Sesiones</button><div className="chart-tools" aria-label="Herramientas del gráfico">
+  </select><select className="interval-select" value={interval} onChange={event => setInterval(event.target.value as typeof interval)} aria-label="Intervalo de contexto">{(['1s', '1m', '3m', '5m', '15m'] as const).map(value => <option key={value} value={value}>{value}</option>)}</select><span className="chart-source">{broker.toUpperCase()} · {entryInterval.toUpperCase()} ENTRADA · {interval.toUpperCase()} CONTEXTO</span>{broker === 'binance' && <div className="symbol-risk-indicators" aria-label={`Configuración Binance de ${symbol}`} aria-live="polite"><span className="symbol-risk-mode">{binanceSymbolConfig?.margin_type ?? 'MARGIN —'}</span><span>LEV {binanceSymbolConfig?.leverage != null ? `${binanceSymbolConfig.leverage}x` : '—'}</span>{binanceSymbolConfig?.configured && binanceSymbolConfig.margin_type !== 'ISOLATED' && <button type="button" className="symbol-risk-action" onClick={() => void setBinanceIsolated()} disabled={binanceMarginBusy} title="Cambiar este futuro a margen aislado">{binanceMarginBusy ? '…' : 'Aislado'}</button>}{binanceMarginError && <span className="symbol-risk-error" title={binanceMarginError}>⚠</span>}</div>}<button className={`session-toggle ${showSessions ? 'session-active' : ''}`} onClick={() => setShowSessions(value => !value)} aria-label="Mostrar sesiones" title="Mostrar sesiones">Sesiones</button><div className="chart-tools" aria-label="Herramientas del gráfico">
     {labButton}{pnlCalendarButton}<button className={`indicator-bar-button ${showHeikinAshi ? 'indicator-toggle-active' : ''}`} onClick={() => setShowHeikinAshi(value => !value)} aria-pressed={showHeikinAshi} aria-label="Alternar Heikin Ashi" title="Heikin Ashi">HA</button><button className={!tool ? 'tool-active' : ''} onClick={() => setTool(null)} aria-label="Seleccionar y navegar" title="Seleccionar y navegar">↖</button>
     {([['line', '╱', 'Línea'], ['ruler', '▥', 'Regla'], ['long', 'L', 'Long'], ['short', 'S', 'Short'], ['zoom', '⌗', 'Zoom lazo']] as const).map(([key, icon, label]) => <button key={key} className={tool === key ? 'tool-active' : ''} onClick={() => chooseTool(key)} aria-label={label} title={label}>{icon}</button>)}<button onClick={() => { resetChartZoom('entry'); resetChartZoom('context'); }} aria-label="Restablecer zoom" title="Restablecer zoom">↺</button>
     <button onClick={() => setDrawings(current => current.filter(drawing => drawing.paper))} aria-label="Borrar dibujos" title="Borrar dibujos">×</button>
