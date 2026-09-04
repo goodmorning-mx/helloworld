@@ -59,11 +59,11 @@ def test_max_leverages_reads_first_bracket_per_symbol(monkeypatch):
 
 def test_symbol_config_reads_account_specific_margin_and_leverage(monkeypatch):
     instance = monitor()
-    monkeypatch.setattr(instance, "_request", lambda method, path, params, signed: [
+    monkeypatch.setattr(instance, "_request", lambda method, path, params=None, signed=False: [
         {"symbol": "BTCUSDT", "marginType": "isolated", "leverage": 20},
     ])
     assert instance.symbol_config("btcusdt") == {
-        "symbol": "BTCUSDT", "margin_type": "ISOLATED", "leverage": 20,
+        "symbol": "BTCUSDT", "margin_type": "ISOLATED", "leverage": 20, "isolated_balance": 0.0,
     }
 
 

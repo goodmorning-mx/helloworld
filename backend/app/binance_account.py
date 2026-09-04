@@ -79,14 +79,17 @@ class BinanceAccountMonitor:
         return result
 
     def symbol_config(self, symbol: str) -> dict[str, object]:
-        """Return the account-specific margin mode and leverage for a symbol."""
+        """Return account-specific leverage and isolated wallet for a symbol."""
         requested = symbol.strip().upper()
         payload = self._request("GET", "/fapi/v1/symbolConfig", {"symbol": requested}, signed=True)
         item = next((row for row in payload if str(row.get("symbol", "")).upper() == requested), {}) if isinstance(payload, list) else {}
+        positions = self._signed_get("/fapi/v2/positionRisk")
+        position = next((row for row in positions if str(row.get("symbol", "")).upper() == requested), {}) if isinstance(positions, list) else {}
         return {
             "symbol": requested,
             "margin_type": str(item.get("marginType", "")).upper() or None,
             "leverage": int(item["leverage"]) if item.get("leverage") is not None else None,
+            "isolated_balance": float(position.get("isolatedWallet", 0) or 0),
         }
 
     def set_margin_type(self, symbol: str, margin_type: str = "ISOLATED") -> dict[str, object]:
