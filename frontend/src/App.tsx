@@ -14,6 +14,24 @@ const apiUrl = configuredApiUrl === '/api' && window.location.hostname === 'dev.
   : configuredApiUrl;
 const marketWsUrl = apiUrl.replace(/^http/, 'ws');
 
+async function fetchJson<T>(input: RequestInfo | URL, init?: RequestInit, retries = 2): Promise<T> {
+  let lastError: unknown;
+  for (let attempt = 0; attempt <= retries; attempt += 1) {
+    try {
+      const response = await fetch(input, init);
+      const text = await response.text();
+      let payload: unknown;
+      try { payload = text ? JSON.parse(text) : null; } catch { throw new Error(`Respuesta inválida del servidor (${response.status}).`); }
+      if (!response.ok) throw new Error((payload as { detail?: string } | null)?.detail ?? `El servidor respondió ${response.status}.`);
+      return payload as T;
+    } catch (error) {
+      lastError = error;
+      if (attempt < retries) await new Promise(resolve => window.setTimeout(resolve, 500 * (attempt + 1)));
+    }
+  }
+  throw lastError instanceof Error ? lastError : new Error('No se pudo cargar la información.');
+}
+
 // Keep the interactive charts responsive. The Lab keeps its own historical
 // dataset; these limits only control what is rendered in the live canvases.
 const MAX_ENTRY_RENDER_BARS = 240;
@@ -764,9 +782,7 @@ function Workspace() {
     const loadActiveMarkets = async () => {
       setActiveMarketLoading(true);
       try {
-        const response = await fetch(`${apiUrl}/market/binance/active-symbols?limit=20&min_movement_pct=0.5&horizon=10&interval=5m`, { headers: auth.accessToken ? { Authorization: `Bearer ${auth.accessToken}` } : undefined, credentials: 'include' });
-        const payload = await response.json() as { symbols?: ActiveMarketSymbol[]; detail?: string };
-        if (!response.ok) throw new Error(payload.detail ?? `Binance respondió ${response.status}`);
+        const payload = await fetchJson<{ symbols?: ActiveMarketSymbol[] }>(`${apiUrl}/market/binance/active-symbols?limit=20&min_movement_pct=0.5&horizon=10&interval=5m`, { headers: auth.accessToken ? { Authorization: `Bearer ${auth.accessToken}` } : undefined, credentials: 'include' });
         if (active) {
           setActiveMarketSymbols(Array.isArray(payload.symbols) ? payload.symbols : []);
           setActiveMarketError('');
@@ -801,18 +817,15 @@ function Workspace() {
     let active = true;
     paperReadyRef.current = false;
     setPaperReady(false);
-    fetch(`${apiUrl}/trading/paper/operations`, {
-      headers: { Authorization: `Bearer ${auth.accessToken}` },
-      credentials: 'include',
-    }).then(async response => {
-      if (!response.ok) throw new Error('No se pudieron cargar las paper operations.');
-      return response.json() as Promise<Array<{
+    fetchJson<Array<{
         id: string; symbol: string; side: 'long' | 'short'; chart: ChartCanvas;
         entry_time: number; entry_price: number; current_time: number; current_price: number;
         stop_time: number; stop_price: number; target_time: number; target_price: number;
         risk_percent?: number | null; quantity?: number | null; notional?: number | null; margin?: number | null; pnl?: number | null;
         status: 'OPEN' | 'CLOSED - WIN' | 'CLOSED - FAILED'; close_reason?: 'TP' | 'SL' | 'MANUAL' | null; updated_at?: string;
-      }>>;
+      }>>(`${apiUrl}/trading/paper/operations`, {
+      headers: { Authorization: `Bearer ${auth.accessToken}` },
+      credentials: 'include',
     }).then(operations => {
       if (!active) return;
       const restored = operations.map(operation => ({
