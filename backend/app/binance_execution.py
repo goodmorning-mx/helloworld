@@ -69,6 +69,21 @@ class BinanceExecutionStore:
             )).mappings().first()
         return dict(row) if row else None
 
+    def reconcile_events(self, user_id: str, events: list[dict[str, object]]) -> None:
+        """Project Binance User Stream order events onto durable intent state."""
+        intents = self.list(user_id)
+        for intent in intents:
+            root = str(intent.get("client_order_id") or "")
+            for event in events:
+                client_id = str(event.get("client_order_id") or "")
+                if not client_id.startswith(root):
+                    continue
+                status = str(event.get("status") or "")
+                if client_id == root and status == "FILLED":
+                    self.update(intent["id"], user_id, status="ENTRY_FILLED", exchange_order_id=str(event.get("exchange_order_id") or intent.get("exchange_order_id")))
+                elif client_id != root and status == "FILLED":
+                    self.update(intent["id"], user_id, status="CLOSED", last_error=None)
+
 
 class BinanceExecutionSupervisor:
     """Ensure every configured user's account stream runs independently of UI."""
@@ -110,7 +125,9 @@ class BinanceExecutionSupervisor:
                 for user_id in users:
                     # snapshot() starts/reuses the user's resilient User Data
                     # Stream. No private endpoint is mutated by this call.
-                    self._monitors.snapshot(user_id)
+                    account = self._monitors.snapshot(user_id)
+                    events = account.get("events") if isinstance(account.get("events"), list) else []
+                    self._store.reconcile_events(user_id, events)
                 with self._lock:
                     self._status.update({"last_cycle": datetime.now(timezone.utc).isoformat(), "users": len(users)})
             except Exception:
