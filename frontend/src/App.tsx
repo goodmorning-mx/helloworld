@@ -2157,13 +2157,12 @@ function Workspace() {
     void viewportRevision;
     const { chart, candles } = chartContext(canvas);
     if (!chart || !candles) return null;
-    const startX = chart.timeScale().timeToCoordinate(drawing.start.time);
-    const endX = chart.timeScale().timeToCoordinate(drawing.end.time);
-    const startY = candles.priceToCoordinate(drawing.start.price);
-    const endY = candles.priceToCoordinate(drawing.end.price);
-    if (startX === null || endX === null || startY === null || endY === null) return null;
-    const start = { x: startX, y: startY };
-    const end = { x: endX, y: endY };
+    // Paper operations originate on the live 1m stream but are rendered on
+    // both charts. Reuse the same timestamp projection as the hit testing
+    // layer so a missing exact 5m timestamp cannot hide the whole position.
+    const start = screenPoint(drawing.start, canvas);
+    const end = screenPoint(drawing.end, canvas);
+    if (!start || !end) return null;
     const handles = drawingHandles(drawing, typeof index === 'number' ? index : -1, canvas);
     const handleNodes = handles.filter(handle => !drawing.paper || handle.endpoint === 'target' || handle.endpoint === 'stop').map((handle, handleIndex) => <circle key={handleIndex} cx={handle.x} cy={handle.y} r="7" className={`drawing-handle ${handle.role === 'stop' ? 'handle-stop' : handle.role === 'target' ? 'handle-target' : drawing.type === 'ruler' ? 'handle-ruler' : ''}`} />);
     const pricePercent = ((drawing.end.price - drawing.start.price) / drawing.start.price) * 100;
