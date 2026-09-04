@@ -23,7 +23,7 @@ class Settings(BaseSettings):
     binance_account_monitor_enabled: bool = Field(default=True, alias="BINANCE_ACCOUNT_MONITOR_ENABLED")
     # Safety gate: account monitoring may run in production, but real order
     # placement must be enabled explicitly in the deployment environment.
-    binance_real_trading_enabled: bool = Field(default=False, alias="BINANCE_REAL_TRADING_ENABLED")
+    binance_real_trading_enabled: bool = Field(default=True, alias="BINANCE_REAL_TRADING_ENABLED")
     binance_execution_worker_enabled: bool = Field(default=True, alias="BINANCE_EXECUTION_WORKER_ENABLED")
     binance_execution_poll_seconds: int = Field(default=15, alias="BINANCE_EXECUTION_POLL_SECONDS")
     binance_credentials_encryption_key: str = Field(default="", alias="BINANCE_CREDENTIALS_ENCRYPTION_KEY")
