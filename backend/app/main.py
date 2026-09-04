@@ -322,6 +322,10 @@ def open_binance_real_operation(payload: BinanceRealOrderInput, identity: AuthId
     symbol = payload.symbol.upper()
     order_side = "BUY" if payload.side == "LONG" else "SELL"
     close_side = "SELL" if order_side == "BUY" else "BUY"
+    # Never let an entry inherit Crossed mode accidentally.
+    current_config = binance_manager.symbol_config(identity.user_id, symbol)
+    if current_config.get("margin_type") != "ISOLATED":
+        binance_manager.set_symbol_margin_type(identity.user_id, symbol, "ISOLATED")
     intent = binance_execution_store.create(identity.user_id, {
         "symbol": symbol, "side": payload.side, "quantity": payload.quantity,
         "stop_loss": payload.stop_loss, "take_profit": payload.take_profit,

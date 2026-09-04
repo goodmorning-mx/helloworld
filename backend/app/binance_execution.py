@@ -1,8 +1,8 @@
 """Backend-owned Binance runtime.
 
 The supervisor keeps private account streams alive without a browser. Order
-submission is intentionally not implemented here yet; a separate explicit
-production switch will be required before any exchange mutation is allowed.
+submission is behind a separate explicit production switch; the supervisor
+itself never mutates the exchange.
 """
 
 from __future__ import annotations
