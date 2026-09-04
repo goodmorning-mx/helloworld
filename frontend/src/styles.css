@@ -159,6 +159,7 @@
 .lab-chart-tooltip-mae { fill: #f27e7e; }
 .lab-chart-tooltip-mfe { fill: #64d39a; }
 .symbol-risk-indicators, .scanner-account-cards { display: none !important; visibility: hidden; }
+.operation-source { display: inline-block; padding: .18rem .35rem; border-radius: 4px; font: 700 .58rem 'DM Mono', monospace; letter-spacing: .04em; }.source-paper { color: #f5b84b; background: #2a2416; }.source-binance { color: #64d39a; background: #17352a; }.operation-readonly { color: #69717e; font: .62rem 'DM Mono', monospace; }
 .pnl-calendar-backdrop { position: fixed; z-index: 100; inset: 0; display: grid; place-items: center; padding: 1rem; background: #000c; }
 .pnl-calendar-modal { width: min(980px, 100%); max-height: calc(100vh - 2rem); overflow: auto; padding: 1.2rem; border: 1px solid #303640; border-radius: 16px; background: #0b0f14; box-shadow: 0 24px 100px #000d; }
 .pnl-calendar-head, .pnl-calendar-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 1rem; }
