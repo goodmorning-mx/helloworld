@@ -8,7 +8,10 @@ import { calculateHeikinAshi, calculateRsi, calculateSslChannel, calculateTracke
 import { tradingCosts, tradingCostRate } from './tradingCosts';
 import './styles.css';
 
-const configuredApiUrl = import.meta.env.VITE_API_URL ?? 'http://localhost:8000';
+const defaultApiUrl = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1'
+  ? 'http://localhost:8000'
+  : 'https://api.dev.helloworld.goodmorning.mx';
+const configuredApiUrl = import.meta.env.VITE_API_URL ?? defaultApiUrl;
 const apiUrl = configuredApiUrl === '/api' && window.location.hostname === 'dev.helloworld.goodmorning.mx'
   ? 'https://api.dev.helloworld.goodmorning.mx'
   : configuredApiUrl;
