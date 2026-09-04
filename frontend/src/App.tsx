@@ -1203,15 +1203,14 @@ function Workspace() {
           const direction = drawing.type === 'long' ? 1 : -1;
           const targetPrice = drawing.target?.price ?? drawing.end.price;
           const stopPrice = drawing.stop?.price ?? drawing.start.price;
-          // Execution is driven by the shared last trade, not by the 1m/5m
-          // candle high/low. This prevents a different timeframe snapshot
-          // from closing a paper position at a price the live feed did not
-          // actually reach.
-          const targetTouched = direction === 1 ? next.close >= targetPrice : next.close <= targetPrice;
-          const stopTouched = direction === 1 ? next.close <= stopPrice : next.close >= stopPrice;
+          // A candle can touch a level with its wick and close back inside
+          // the range. Use the live candle extremes, not only its close.
+          const targetTouched = direction === 1 ? next.high >= targetPrice : next.low <= targetPrice;
+          const stopTouched = direction === 1 ? next.low <= stopPrice : next.high >= stopPrice;
           const hitTarget = targetTouched;
           const hitStop = !hitTarget && stopTouched;
           const closeReason: 'TP' | 'SL' | undefined = hitTarget ? 'TP' : hitStop ? 'SL' : undefined;
+          const executionPrice = closeReason === 'TP' ? targetPrice : closeReason === 'SL' ? stopPrice : next.close;
           const status: Drawing['status'] = closeReason === 'TP' ? 'CLOSED - WIN' : closeReason === 'SL' ? 'CLOSED - FAILED' : 'OPEN';
           const stopDistance = Math.abs(drawing.start.price - stopPrice);
           const stopPercent = drawing.start.price > 0 ? stopDistance / drawing.start.price : 0;
@@ -1219,13 +1218,13 @@ function Workspace() {
           const notional = Number.isFinite(drawing.notional) && (drawing.notional ?? 0) > 0
             ? drawing.notional as number
             : Math.min(fallbackNotional, paperInitialBalance * paperLeverage);
-          const grossPnl = ((next.close - drawing.start.price) / drawing.start.price) * direction * notional;
+          const grossPnl = ((executionPrice - drawing.start.price) / drawing.start.price) * direction * notional;
           const costs = tradingCosts(broker, notional);
           const realizedPnl = closeReason ? grossPnl - costs.total : drawing.pnl;
           if (closeReason) setVisibleClosedId(null);
           return {
             ...drawing,
-            end: { time: next.time, price: next.close },
+            end: { time: next.time, price: executionPrice },
             target: drawing.target ? { ...drawing.target, time: next.time } : undefined,
             stop: drawing.stop ? { ...drawing.stop, time: next.time } : undefined,
             closed: Boolean(closeReason),
