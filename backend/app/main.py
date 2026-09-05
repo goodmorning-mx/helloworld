@@ -405,8 +405,12 @@ def open_binance_real_operation(payload: BinanceRealOrderInput, identity: AuthId
         stop = _align_binance_value(stop, current_tick_size or tick_size, price_precision, ceiling=payload.side == "SHORT")
         target = _align_binance_value(target, current_tick_size or tick_size, price_precision, ceiling=payload.side == "LONG")
         binance_execution_store.update(intent["id"], identity.user_id, quantity=quantity, stop_loss=stop, take_profit=target)
-        stop = binance_manager.place_close_protection(identity.user_id, symbol, close_side, stop, f"{intent['client_order_id']}_sl", "STOP_MARKET")
-        target = binance_manager.place_close_protection(identity.user_id, symbol, close_side, target, f"{intent['client_order_id']}_tp", "TAKE_PROFIT_MARKET")
+        stop_order = binance_manager.place_close_protection(identity.user_id, symbol, close_side, stop, f"{intent['client_order_id']}_sl", "STOP_MARKET")
+        if not isinstance(stop_order, dict) or not (stop_order.get("orderId") or stop_order.get("clientOrderId")):
+            raise RuntimeError("Binance no confirmó la orden STOP_MARKET de protección.")
+        target_order = binance_manager.place_close_protection(identity.user_id, symbol, close_side, target, f"{intent['client_order_id']}_tp", "TAKE_PROFIT_MARKET")
+        if not isinstance(target_order, dict) or not (target_order.get("orderId") or target_order.get("clientOrderId")):
+            raise RuntimeError("Binance no confirmó la orden TAKE_PROFIT_MARKET de protección.")
         saved = binance_execution_store.update(intent["id"], identity.user_id, status="PROTECTED", last_error=None)
         return {"broker": "binance", "mode": "real", "operation": saved, "entry": entry, "stop": stop, "target": target}
     except Exception as exc:

@@ -135,7 +135,7 @@ class BinanceAccountMonitor:
         }, signed=True)
 
     def place_close_protection(self, symbol: str, side: str, stop_price: float, client_order_id: str, order_type: str) -> dict:
-        """Place a reduce-only-by-close-position protective trigger."""
+        """Place a server-side close-all protective trigger."""
         requested = symbol.strip().upper()
         trigger_type = order_type.strip().upper()
         if trigger_type not in {"STOP_MARKET", "TAKE_PROFIT_MARKET"} or stop_price <= 0:
@@ -143,7 +143,10 @@ class BinanceAccountMonitor:
         return self._request("POST", "/fapi/v1/order", {
             "symbol": requested, "side": side.strip().upper(), "type": trigger_type,
             "stopPrice": format(stop_price, ".16g"), "closePosition": "true",
-            "workingType": "MARK_PRICE", "priceProtect": "TRUE",
+            # MARK_PRICE avoids depending on the browser's last trade stream.
+            # Do not enable priceProtect: it can delay a valid protective
+            # trigger when mark and contract prices temporarily diverge.
+            "workingType": "MARK_PRICE", "priceProtect": "FALSE",
             "newClientOrderId": client_order_id,
         }, signed=True)
 
@@ -234,8 +237,9 @@ class BinanceAccountMonitor:
 
     @staticmethod
     def _position(row: dict) -> dict[str, object]:
+        quantity = row.get("pa") or row.get("positionAmt")
         return {"symbol": row.get("s") or row.get("symbol"), "side": row.get("ps") or row.get("positionSide"),
-                "quantity": row.get("pa") or row.get("positionAmt"),
+                "quantity": quantity, "size": quantity,
                 "entry_price": row.get("ep") or row.get("entryPrice"),
                 "mark_price": row.get("mp") or row.get("markPrice"),
                 "unrealized_pnl": row.get("up") or row.get("unRealizedProfit"),
