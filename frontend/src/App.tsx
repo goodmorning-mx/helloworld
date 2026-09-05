@@ -2183,6 +2183,18 @@ function Workspace() {
     event.stopPropagation();
   }
 
+  const productionPositions = (binanceLiveAccount?.positions ?? []).filter(position => Math.abs(Number(position.quantity ?? 0)) > 0);
+  const productionDrawings: Drawing[] = productionPositions.map((position, index) => {
+    const quantity = Number(position.quantity ?? 0);
+    const type: 'long' | 'short' = quantity >= 0 ? 'long' : 'short';
+    const entry = Number(position.entry_price ?? 0);
+    const current = Number(position.mark_price ?? 0) || binanceLivePriceRef.current?.price || entry;
+    const lastTime = candleBarsRef.current[candleBarsRef.current.length - 1]?.time ?? (Math.floor(Date.now() / 1000) as UTCTimestamp);
+    const intent = binanceExecutionIntents.find(item => item.symbol === position.symbol && ['ENTRY_SUBMITTED', 'ENTRY_FILLED', 'PROTECTED'].includes(item.status ?? ''));
+    const stop = Number(intent?.stop_loss ?? entry * (1 - (type === 'long' ? 1 : -1) * FIXED_BINANCE_STOP_PERCENT / 100));
+    const target = Number(intent?.take_profit ?? entry * (1 + (type === 'long' ? 1 : -1) * FIXED_BINANCE_TARGET_PERCENT / 100));
+    return { id: `binance-real-${position.symbol}-${index}`, symbol: position.symbol, type, paper: true, real: true, status: 'OPEN', quantity: Math.abs(quantity), start: { time: (Number(lastTime) - 5 * 60) as UTCTimestamp, price: entry }, end: { time: lastTime, price: current }, stop: { time: lastTime, price: stop }, target: { time: lastTime, price: target }, notional: Math.abs(quantity) * entry, margin: Number(position.isolated_wallet ?? 0) || Math.abs(quantity) * entry / BINANCE_MIN_OPERATION_LEVERAGE, pnl: Number(position.unrealized_pnl ?? 0), riskPercent: FIXED_BINANCE_STOP_PERCENT };
+  });
   const paperPositions = drawings.filter(drawing => drawing.paper && (drawing.type === 'long' || drawing.type === 'short'));
   const assist = JSON.parse(localStorage.getItem('helloworld-paper-assist') ?? '{}') as { leverage?: number };
   const theoreticalPaperLeverage = Number.isFinite(assist.leverage) && (assist.leverage ?? 0) > 0 ? (assist.leverage as number) : 10;
@@ -2190,6 +2202,7 @@ function Workspace() {
   const paperLeverage = Math.min(theoreticalPaperLeverage, brokerMaxLeverage);
   const paperRiskAmount = paperInitialBalance * paperRiskPercent / 100;
   const paperPnl = (position: Drawing) => {
+    if (position.real && Number.isFinite(position.pnl)) return position.pnl as number;
     const maxLoss = Math.max(0, paperRiskAmount);
     if (position.closed && Number.isFinite(position.pnl)) return position.pnl as number;
     const stopDistance = Math.abs(position.start.price - (position.stop?.price ?? position.start.price));
@@ -2215,7 +2228,7 @@ function Workspace() {
     return sum + tradingCosts(broker, notional).total;
   }, 0);
   const paperEquity = paperInitialBalance + realizedPnl + unrealizedPnl;
-  const displayedPaperPositions = paperPositions.filter(position => paperTab === 'open' ? !position.closed : position.closed);
+  const displayedPaperPositions = [...paperPositions, ...productionDrawings].filter(position => paperTab === 'open' ? !position.closed : position.closed);
   const displayedBinancePositions = paperTab === 'open'
     ? (binanceLiveAccount?.positions ?? []).filter(position => Math.abs(Number(position.quantity ?? 0)) > 0)
     : [];
@@ -2286,7 +2299,7 @@ function Workspace() {
       const leverage = margin > 0 ? notional / margin : paperLeverage;
       const priceChange = ((position.end.price - position.start.price) / position.start.price) * direction;
       const pnl = paperPnl(position);
-      const costs = tradingCosts(broker, notional);
+      const costs = position.real ? { total: 0 } : tradingCosts(broker, notional);
       const roe = (pnl / margin) * 100;
       const targetPrice = position.target?.price ?? position.end.price;
       const stopPercentDisplay = ((position.stop ? position.stop.price : position.start.price) - position.start.price) / position.start.price * direction * 100;
@@ -2296,7 +2309,7 @@ function Workspace() {
       const rr = riskDistance > 0 ? rewardDistance / riskDistance : 0;
       const drawingIndex = drawings.findIndex(drawing => drawing.id === position.id);
       const positionSymbol = position.symbol ?? symbol;
-      return <tr key={`${position.start.time}-${index}`}><td><button type="button" className="paper-symbol-link" onClick={() => { setSymbol(positionSymbol); localStorage.setItem('helloworld-selected-symbol', positionSymbol); }}>{positionSymbol}</button></td><td><span className="operation-source source-paper">PAPER</span></td><td><span className={`position-side ${position.type}`}>{position.type.toUpperCase()}</span></td><td>{formatPaperPrice(position.start.price)}</td><td>{formatPaperPrice(position.end.price)}</td><td className="value-negative">{stopPercentDisplay.toFixed(4)}%</td><td className="value-positive">+{targetPercentDisplay.toFixed(4)}%</td><td>{leverage.toFixed(1)}x</td><td>{margin.toFixed(2)} USDT</td><td>{notional.toFixed(2)} USDT</td><td>{costs.total.toFixed(2)} USDT</td><td>{rr.toFixed(2)}:1</td><td className={pnl >= 0 ? 'value-positive' : 'value-negative'}>{pnl >= 0 ? '+' : ''}{pnl.toFixed(8)} USDT</td><td className={roe >= 0 ? 'value-positive' : 'value-negative'}>{roe >= 0 ? '+' : ''}{roe.toFixed(8)}%</td><td><button className="paper-edit-button" type="button" disabled={drawingIndex < 0} onClick={() => void (position.closed ? deletePaperPosition(position) : closePaperPosition(position))}>{position.closed ? 'Borrar' : 'Cerrar posición'}</button></td></tr>;
+      return <tr key={`${position.id ?? position.start.time}-${index}`}><td><button type="button" className="paper-symbol-link" onClick={() => { setSymbol(positionSymbol); localStorage.setItem('helloworld-selected-symbol', positionSymbol); }}>{positionSymbol}</button></td><td><span className={`operation-source ${position.real ? 'source-binance' : 'source-paper'}`}>{position.real ? 'BINANCE · PAPER' : 'PAPER'}</span></td><td><span className={`position-side ${position.type}`}>{position.type.toUpperCase()}</span></td><td>{formatPaperPrice(position.start.price)}</td><td>{formatPaperPrice(position.end.price)}</td><td className="value-negative">{stopPercentDisplay.toFixed(4)}%</td><td className="value-positive">+{targetPercentDisplay.toFixed(4)}%</td><td>{leverage.toFixed(1)}x</td><td>{margin.toFixed(2)} USDT</td><td>{notional.toFixed(2)} USDT</td><td>{position.real ? '—' : `${costs.total.toFixed(2)} USDT`}</td><td>{rr.toFixed(2)}:1</td><td className={pnl >= 0 ? 'value-positive' : 'value-negative'}>{pnl >= 0 ? '+' : ''}{pnl.toFixed(8)} USDT</td><td className={roe >= 0 ? 'value-positive' : 'value-negative'}>{roe >= 0 ? '+' : ''}{roe.toFixed(8)}%</td><td>{position.real ? <span className="operation-readonly">Espejo Binance</span> : <button className="paper-edit-button" type="button" disabled={drawingIndex < 0} onClick={() => void (position.closed ? deletePaperPosition(position) : closePaperPosition(position))}>{position.closed ? 'Borrar' : 'Cerrar posición'}</button>}</td></tr>;
     })}</tbody></table></div>}{showPaperSettings && <div className="paper-settings-backdrop" role="presentation" onClick={() => setShowPaperSettings(false)}><section className="paper-settings-modal" role="dialog" aria-modal="true" aria-label="Ajustes Paper" onClick={event => event.stopPropagation()}><div className="paper-settings-head"><h2>Ajustes Paper</h2><button type="button" onClick={() => setShowPaperSettings(false)} aria-label="Cerrar">×</button></div><label>Depósito<input type="number" min="1" step="0.01" placeholder="Agregar USD" value={depositAmount} onChange={event => setDepositAmount(event.target.value)} /><button type="button" className="paper-deposit-button" onClick={() => { const amount = Number(depositAmount); if (!Number.isFinite(amount) || amount <= 0) return; const next = paperInitialBalance + amount; setPaperInitialBalance(next); localStorage.setItem('helloworld-paper-balance', String(next)); window.dispatchEvent(new Event('helloworld-paper-assist-updated')); setDepositAmount(''); }}>Depositar</button></label><label>Riesgo por operación (%)<input type="number" min="0.05" max="10" step="0.05" value={paperRiskPercent} onChange={event => { const value = Math.max(.05, Math.min(10, Number(event.target.value) || .05)); setPaperRiskPercent(value); const current = JSON.parse(localStorage.getItem('helloworld-paper-assist') ?? '{}'); localStorage.setItem('helloworld-paper-assist', JSON.stringify({ ...current, balance: paperInitialBalance, riskPercent: value })); }} /></label></section></div>}
   </section>;
 
@@ -2381,18 +2394,6 @@ function Workspace() {
     const fees = tradingCosts('binance', notional).total;
     return { side, entry, stop, target, targetPercent, quantity, notional, fees, leverage, margin: leverage > 0 ? notional / leverage : 0 };
   }) : [];
-  const productionPositions = (binanceLiveAccount?.positions ?? []).filter(position => Math.abs(Number(position.quantity ?? 0)) > 0);
-  const productionDrawings: Drawing[] = productionPositions.filter(position => position.symbol === symbol).map((position, index) => {
-    const quantity = Number(position.quantity ?? 0);
-    const type: 'long' | 'short' = quantity >= 0 ? 'long' : 'short';
-    const entry = Number(position.entry_price ?? 0);
-    const current = Number(position.mark_price ?? 0) || binanceLivePriceRef.current?.price || entry;
-    const lastTime = candleBarsRef.current[candleBarsRef.current.length - 1]?.time ?? (Math.floor(Date.now() / 1000) as UTCTimestamp);
-    const intent = binanceExecutionIntents.find(item => item.symbol === position.symbol && ['ENTRY_SUBMITTED', 'ENTRY_FILLED', 'PROTECTED'].includes(item.status ?? ''));
-    const stop = Number(intent?.stop_loss ?? entry * (1 - (type === 'long' ? 1 : -1) * FIXED_BINANCE_STOP_PERCENT / 100));
-    const target = Number(intent?.take_profit ?? entry * (1 + (type === 'long' ? 1 : -1) * FIXED_BINANCE_TARGET_PERCENT / 100));
-    return { id: `binance-real-${position.symbol}-${index}`, symbol: position.symbol, type, paper: true, real: true, status: 'OPEN', quantity: Math.abs(quantity), start: { time: (Number(lastTime) - 5 * 60) as UTCTimestamp, price: entry }, end: { time: lastTime, price: current }, stop: { time: lastTime, price: stop }, target: { time: lastTime, price: target }, notional: Math.abs(quantity) * entry, margin: Math.abs(quantity) * entry / BINANCE_MIN_OPERATION_LEVERAGE, pnl: Number(position.unrealized_pnl ?? 0), riskPercent: FIXED_BINANCE_STOP_PERCENT };
-  });
   const chartStageView = <div ref={chartStage} className={`chart-stage ${tool ? 'drawing-mode' : ''}`} onWheelCapture={event => handleChartWheel(event, 'entry')} onPointerDownCapture={startDrawing} onPointerMoveCapture={updateDrawing} onPointerUpCapture={finishDrawing} onPointerCancelCapture={() => { setDrawingStart(null); setDrawingEnd(null); setMoveStart(null); panStartRef.current = null; setResizeStart(null); setLassoStart(null); setLassoEnd(null); }}>
     <div ref={chartContainer} className="candlestick-chart" /><svg className="drawing-overlay" viewBox={`0 0 ${stageSize.width} ${stageSize.height}`} preserveAspectRatio="none" aria-hidden="true">{renderSessionIndicator()}{renderInterestMarkers()}{renderPriceLineHitAreas('entry')}{[...drawings, ...productionDrawings].map((drawing, index) => (!drawing.paper || !drawing.closed || drawing.id === visibleClosedId) && (!drawing.paper || !drawing.symbol || drawing.symbol === symbol) && (drawing.chart !== 'context' || drawing.paper) ? renderDrawing(drawing, index, 'entry') : null)}{tool && drawingStart && drawingEnd && drawingCanvas === 'entry' && renderDrawing({ type: tool, chart: 'entry', start: drawingStart, end: drawingEnd }, 'preview', 'entry')}{lassoStart && lassoEnd && drawingCanvas === 'entry' && <rect x={Math.min(lassoStart.x, lassoEnd.x)} y={Math.min(lassoStart.y, lassoEnd.y)} width={Math.abs(lassoStart.x - lassoEnd.x)} height={Math.abs(lassoStart.y - lassoEnd.y)} className="selection-lasso" />}</svg><div className="chart-bottom-controls"><span className="timezone-icon" aria-hidden="true">◷</span><select className="timezone-select" value={timezone} onChange={event => setTimezone(event.target.value)} aria-label="Zona horaria">{TIMEZONES.map(([label, value]) => <option key={value} value={value}>{label}</option>)}</select></div>
     <div className="floating-order-buttons" aria-label="Abrir operación simulada"><button className="open-long-button" disabled={!paperReady} onClick={() => void openSimulatedPosition('long')}>▲ <span>Abrir Long</span><small>{binancePreview.find(preview => preview.side === 'LONG') ? `SL -${FIXED_BINANCE_STOP_PERCENT.toFixed(2)}% · TP +${binancePreview.find(preview => preview.side === 'LONG')!.targetPercent.toFixed(2)}% · N ${binancePreview.find(preview => preview.side === 'LONG')!.notional.toFixed(2)} · M ${binancePreview.find(preview => preview.side === 'LONG')!.margin.toFixed(4)} · ${binancePreview.find(preview => preview.side === 'LONG')!.leverage}x` : labRecommendations ? `${labRecommendations.long.label} · R:R ${labRecommendations.long.rr.toFixed(2)}:1` : 'Calculando recomendación…'}</small></button><button className="open-short-button" disabled={!paperReady} onClick={() => void openSimulatedPosition('short')}>▼ <span>Abrir Short</span><small>{binancePreview.find(preview => preview.side === 'SHORT') ? `SL -${FIXED_BINANCE_STOP_PERCENT.toFixed(2)}% · TP +${binancePreview.find(preview => preview.side === 'SHORT')!.targetPercent.toFixed(2)}% · N ${binancePreview.find(preview => preview.side === 'SHORT')!.notional.toFixed(2)} · M ${binancePreview.find(preview => preview.side === 'SHORT')!.margin.toFixed(4)} · ${binancePreview.find(preview => preview.side === 'SHORT')!.leverage}x` : labRecommendations ? `${labRecommendations.short.label} · R:R ${labRecommendations.short.rr.toFixed(2)}:1` : 'Calculando recomendación…'}</small></button></div>
