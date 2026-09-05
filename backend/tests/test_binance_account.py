@@ -48,6 +48,19 @@ def test_account_update_exposes_balance_position_and_order_event():
     assert snapshot["events"][0]["status"] == "FILLED"
 
 
+def test_position_risk_projection_preserves_binance_risk_fields():
+    projected = monitor()._position({
+        "symbol": "BULLAUSDT", "positionAmt": "5", "entryPrice": "0.0743230",
+        "markPrice": "0.0726349", "unRealizedProfit": "-0.11",
+        "notional": "5.05", "isolatedMargin": "5.05", "isolatedWallet": "4.9403",
+        "leverage": "1", "marginType": "isolated", "positionSide": "BOTH",
+    })
+    assert projected["symbol"] == "BULLAUSDT"
+    assert projected["notional"] == "5.05"
+    assert projected["isolated_margin"] == "5.05"
+    assert projected["isolated_wallet"] == "4.9403"
+
+
 def test_max_leverages_reads_first_bracket_per_symbol(monkeypatch):
     instance = monitor()
     monkeypatch.setattr(instance, "_signed_get", lambda path: [

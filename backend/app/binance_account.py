@@ -198,7 +198,20 @@ class BinanceAccountMonitor:
         if event_type == "ACCOUNT_UPDATE":
             account = event.get("a", {})
             usdt = next((row for row in account.get("B", []) if row.get("a") == "USDT"), {})
-            positions = [self._position(row) for row in account.get("P", []) if float(row.get("pa", 0)) != 0]
+            with self._lock:
+                previous = {str(row.get("symbol", "")).upper(): row for row in self._snapshot.get("positions", [])}
+            positions = []
+            for row in account.get("P", []):
+                if float(row.get("pa", 0)) == 0:
+                    continue
+                position = self._position(row)
+                # ACCOUNT_UPDATE intentionally omits some risk fields. Keep
+                # the latest positionRisk values until the next REST refresh.
+                old = previous.get(str(position.get("symbol", "")).upper(), {})
+                for key in ("notional", "isolated_margin", "leverage", "margin_type"):
+                    if position.get(key) in (None, "") and old.get(key) not in (None, ""):
+                        position[key] = old[key]
+                positions.append(position)
             self._set(
                 wallet_balance=usdt.get("wb"),
                 futures_balance=float(usdt.get("wb", 0)) + sum(float(row.get("up", 0)) for row in account.get("P", [])),
@@ -221,12 +234,16 @@ class BinanceAccountMonitor:
 
     @staticmethod
     def _position(row: dict) -> dict[str, object]:
-        return {"symbol": row.get("s"), "side": row.get("ps") or row.get("positionSide"),
+        return {"symbol": row.get("s") or row.get("symbol"), "side": row.get("ps") or row.get("positionSide"),
                 "quantity": row.get("pa") or row.get("positionAmt"),
                 "entry_price": row.get("ep") or row.get("entryPrice"),
                 "mark_price": row.get("mp") or row.get("markPrice"),
                 "unrealized_pnl": row.get("up") or row.get("unRealizedProfit"),
                 "liquidation_price": row.get("liquidationPrice"),
+                "notional": row.get("notional") or row.get("notionalValue"),
+                "isolated_margin": row.get("isolatedMargin"),
+                "leverage": row.get("leverage"),
+                "margin_type": row.get("mt") or row.get("marginType"),
                 "isolated_wallet": row.get("iw") or row.get("isolatedWallet")}
 
     def _create_listen_key(self) -> str:

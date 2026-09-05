@@ -290,7 +290,8 @@ function RiskEngineModal({ onClose }: { onClose: () => void }) {
 
 type BinancePosition = {
   symbol?: string; side?: string; quantity?: string; entry_price?: string;
-  mark_price?: string; unrealized_pnl?: string; liquidation_price?: string; isolated_wallet?: string;
+  mark_price?: string; unrealized_pnl?: string; liquidation_price?: string;
+  notional?: string; isolated_margin?: string; leverage?: string; margin_type?: string; isolated_wallet?: string;
 };
 type BinanceAccount = {
   enabled?: boolean; healthy?: boolean; stream_connected?: boolean;
@@ -2281,16 +2282,16 @@ function Workspace() {
       const entry = Number(position.entry_price ?? 0);
       const mark = Number(position.mark_price ?? 0);
       const pnl = Number(position.unrealized_pnl ?? 0);
-      const notional = quantity * entry;
+      const notional = Math.abs(Number(position.notional ?? 0)) || quantity * mark || quantity * entry;
       const side = signedQuantity >= 0 ? 'LONG' : 'SHORT';
       const intent = binanceExecutionIntents.find(item => item.symbol === position.symbol && ['ENTRY_SUBMITTED', 'ENTRY_FILLED', 'PROTECTED'].includes(item.status ?? ''));
       const stop = Number(intent?.stop_loss ?? 0);
       const target = Number(intent?.take_profit ?? 0);
       const stopPercent = entry > 0 && stop > 0 ? Math.abs(stop - entry) / entry * 100 : null;
       const targetPercent = entry > 0 && target > 0 ? Math.abs(target - entry) / entry * 100 : null;
-      const leverage = position.symbol === symbol ? (binanceSymbolConfig?.leverage ?? BINANCE_MIN_OPERATION_LEVERAGE) : BINANCE_MIN_OPERATION_LEVERAGE;
-      const isolatedMargin = Number(position.isolated_wallet ?? 0);
-      const margin = isolatedMargin > 0 ? isolatedMargin : leverage > 0 ? notional / leverage : 0;
+      const leverage = Number(position.leverage ?? 0) || (position.symbol === symbol ? (binanceSymbolConfig?.leverage ?? BINANCE_MIN_OPERATION_LEVERAGE) : BINANCE_MIN_OPERATION_LEVERAGE);
+      const exchangeMargin = Number(position.isolated_margin ?? 0);
+      const margin = exchangeMargin > 0 ? exchangeMargin : leverage > 0 ? notional / leverage : 0;
       const fees = notional > 0 ? tradingCosts('binance', notional).total : 0;
       const rr = stopPercent && targetPercent ? targetPercent / stopPercent : null;
       const roe = margin > 0 ? pnl / margin * 100 : 0;
