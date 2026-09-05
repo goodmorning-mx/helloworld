@@ -213,6 +213,7 @@ class BinanceRealOrderInput(BaseModel):
     quantity: float = Field(gt=0)
     stop_loss: float = Field(gt=0)
     take_profit: float = Field(gt=0)
+    leverage: int = Field(default=1, ge=1, le=125)
     confirmed: bool = False
 
 
@@ -326,6 +327,11 @@ def open_binance_real_operation(payload: BinanceRealOrderInput, identity: AuthId
     current_config = binance_manager.symbol_config(identity.user_id, symbol)
     if current_config.get("margin_type") != "ISOLATED":
         binance_manager.set_symbol_margin_type(identity.user_id, symbol, "ISOLATED")
+    # Apply the leverage selected by the risk profile before submitting the
+    # market entry. Binance stores this setting per symbol.
+    current_leverage = int(current_config.get("leverage") or 0)
+    if current_leverage != payload.leverage:
+        binance_manager.set_symbol_leverage(identity.user_id, symbol, payload.leverage)
     intent = binance_execution_store.create(identity.user_id, {
         "symbol": symbol, "side": payload.side, "quantity": payload.quantity,
         "stop_loss": payload.stop_loss, "take_profit": payload.take_profit,

@@ -2015,11 +2015,40 @@ function Workspace() {
       return;
     }
     const margin = effectiveLeverage > 0 ? notional / effectiveLeverage : 0;
+    let paperEntry = entry;
+    let paperStop = stop;
+    let paperTarget = target;
+    let paperNotional = notional;
+    let paperMargin = margin;
+    if (broker === 'binance' && executionMode === 'production') {
+      if (!window.confirm(`Enviar orden REAL ${type.toUpperCase()} de ${symbol} a Binance con ${notional.toFixed(2)} USDT de notional y leverage ${effectiveLeverage}x?`)) return;
+      try {
+        const realResponse = await fetch(`${apiUrl}/trading/binance/real/operations`, {
+          method: 'POST',
+          headers: { Authorization: `Bearer ${auth.accessToken}`, 'Content-Type': 'application/json' },
+          credentials: 'include',
+          body: JSON.stringify({ symbol, side: type.toUpperCase(), quantity, stop_loss: stop, take_profit: target, leverage: effectiveLeverage, confirmed: true }),
+        });
+        const realPayload = await realResponse.json() as { detail?: string; entry?: { avgPrice?: string; price?: string } };
+        if (!realResponse.ok) throw new Error(realPayload.detail ?? 'Binance rechazó la orden real.');
+        const averageOpen = Number(realPayload.entry?.avgPrice ?? realPayload.entry?.price ?? 0);
+        if (averageOpen > 0 && binanceRules?.tick_size) {
+          paperEntry = roundToBinance(averageOpen, binanceRules.tick_size, binanceRules.price_precision);
+          paperStop = roundToBinance(paperEntry * (1 - direction * stopDistance), binanceRules.tick_size, binanceRules.price_precision);
+          paperTarget = roundToBinance(paperEntry * (1 + direction * targetDistance), binanceRules.tick_size, binanceRules.price_precision);
+          paperNotional = quantity * paperEntry;
+          paperMargin = effectiveLeverage > 0 ? paperNotional / effectiveLeverage : 0;
+        }
+      } catch (reason) {
+        setPaperSyncError(reason instanceof Error ? reason.message : 'No se pudo abrir la operación real en Binance.');
+        return;
+      }
+    }
     const response = await fetch(`${apiUrl}/trading/paper/operations`, {
       method: 'POST',
       headers: { Authorization: `Bearer ${auth.accessToken}`, 'Content-Type': 'application/json' },
       credentials: 'include',
-    body: JSON.stringify({ symbol, side: type, chart: 'entry', entry_time: Number(latest.time), entry_price: entry, current_time: Number(latest.time), current_price: entry, stop_time: Number(futureTime), stop_price: stop, target_time: Number(futureTime), target_price: target, risk_percent: riskPercent, quantity, notional, margin, pnl: 0, status: 'OPEN', close_reason: null }),
+    body: JSON.stringify({ symbol, side: type, chart: 'entry', entry_time: Number(latest.time), entry_price: paperEntry, current_time: Number(latest.time), current_price: paperEntry, stop_time: Number(futureTime), stop_price: paperStop, target_time: Number(futureTime), target_price: paperTarget, risk_percent: riskPercent, quantity, notional: paperNotional, margin: paperMargin, pnl: 0, status: 'OPEN', close_reason: null }),
     });
     if (!response.ok) {
       setPaperSyncError('No se pudo guardar la paper operation.');
@@ -2028,11 +2057,11 @@ function Workspace() {
     const saved = await response.json() as { id: string };
     const position: Drawing = {
       id: saved.id, symbol, type, paper: true, status: 'OPEN', quantity,
-      start: { time: latest.time, price: entry },
-      end: { time: latest.time, price: entry },
-      stop: { time: futureTime, price: stop },
-      target: { time: futureTime, price: target },
-      riskPercent, notional, margin, pnl: 0,
+      start: { time: latest.time, price: paperEntry },
+      end: { time: latest.time, price: paperEntry },
+      stop: { time: futureTime, price: paperStop },
+      target: { time: futureTime, price: paperTarget },
+      riskPercent, notional: paperNotional, margin: paperMargin, pnl: 0,
     };
     setDrawings(current => {
       const next = [...current, position];
