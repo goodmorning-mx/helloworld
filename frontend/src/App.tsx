@@ -2350,9 +2350,8 @@ function Workspace() {
       const top = Math.min(start.y, end.y);
       return <g key={index} className={selectedClass}><rect x={left} y={top} width={Math.max(1, Math.abs(end.x - start.x))} height={Math.max(1, Math.abs(end.y - start.y))} className="measurement-box" /><text x={left + 8} y={top + 18} className="measurement-label">{minutes} min · {priceDelta.toFixed(2)} · {pricePercent >= 0 ? '+' : ''}{pricePercent.toFixed(2)}%</text>{handleNodes}</g>;
     }
-    const chartWidth = canvas === 'context' ? overviewSize.width : stageSize.width;
-    const left = drawing.real ? 0 : Math.min(start.x, end.x);
-    const width = drawing.real ? chartWidth : Math.max(1, Math.abs(end.x - start.x));
+    const left = Math.min(start.x, end.x);
+    const width = Math.max(1, Math.abs(end.x - start.x));
     const profitTop = drawing.type === 'long' ? Math.min(start.y, end.y) : start.y;
     const riskTop = drawing.type === 'long' ? start.y : Math.min(start.y, end.y);
     const profitHeight = Math.abs(start.y - end.y);
