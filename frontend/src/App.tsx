@@ -48,6 +48,9 @@ const MAX_CHART_HISTORY_SECONDS = 2 * 86400;
 const MAX_WICK_EXTENSION_BARS = 10;
 const FIXED_BINANCE_STOP_PERCENT = 0.20;
 const FIXED_BINANCE_TARGET_PERCENT = 1;
+// Safe Binance validation profile: use the smallest permitted exposure and
+// the lowest leverage. This keeps margin equal to the symbol minimum notional.
+const BINANCE_MIN_OPERATION_LEVERAGE = 1;
 function renderBars(bars: Array<{ time: UTCTimestamp; open: number; high: number; low: number; close: number }>, max: number) {
   return bars.slice(-max);
 }
@@ -1997,8 +2000,7 @@ function Workspace() {
     const sizingStop = broker === 'binance' ? stopPercent : stopPercent + tradingCostRate(broker);
     const riskBoundNotional = sizingStop > 0 ? riskAmount / sizingStop : 0;
     const operationLeverage = Math.min(recommendation?.leverage ?? paperLeverage, brokerMaxLeverage);
-    const selectedBinanceLeverage = Number(binanceLeverageDraft) || brokerMaxLeverage;
-    const effectiveLeverage = broker === 'binance' ? selectedBinanceLeverage : operationLeverage;
+    const effectiveLeverage = broker === 'binance' ? BINANCE_MIN_OPERATION_LEVERAGE : operationLeverage;
     // Binance test entries use the symbol minimum notional. This keeps the
     // displayed final margin identical to the margin stored on the order.
     const requestedNotional = broker === 'binance' && binanceRules
@@ -2304,7 +2306,7 @@ function Workspace() {
     const targetPercent = FIXED_BINANCE_TARGET_PERCENT;
     const target = roundToBinance(liveReferencePrice * (1 + direction * targetPercent / 100), binanceRules.tick_size, binanceRules.price_precision);
     const notional = binanceRules.min_notional;
-    const leverage = Number(binanceLeverageDraft) || 1;
+    const leverage = BINANCE_MIN_OPERATION_LEVERAGE;
     return { side, entry: liveReferencePrice, stop, target, targetPercent, notional, leverage, margin: leverage > 0 ? notional / leverage : 0 };
   }) : [];
   const chartStageView = <div ref={chartStage} className={`chart-stage ${tool ? 'drawing-mode' : ''}`} onWheelCapture={event => handleChartWheel(event, 'entry')} onPointerDownCapture={startDrawing} onPointerMoveCapture={updateDrawing} onPointerUpCapture={finishDrawing} onPointerCancelCapture={() => { setDrawingStart(null); setDrawingEnd(null); setMoveStart(null); panStartRef.current = null; setResizeStart(null); setLassoStart(null); setLassoEnd(null); }}>
@@ -2344,14 +2346,14 @@ function Workspace() {
     : 'broker-not-ready';
   const selectedMarket = activeMarketSymbols.find(candidate => candidate.symbol === symbol);
   const minimumBinanceNotional = binanceRules?.min_notional ?? 0;
-  const appliedBinanceLeverage = Number(binanceLeverageDraft) || 0;
+  const appliedBinanceLeverage = broker === 'binance' ? BINANCE_MIN_OPERATION_LEVERAGE : 0;
   const maximumBinanceLeverage = selectedMarket?.max_leverage ?? binanceSymbolConfig?.leverage ?? 0;
-  const recommendedBinanceLeverage = maximumBinanceLeverage;
+  const recommendedBinanceLeverage = broker === 'binance' ? BINANCE_MIN_OPERATION_LEVERAGE : maximumBinanceLeverage;
   const longPreview = binancePreview.find(preview => preview.side === 'LONG');
   const shortPreview = binancePreview.find(preview => preview.side === 'SHORT');
-  // Recommended margin uses the symbol's maximum permitted leverage. Final
-  // margin uses the leverage currently selected/applied by the operator.
-  const recommendedBinanceMargin = minimumBinanceNotional > 0 && maximumBinanceLeverage > 0 ? minimumBinanceNotional / maximumBinanceLeverage : null;
+  // The validation profile deliberately uses 1x, so both recommended and
+  // final margin equal the minimum notional. Fees remain separate.
+  const recommendedBinanceMargin = minimumBinanceNotional > 0 && recommendedBinanceLeverage > 0 ? minimumBinanceNotional / recommendedBinanceLeverage : null;
   const finalBinanceMargin = minimumBinanceNotional > 0 && appliedBinanceLeverage > 0 ? minimumBinanceNotional / appliedBinanceLeverage : null;
   const formatMargin = (value: number | null) => value == null ? '—' : `${value.toFixed(4)} USDT`;
   const marginSummary = broker === 'binance' ? <span className="margin-summary" aria-label="Margen de la próxima operación">MARGIN REC. {formatMargin(recommendedBinanceMargin)} · FINAL {formatMargin(finalBinanceMargin)} · LEV {appliedBinanceLeverage > 0 ? `${appliedBinanceLeverage}x` : '—'}</span> : null;
