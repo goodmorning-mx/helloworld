@@ -47,6 +47,7 @@ const MAX_CHART_HISTORY_SECONDS = 2 * 86400;
 // SVG work while the trader is only tuning the current move.
 const MAX_WICK_EXTENSION_BARS = 10;
 const FIXED_BINANCE_STOP_PERCENT = 0.20;
+const FIXED_BINANCE_TARGET_PERCENT = 1;
 function renderBars(bars: Array<{ time: UTCTimestamp; open: number; high: number; low: number; close: number }>, max: number) {
   return bars.slice(-max);
 }
@@ -1978,7 +1979,9 @@ function Workspace() {
         : Number.isFinite(storedAssist.stopPercent) && (storedAssist.stopPercent ?? 0) > 0
           ? (storedAssist.stopPercent as number) / 100
           : 0.00087;
-    const targetDistance = recommendation?.mfe ? recommendation.mfe / 100 : Number.isFinite(storedAssist.targetPercent) && (storedAssist.targetPercent ?? 0) > 0 ? (storedAssist.targetPercent as number) / 100 : stopDistance * 4;
+    const targetDistance = broker === 'binance'
+      ? FIXED_BINANCE_TARGET_PERCENT / 100
+      : recommendation?.mfe ? recommendation.mfe / 100 : Number.isFinite(storedAssist.targetPercent) && (storedAssist.targetPercent ?? 0) > 0 ? (storedAssist.targetPercent as number) / 100 : stopDistance * 4;
     const rawTarget = entry * (1 + direction * targetDistance);
     const rawStop = entry * (1 - direction * stopDistance);
     const target = broker === 'binance' && binanceRules?.tick_size ? roundToBinance(rawTarget, binanceRules.tick_size, binanceRules.price_precision) : rawTarget;
@@ -2298,7 +2301,7 @@ function Workspace() {
   const binancePreview = broker === 'binance' && binanceRules && liveReferencePrice > 0 ? (['LONG', 'SHORT'] as const).map(side => {
     const direction = side === 'LONG' ? 1 : -1;
     const stop = roundToBinance(liveReferencePrice * (1 - direction * FIXED_BINANCE_STOP_PERCENT / 100), binanceRules.tick_size, binanceRules.price_precision);
-    const targetPercent = labRecommendations?.[side === 'LONG' ? 'long' : 'short']?.mfe ?? FIXED_BINANCE_STOP_PERCENT * 4;
+    const targetPercent = FIXED_BINANCE_TARGET_PERCENT;
     const target = roundToBinance(liveReferencePrice * (1 + direction * targetPercent / 100), binanceRules.tick_size, binanceRules.price_precision);
     const notional = binanceRules.min_notional;
     const leverage = Number(binanceLeverageDraft) || 1;
