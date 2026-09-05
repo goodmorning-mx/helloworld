@@ -2201,7 +2201,11 @@ function Workspace() {
     const entry = Number(position.entry_price ?? 0);
     const current = Number(position.mark_price ?? 0) || binanceLivePriceRef.current?.price || entry;
     const lastTime = candleBarsRef.current[candleBarsRef.current.length - 1]?.time ?? (Math.floor(Date.now() / 1000) as UTCTimestamp);
-    const intent = binanceExecutionIntents.find(item => item.symbol === position.symbol && ['ENTRY_SUBMITTED', 'ENTRY_FILLED', 'PROTECTED'].includes(item.status ?? ''));
+    // The exchange position is authoritative for existence. Keep the latest
+    // matching intent even when it temporarily carries ERROR/CLOSING, so an
+    // already-open real position never loses its visual SL/TP levels.
+    const intent = binanceExecutionIntents.find(item => item.symbol === position.symbol && item.side === (type === 'long' ? 'LONG' : 'SHORT') && item.stop_loss && item.take_profit)
+      ?? binanceExecutionIntents.find(item => item.symbol === position.symbol && item.stop_loss && item.take_profit);
     const stop = Number(intent?.stop_loss ?? entry * (1 - (type === 'long' ? 1 : -1) * FIXED_BINANCE_STOP_PERCENT / 100));
     const target = Number(intent?.take_profit ?? entry * (1 + (type === 'long' ? 1 : -1) * FIXED_BINANCE_TARGET_PERCENT / 100));
     return { id: `binance-real-${position.symbol}-${index}`, symbol: position.symbol, type, paper: true, real: true, status: 'OPEN', quantity: Math.abs(quantity), start: { time: (Number(lastTime) - 5 * 60) as UTCTimestamp, price: entry }, end: { time: lastTime, price: current }, stop: { time: lastTime, price: stop }, target: { time: lastTime, price: target }, notional: Math.abs(quantity) * entry, margin: Number(position.isolated_wallet ?? 0) || Math.abs(quantity) * entry / BINANCE_MIN_OPERATION_LEVERAGE, pnl: Number(position.unrealized_pnl ?? 0), riskPercent: FIXED_BINANCE_STOP_PERCENT };
@@ -2335,7 +2339,7 @@ function Workspace() {
     const end = screenPoint(drawing.end, canvas);
     if (!start || !end) return null;
     const handles = drawingHandles(drawing, typeof index === 'number' ? index : -1, canvas);
-    const handleNodes = handles.filter(handle => !drawing.paper || handle.endpoint === 'target' || handle.endpoint === 'stop').map((handle, handleIndex) => <circle key={handleIndex} cx={handle.x} cy={handle.y} r="7" className={`drawing-handle ${handle.role === 'stop' ? 'handle-stop' : handle.role === 'target' ? 'handle-target' : drawing.type === 'ruler' ? 'handle-ruler' : ''}`} />);
+    const handleNodes = handles.filter(handle => !drawing.paper || handle.endpoint === 'target' || (handle.endpoint === 'stop' && !drawing.real)).map((handle, handleIndex) => <circle key={handleIndex} cx={handle.x} cy={handle.y} r="7" className={`drawing-handle ${handle.role === 'stop' ? 'handle-stop' : handle.role === 'target' ? 'handle-target' : drawing.type === 'ruler' ? 'handle-ruler' : ''}`} />);
     const pricePercent = ((drawing.end.price - drawing.start.price) / drawing.start.price) * 100;
     const selectedClass = typeof index === 'number' && (selectedDrawing === index || selectedDrawings.includes(index)) ? 'drawing-selected' : undefined;
     if (drawing.type === 'line') return <g key={index} className={selectedClass}><line x1={start.x} y1={start.y} x2={end.x} y2={end.y} className="drawing-line" /><text x={(start.x + end.x) / 2} y={(start.y + end.y) / 2 - 8} className="drawing-label">{pricePercent >= 0 ? '+' : ''}{pricePercent.toFixed(2)}%</text>{handleNodes}</g>;
