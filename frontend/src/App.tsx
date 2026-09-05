@@ -2021,7 +2021,6 @@ function Workspace() {
     let paperNotional = notional;
     let paperMargin = margin;
     if (broker === 'binance' && executionMode === 'production') {
-      if (!window.confirm(`Enviar orden REAL ${type.toUpperCase()} de ${symbol} a Binance con ${notional.toFixed(2)} USDT de notional y leverage ${effectiveLeverage}x?`)) return;
       try {
         const realResponse = await fetch(`${apiUrl}/trading/binance/real/operations`, {
           method: 'POST',
