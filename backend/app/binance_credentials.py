@@ -191,6 +191,10 @@ class BinanceMonitorManager:
                 monitor.start()
         return {"configured": True, **monitor.set_leverage(symbol, leverage)}
 
+    def position_risk(self, user_id: str, symbol: str) -> dict[str, object]:
+        monitor = self._monitor_for_user(user_id)
+        return monitor.position_risk(symbol)
+
     def place_market_order(self, user_id: str, symbol: str, side: str, quantity: float, client_order_id: str, *, reduce_only: bool = False) -> dict:
         monitor = self._monitor_for_user(user_id)
         return monitor.place_market_order(symbol, side, quantity, client_order_id, reduce_only=reduce_only)

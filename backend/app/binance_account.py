@@ -122,6 +122,12 @@ class BinanceAccountMonitor:
         self._request("POST", "/fapi/v1/leverage", {"symbol": requested, "leverage": value}, signed=True)
         return self.symbol_config(requested)
 
+    def position_risk(self, symbol: str) -> dict[str, object]:
+        """Read one filled position once, after an entry is acknowledged."""
+        requested = symbol.strip().upper()
+        payload = self._signed_get("/fapi/v2/positionRisk")
+        return next((row for row in payload if str(row.get("symbol", "")).upper() == requested), {}) if isinstance(payload, list) else {}
+
     def place_market_order(self, symbol: str, side: str, quantity: float, client_order_id: str, *, reduce_only: bool = False) -> dict:
         """Submit one market entry. Caller must pass the production safety gate."""
         requested = symbol.strip().upper()

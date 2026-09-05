@@ -407,7 +407,16 @@ def open_binance_real_operation(payload: BinanceRealOrderInput, identity: AuthId
     try:
         entry = binance_manager.place_market_order(identity.user_id, symbol, order_side, quantity, str(intent["client_order_id"]))
         binance_execution_store.update(intent["id"], identity.user_id, status="ENTRY_SUBMITTED", exchange_order_id=str(entry.get("orderId")))
-        average_open = float(entry.get("avgPrice") or entry.get("price") or live_price)
+        # MARKET/RESULT can legally return avgPrice=0 while the fill is being
+        # projected. Read the just-filled position once so protection is based
+        # on Binance's actual entry and size, never on zero or stale UI data.
+        filled_position = binance_manager.position_risk(identity.user_id, symbol)
+        average_candidates = (filled_position.get("entryPrice"), entry.get("avgPrice"), entry.get("price"), live_price)
+        average_open = next((float(value) for value in average_candidates if value is not None and float(value) > 0), live_price)
+        actual_quantity = next((abs(float(value)) for value in (filled_position.get("positionAmt"), entry.get("executedQty"), quantity) if value is not None and float(value) > 0), quantity)
+        quantity = _align_binance_value(actual_quantity, step_size, quantity_precision, ceiling=False)
+        if quantity <= 0 or average_open <= 0:
+            raise RuntimeError("Binance no devolvió una posición rellenada válida para proteger.")
         direction = 1 if payload.side == "LONG" else -1
         stop = average_open * (1 - direction * payload.stop_percent / 100)
         target = average_open * (1 + direction * payload.target_percent / 100)
