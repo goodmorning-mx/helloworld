@@ -226,7 +226,8 @@ class BinanceAccountMonitor:
                 "entry_price": row.get("ep") or row.get("entryPrice"),
                 "mark_price": row.get("mp") or row.get("markPrice"),
                 "unrealized_pnl": row.get("up") or row.get("unRealizedProfit"),
-                "liquidation_price": row.get("liquidationPrice")}
+                "liquidation_price": row.get("liquidationPrice"),
+                "isolated_wallet": row.get("iw") or row.get("isolatedWallet")}
 
     def _create_listen_key(self) -> str:
         return self._request("POST", "/fapi/v1/listenKey")["listenKey"]

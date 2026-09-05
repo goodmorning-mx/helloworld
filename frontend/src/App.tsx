@@ -290,7 +290,7 @@ function RiskEngineModal({ onClose }: { onClose: () => void }) {
 
 type BinancePosition = {
   symbol?: string; side?: string; quantity?: string; entry_price?: string;
-  mark_price?: string; unrealized_pnl?: string; liquidation_price?: string;
+  mark_price?: string; unrealized_pnl?: string; liquidation_price?: string; isolated_wallet?: string;
 };
 type BinanceAccount = {
   enabled?: boolean; healthy?: boolean; stream_connected?: boolean;
@@ -2226,13 +2226,25 @@ function Workspace() {
     <div className="positions-panel-head"><div><span className="positions-kicker">TRADING</span><h2>Paper operations</h2></div><div className="paper-actions"><span className="paper-risk-indicator">Riesgo {paperRiskPercent.toFixed(2)}%</span><button type="button" className="paper-settings-button" onClick={() => setShowPaperSettings(true)} aria-label="Ajustar Paper">⚙</button><span className="paper-badge">PAPER</span></div></div>{paperSyncError && <p className="paper-sync-error" role="status">{paperSyncError}</p>}<div className="paper-tabs" role="tablist" aria-label="Operaciones"><button role="tab" aria-selected={paperTab === 'open'} className={paperTab === 'open' ? 'paper-tab-active' : ''} onClick={() => setPaperTab('open')}>Abiertas <b>{paperPositions.filter(position => !position.closed).length + displayedBinancePositions.length}</b></button><button role="tab" aria-selected={paperTab === 'closed'} className={paperTab === 'closed' ? 'paper-tab-active' : ''} onClick={() => setPaperTab('closed')}>Cerradas <b>{paperPositions.filter(position => position.closed).length}</b></button></div>
     <div className="paper-balance-grid"><div><small>Balance paper</small><strong>{paperEquity.toFixed(2)} USD</strong></div><div><small>Leverage máximo · {symbol}</small><strong>{brokerMaxLeverage.toFixed(0)}x</strong></div><div><small>Leverage paper efectivo</small><strong>{paperLeverage.toFixed(1)}x</strong></div><div><small>Costos comisión + slippage</small><strong>{paperCosts.toFixed(2)} USD</strong></div><div><small>PNL realizado</small><strong>{realizedPnl.toFixed(2)} USD</strong></div><div><small>PNL abierto</small><strong>{unrealizedPnl.toFixed(2)} USD</strong></div></div>
     {displayedPaperPositions.length === 0 && displayedBinancePositions.length === 0 ? <p className="positions-empty">{paperTab === 'open' ? 'No hay operaciones abiertas.' : 'No hay operaciones cerradas.'}</p> : <div className="positions-table-scroll"><table className="positions-table"><thead><tr><th>Instrumento</th><th>Cuenta</th><th>Lado</th><th>Entrada</th><th>Actual</th><th>SL %</th><th>TP %</th><th>Leverage</th><th>Margen</th><th>Notional</th><th>Fee</th><th>R:R</th><th>PNL</th><th>ROE</th><th>Acción</th></tr></thead><tbody>{displayedBinancePositions.map((position, index) => {
-      const quantity = Math.abs(Number(position.quantity ?? 0));
+      const signedQuantity = Number(position.quantity ?? 0);
+      const quantity = Math.abs(signedQuantity);
       const entry = Number(position.entry_price ?? 0);
       const mark = Number(position.mark_price ?? 0);
       const pnl = Number(position.unrealized_pnl ?? 0);
       const notional = quantity * entry;
-      const roe = notional > 0 ? pnl / notional * 100 : 0;
-      return <tr key={`binance-${position.symbol}-${index}`}><td><button type="button" className="paper-symbol-link" onClick={() => { if (position.symbol) { setSymbol(position.symbol); localStorage.setItem('helloworld-selected-symbol', position.symbol); } }}>{position.symbol ?? '—'}</button></td><td><span className="operation-source source-binance">BINANCE</span></td><td className={position.side === 'LONG' ? 'value-positive' : 'value-negative'}>{position.side ?? '—'}</td><td>{entry > 0 ? formatPaperPrice(entry) : '—'}</td><td>{mark > 0 ? formatPaperPrice(mark) : '—'}</td><td>—</td><td>—</td><td>—</td><td>—</td><td>{notional > 0 ? `${notional.toFixed(2)} USDT` : '—'}</td><td>—</td><td>—</td><td className={pnl >= 0 ? 'value-positive' : 'value-negative'}>{pnl >= 0 ? '+' : ''}{pnl.toFixed(8)} USDT</td><td className={roe >= 0 ? 'value-positive' : 'value-negative'}>{roe >= 0 ? '+' : ''}{roe.toFixed(4)}%</td><td><span className="operation-readonly">Broker</span></td></tr>;
+      const side = signedQuantity >= 0 ? 'LONG' : 'SHORT';
+      const intent = binanceExecutionIntents.find(item => item.symbol === position.symbol && ['ENTRY_SUBMITTED', 'ENTRY_FILLED', 'PROTECTED'].includes(item.status ?? ''));
+      const stop = Number(intent?.stop_loss ?? 0);
+      const target = Number(intent?.take_profit ?? 0);
+      const stopPercent = entry > 0 && stop > 0 ? Math.abs(stop - entry) / entry * 100 : null;
+      const targetPercent = entry > 0 && target > 0 ? Math.abs(target - entry) / entry * 100 : null;
+      const leverage = position.symbol === symbol ? (binanceSymbolConfig?.leverage ?? BINANCE_MIN_OPERATION_LEVERAGE) : BINANCE_MIN_OPERATION_LEVERAGE;
+      const isolatedMargin = Number(position.isolated_wallet ?? 0);
+      const margin = isolatedMargin > 0 ? isolatedMargin : leverage > 0 ? notional / leverage : 0;
+      const fees = notional > 0 ? tradingCosts('binance', notional).total : 0;
+      const rr = stopPercent && targetPercent ? targetPercent / stopPercent : null;
+      const roe = margin > 0 ? pnl / margin * 100 : 0;
+      return <tr key={`binance-${position.symbol}-${index}`}><td><button type="button" className="paper-symbol-link" onClick={() => { if (position.symbol) { setSymbol(position.symbol); localStorage.setItem('helloworld-selected-symbol', position.symbol); } }}>{position.symbol ?? '—'}</button></td><td><span className="operation-source source-binance">BINANCE</span></td><td className={side === 'LONG' ? 'value-positive' : 'value-negative'}>{side}</td><td>{entry > 0 ? formatPaperPrice(entry) : '—'}</td><td>{mark > 0 ? formatPaperPrice(mark) : '—'}</td><td>{stopPercent == null ? '—' : `-${stopPercent.toFixed(4)}%`}</td><td>{targetPercent == null ? '—' : `+${targetPercent.toFixed(4)}%`}</td><td>{leverage}x</td><td>{margin > 0 ? `${margin.toFixed(2)} USDT` : '—'}</td><td>{notional > 0 ? `${notional.toFixed(2)} USDT` : '—'}</td><td>{fees > 0 ? `${fees.toFixed(4)} USDT est.` : '—'}</td><td>{rr == null ? '—' : `${rr.toFixed(2)}:1`}</td><td className={pnl >= 0 ? 'value-positive' : 'value-negative'}>{pnl >= 0 ? '+' : ''}{pnl.toFixed(8)} USDT</td><td className={roe >= 0 ? 'value-positive' : 'value-negative'}>{roe >= 0 ? '+' : ''}{roe.toFixed(4)}%</td><td><span className="operation-readonly">Broker</span></td></tr>;
     })}{displayedPaperPositions.map((position, index) => {
       const direction = position.type === 'long' ? 1 : -1;
       const stopDistance = Math.abs(position.start.price - (position.stop?.price ?? position.start.price));
@@ -2371,7 +2383,8 @@ function Workspace() {
   const productionPositionLabel = productionPositions.length > 0
     ? productionPositions.map(position => {
       const pnl = Number(position.unrealized_pnl ?? 0);
-      return `${position.symbol ?? '—'} ${String(position.side ?? '').toUpperCase()} · PNL ${pnl >= 0 ? '+' : ''}${pnl.toFixed(2)} USDT`;
+      const side = Number(position.quantity ?? 0) >= 0 ? 'LONG' : 'SHORT';
+      return `${position.symbol ?? '—'} ${side} · PNL ${pnl >= 0 ? '+' : ''}${pnl.toFixed(2)} USDT`;
     }).join(' · ')
     : '';
   const statusBarMessage = paperSyncError || binanceLeverageError || activeMarketError;
