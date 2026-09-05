@@ -688,6 +688,29 @@ function Workspace() {
   const viewportRefreshPendingRef = useRef(false);
   const overviewRefreshPendingRef = useRef(false);
   const lastPaperVisualUpdateRef = useRef(0);
+  const binancePnlFrameRef = useRef<number | null>(null);
+  const binancePnlPriceRef = useRef<{ symbol: string; price: number; time: number } | null>(null);
+  const queueBinancePnlUpdate = (next: { symbol: string; price: number; time: number }) => {
+    binancePnlPriceRef.current = next;
+    if (binancePnlFrameRef.current !== null) return;
+    binancePnlFrameRef.current = requestAnimationFrame(() => {
+      binancePnlFrameRef.current = null;
+      const live = binancePnlPriceRef.current;
+      if (!live) return;
+      setBinanceLiveAccount(current => {
+        if (!current?.positions?.length) return current;
+        const positions = current.positions.map(position => {
+          if (position.symbol !== live.symbol) return position;
+          const quantity = Number(position.quantity ?? 0);
+          const entry = Number(position.entry_price ?? 0);
+          const pnl = entry > 0 ? quantity * (live.price - entry) : Number(position.unrealized_pnl ?? 0);
+          return { ...position, mark_price: String(live.price), unrealized_pnl: String(pnl) };
+        });
+        const total = positions.reduce((sum, position) => sum + Number(position.unrealized_pnl ?? 0), 0);
+        return { ...current, positions, total_unrealized_pnl: String(total), last_update: new Date(live.time * 1000).toISOString() };
+      });
+    });
+  };
   const scheduleViewportRefresh = () => {
     if (viewportRefreshPendingRef.current) return;
     viewportRefreshPendingRef.current = true;
@@ -1213,6 +1236,10 @@ function Workspace() {
     stream.onmessage = event => {
       if (!active) return;
       const message = JSON.parse(event.data) as { type?: string; symbol?: string; price?: number; time?: number; interval?: string; bar?: { time: number; open: number; high: number; low: number; close: number } };
+      if (message.type === 'mark_price' && message.price && message.time) {
+        queueBinancePnlUpdate({ symbol, price: Number(message.price), time: Number(message.time) });
+        return;
+      }
       if (message.type === 'trade' && message.price && message.time) {
         binanceLivePriceRef.current = { symbol, price: Number(message.price), time: Number(message.time), receivedAt: Date.now() };
         const liveBars = mergeTickBar(candleBarsRef.current, Number(message.time), Number(message.price), 60);
