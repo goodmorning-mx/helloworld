@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import math
+import json
+from decimal import Decimal, ROUND_CEILING, ROUND_FLOOR
 from uuid import uuid4
 from urllib.parse import urlencode
 
@@ -11,6 +13,7 @@ from pydantic import BaseModel, Field
 from typing import Literal
 import httpx
 from openai import AsyncOpenAI
+from urllib.error import HTTPError
 
 from gm_agent import AgentService, Conversation, OpenAIProvider
 from gm_agent.providers import ChatProvider, ProviderResponse
@@ -214,7 +217,50 @@ class BinanceRealOrderInput(BaseModel):
     stop_loss: float = Field(gt=0)
     take_profit: float = Field(gt=0)
     leverage: int = Field(default=1, ge=1, le=125)
+    stop_percent: float = Field(default=1, gt=0, le=100)
+    target_percent: float = Field(default=1, gt=0, le=100)
     confirmed: bool = False
+
+
+def _binance_public_execution_rules(symbol: str) -> tuple[float, float, float, float, int, int]:
+    """Return live price and the current public exchange filters for a symbol."""
+    base = settings.binance_base_url.rstrip("/")
+    exchange = httpx.get(f"{base}/fapi/v1/exchangeInfo", timeout=10)
+    exchange.raise_for_status()
+    item = next((value for value in exchange.json().get("symbols", []) if value.get("symbol") == symbol), None)
+    if not item:
+        raise RuntimeError(f"Binance no encontró el símbolo {symbol}.")
+    filters = {str(value.get("filterType")): value for value in item.get("filters", [])}
+    price_filter = filters.get("PRICE_FILTER", {})
+    lot = filters.get("LOT_SIZE", {})
+    notional = filters.get("NOTIONAL") or filters.get("MIN_NOTIONAL") or {}
+    ticker = httpx.get(f"{base}/fapi/v1/ticker/price", params={"symbol": symbol}, timeout=10)
+    ticker.raise_for_status()
+    return (float(ticker.json().get("price", 0)), float(lot.get("stepSize", 0) or 0),
+            float(price_filter.get("tickSize", 0) or 0), float(notional.get("notional", 0) or 0),
+            int(item.get("pricePrecision", 8)), int(item.get("quantityPrecision", 8)))
+
+
+def _align_binance_value(value: float, step: float, precision: int, *, ceiling: bool) -> float:
+    """Align a quantity/price to Binance's exact decimal grid."""
+    if value <= 0 or step <= 0:
+        return float(f"{value:.{precision}f}")
+    decimal_value = Decimal(str(value))
+    decimal_step = Decimal(str(step))
+    units = decimal_value / decimal_step
+    rounding = ROUND_CEILING if ceiling else ROUND_FLOOR
+    aligned = units.to_integral_value(rounding=rounding) * decimal_step
+    return float(f"{aligned:.{precision}f}")
+
+
+def _binance_error_message(exc: Exception) -> str:
+    if isinstance(exc, HTTPError):
+        try:
+            payload = json.loads(exc.read().decode("utf-8"))
+            return f"Binance HTTP {exc.code} ({payload.get('code', 'sin código')}): {payload.get('msg', str(exc))}"
+        except (ValueError, UnicodeDecodeError, OSError):
+            return f"Binance HTTP {exc.code}: {exc.reason}"
+    return str(exc)
 
 
 @app.on_event("startup")
@@ -323,6 +369,14 @@ def open_binance_real_operation(payload: BinanceRealOrderInput, identity: AuthId
     symbol = payload.symbol.upper()
     order_side = "BUY" if payload.side == "LONG" else "SELL"
     close_side = "SELL" if order_side == "BUY" else "BUY"
+    live_price, step_size, tick_size, min_notional, _, quantity_precision = _binance_public_execution_rules(symbol)
+    if live_price <= 0 or min_notional <= 0:
+        raise HTTPException(status_code=502, detail=f"No se pudieron cargar las reglas actuales de {symbol}.")
+    # Add a tiny boundary buffer: an exact min-notional quantity can fall
+    # below the exchange limit between the public ticker read and the market
+    # order. The buffer is only used when the requested order is below it.
+    requested_quantity = max(payload.quantity, (min_notional * 1.001) / live_price)
+    quantity = _align_binance_value(requested_quantity, step_size, quantity_precision, ceiling=True)
     # Never let an entry inherit Crossed mode accidentally.
     current_config = binance_manager.symbol_config(identity.user_id, symbol)
     if current_config.get("margin_type") != "ISOLATED":
@@ -333,25 +387,36 @@ def open_binance_real_operation(payload: BinanceRealOrderInput, identity: AuthId
     if current_leverage != payload.leverage:
         binance_manager.set_symbol_leverage(identity.user_id, symbol, payload.leverage)
     intent = binance_execution_store.create(identity.user_id, {
-        "symbol": symbol, "side": payload.side, "quantity": payload.quantity,
+        "symbol": symbol, "side": payload.side, "quantity": quantity,
         "stop_loss": payload.stop_loss, "take_profit": payload.take_profit,
     })
     entry = None
     try:
-        entry = binance_manager.place_market_order(identity.user_id, symbol, order_side, payload.quantity, str(intent["client_order_id"]))
+        entry = binance_manager.place_market_order(identity.user_id, symbol, order_side, quantity, str(intent["client_order_id"]))
         binance_execution_store.update(intent["id"], identity.user_id, status="ENTRY_SUBMITTED", exchange_order_id=str(entry.get("orderId")))
-        stop = binance_manager.place_close_protection(identity.user_id, symbol, close_side, payload.stop_loss, f"{intent['client_order_id']}_sl", "STOP_MARKET")
-        target = binance_manager.place_close_protection(identity.user_id, symbol, close_side, payload.take_profit, f"{intent['client_order_id']}_tp", "TAKE_PROFIT_MARKET")
+        average_open = float(entry.get("avgPrice") or entry.get("price") or live_price)
+        direction = 1 if payload.side == "LONG" else -1
+        stop = average_open * (1 - direction * payload.stop_percent / 100)
+        target = average_open * (1 + direction * payload.target_percent / 100)
+        _, _, current_tick_size, _, price_precision, _ = _binance_public_execution_rules(symbol)
+        # Keep protective triggers on Binance's tick grid. A protective level
+        # is biased away from the entry so rounding cannot turn it into an
+        # immediately-triggering order.
+        stop = _align_binance_value(stop, current_tick_size or tick_size, price_precision, ceiling=payload.side == "SHORT")
+        target = _align_binance_value(target, current_tick_size or tick_size, price_precision, ceiling=payload.side == "LONG")
+        binance_execution_store.update(intent["id"], identity.user_id, quantity=quantity, stop_loss=stop, take_profit=target)
+        stop = binance_manager.place_close_protection(identity.user_id, symbol, close_side, stop, f"{intent['client_order_id']}_sl", "STOP_MARKET")
+        target = binance_manager.place_close_protection(identity.user_id, symbol, close_side, target, f"{intent['client_order_id']}_tp", "TAKE_PROFIT_MARKET")
         saved = binance_execution_store.update(intent["id"], identity.user_id, status="PROTECTED", last_error=None)
         return {"broker": "binance", "mode": "real", "operation": saved, "entry": entry, "stop": stop, "target": target}
     except Exception as exc:
         emergency_error = None
         if entry is not None:
             try:
-                binance_manager.place_market_order(identity.user_id, symbol, close_side, payload.quantity, f"{intent['client_order_id']}_emergency")
+                binance_manager.place_market_order(identity.user_id, symbol, close_side, quantity, f"{intent['client_order_id']}_emergency")
             except Exception as close_exc:  # surface this prominently for manual intervention
                 emergency_error = str(close_exc)
-        message = str(exc) if emergency_error is None else f"{exc}; cierre de emergencia falló: {emergency_error}"
+        message = _binance_error_message(exc) if emergency_error is None else f"{_binance_error_message(exc)}; cierre de emergencia falló: {emergency_error}"
         binance_execution_store.update(intent["id"], identity.user_id, status="ERROR", last_error=message)
         raise HTTPException(status_code=502, detail=f"Binance rechazó la operación; revisa el estado antes de reintentar: {message}") from exc
 

@@ -2053,7 +2053,17 @@ function Workspace() {
           method: 'POST',
           headers: { Authorization: `Bearer ${auth.accessToken}`, 'Content-Type': 'application/json' },
           credentials: 'include',
-          body: JSON.stringify({ symbol, side: type.toUpperCase(), quantity, stop_loss: stop, take_profit: target, leverage: effectiveLeverage, confirmed: true }),
+          body: JSON.stringify({
+            symbol,
+            side: type.toUpperCase(),
+            quantity,
+            stop_loss: stop,
+            take_profit: target,
+            stop_percent: FIXED_BINANCE_STOP_PERCENT,
+            target_percent: FIXED_BINANCE_TARGET_PERCENT,
+            leverage: effectiveLeverage,
+            confirmed: true,
+          }),
         });
         const realPayload = await realResponse.json() as { detail?: string; entry?: { avgPrice?: string; price?: string } };
         if (!realResponse.ok) throw new Error(realPayload.detail ?? 'Binance rechazó la orden real.');
