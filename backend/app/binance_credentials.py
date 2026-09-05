@@ -191,9 +191,9 @@ class BinanceMonitorManager:
                 monitor.start()
         return {"configured": True, **monitor.set_leverage(symbol, leverage)}
 
-    def place_market_order(self, user_id: str, symbol: str, side: str, quantity: float, client_order_id: str) -> dict:
+    def place_market_order(self, user_id: str, symbol: str, side: str, quantity: float, client_order_id: str, *, reduce_only: bool = False) -> dict:
         monitor = self._monitor_for_user(user_id)
-        return monitor.place_market_order(symbol, side, quantity, client_order_id)
+        return monitor.place_market_order(symbol, side, quantity, client_order_id, reduce_only=reduce_only)
 
     def place_close_protection(self, user_id: str, symbol: str, side: str, stop_price: float, client_order_id: str, order_type: str) -> dict:
         monitor = self._monitor_for_user(user_id)

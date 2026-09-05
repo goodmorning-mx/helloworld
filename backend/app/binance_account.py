@@ -122,17 +122,20 @@ class BinanceAccountMonitor:
         self._request("POST", "/fapi/v1/leverage", {"symbol": requested, "leverage": value}, signed=True)
         return self.symbol_config(requested)
 
-    def place_market_order(self, symbol: str, side: str, quantity: float, client_order_id: str) -> dict:
+    def place_market_order(self, symbol: str, side: str, quantity: float, client_order_id: str, *, reduce_only: bool = False) -> dict:
         """Submit one market entry. Caller must pass the production safety gate."""
         requested = symbol.strip().upper()
         order_side = side.strip().upper()
         if order_side not in {"BUY", "SELL"} or quantity <= 0:
             raise ValueError("Orden Binance inválida.")
-        return self._request("POST", "/fapi/v1/order", {
+        params = {
             "symbol": requested, "side": order_side, "type": "MARKET",
             "quantity": format(quantity, ".16g"), "newClientOrderId": client_order_id,
             "newOrderRespType": "RESULT",
-        }, signed=True)
+        }
+        if reduce_only:
+            params["reduceOnly"] = "true"
+        return self._request("POST", "/fapi/v1/order", params, signed=True)
 
     def place_close_protection(self, symbol: str, side: str, stop_price: float, client_order_id: str, order_type: str) -> dict:
         """Place a server-side close-all protective trigger."""

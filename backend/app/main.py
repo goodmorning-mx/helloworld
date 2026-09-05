@@ -30,6 +30,7 @@ from app.ctrader_runtime import CTraderManager
 from app.paper_operations import PaperOperationStore
 from app.market_gateway import BinanceMarketGateway, SUPPORTED_INTERVALS
 from app.binance_execution import BinanceExecutionStore, BinanceExecutionSupervisor
+from app.binance_tp_worker import BinanceTakeProfitWorker
 
 settings = get_settings()
 engine = create_database_engine()
@@ -48,6 +49,7 @@ paper_operation_store = PaperOperationStore(engine)
 binance_market_gateway = BinanceMarketGateway()
 binance_execution_store = BinanceExecutionStore(engine)
 binance_execution_supervisor = BinanceExecutionSupervisor(settings, binance_credentials, binance_manager, binance_execution_store)
+binance_tp_worker = BinanceTakeProfitWorker(binance_manager, binance_execution_store, settings.binance_base_url)
 
 
 class FallbackProvider:
@@ -268,11 +270,18 @@ def initialize_auth_schema() -> None:
     auth_service.create_schema()
     ctrader_manager.start_configured()
     binance_execution_supervisor.start()
+    # Restore programmatic TP watchers after a backend restart. This scans
+    # durable intents only; price execution remains WebSocket-driven.
+    for user_id in binance_credentials.user_ids():
+        for intent in binance_execution_store.list(user_id):
+            if intent.get("status") == "PROTECTED":
+                binance_tp_worker.register(user_id, intent)
 
 
 @app.on_event("shutdown")
 def stop_binance_monitor() -> None:
     binance_execution_supervisor.stop()
+    binance_tp_worker.stop()
     binance_manager.stop_all()
     ctrader_manager.stop_all()
 
@@ -413,12 +422,14 @@ def open_binance_real_operation(payload: BinanceRealOrderInput, identity: AuthId
         if not isinstance(stop_order, dict) or not (stop_order.get("orderId") or stop_order.get("clientOrderId")):
             raise RuntimeError("Binance no confirmó la orden STOP_MARKET de protección.")
         saved = binance_execution_store.update(intent["id"], identity.user_id, status="PROTECTED", last_error=None)
+        if saved:
+            binance_tp_worker.register(identity.user_id, saved)
         return {"broker": "binance", "mode": "real", "operation": saved, "entry": entry, "stop": stop, "target": target, "take_profit_mode": "programmatic"}
     except Exception as exc:
         emergency_error = None
         if entry is not None:
             try:
-                binance_manager.place_market_order(identity.user_id, symbol, close_side, quantity, f"{intent['client_order_id']}_emergency")
+                binance_manager.place_market_order(identity.user_id, symbol, close_side, quantity, f"{intent['client_order_id']}_emergency", reduce_only=True)
             except Exception as close_exc:  # surface this prominently for manual intervention
                 emergency_error = str(close_exc)
         message = _binance_error_message(exc) if emergency_error is None else f"{_binance_error_message(exc)}; cierre de emergencia falló: {emergency_error}"
