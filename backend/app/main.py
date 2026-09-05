@@ -361,7 +361,11 @@ def list_binance_execution_intents(identity: AuthIdentity = Depends(identity_dep
 
 @app.post("/trading/binance/real/operations")
 def open_binance_real_operation(payload: BinanceRealOrderInput, identity: AuthIdentity = Depends(identity_dependency(auth_service))) -> dict[str, object]:
-    """Open one real isolated position with exchange-side SL/TP protection."""
+    """Open one real isolated position with exchange-side SL protection.
+
+    The TP is intentionally not submitted to Binance: it is managed by the
+    application strategy so it can move with the live indicator.
+    """
     if not settings.binance_real_trading_enabled:
         raise HTTPException(status_code=503, detail="El trading real de Binance está bloqueado en este entorno.")
     if not payload.confirmed:
@@ -408,11 +412,8 @@ def open_binance_real_operation(payload: BinanceRealOrderInput, identity: AuthId
         stop_order = binance_manager.place_close_protection(identity.user_id, symbol, close_side, stop, f"{intent['client_order_id']}_sl", "STOP_MARKET")
         if not isinstance(stop_order, dict) or not (stop_order.get("orderId") or stop_order.get("clientOrderId")):
             raise RuntimeError("Binance no confirmó la orden STOP_MARKET de protección.")
-        target_order = binance_manager.place_close_protection(identity.user_id, symbol, close_side, target, f"{intent['client_order_id']}_tp", "TAKE_PROFIT_MARKET")
-        if not isinstance(target_order, dict) or not (target_order.get("orderId") or target_order.get("clientOrderId")):
-            raise RuntimeError("Binance no confirmó la orden TAKE_PROFIT_MARKET de protección.")
         saved = binance_execution_store.update(intent["id"], identity.user_id, status="PROTECTED", last_error=None)
-        return {"broker": "binance", "mode": "real", "operation": saved, "entry": entry, "stop": stop, "target": target}
+        return {"broker": "binance", "mode": "real", "operation": saved, "entry": entry, "stop": stop, "target": target, "take_profit_mode": "programmatic"}
     except Exception as exc:
         emergency_error = None
         if entry is not None:
