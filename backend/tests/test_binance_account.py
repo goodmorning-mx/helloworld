@@ -34,6 +34,24 @@ def test_signed_binance_request_has_valid_signature(monkeypatch):
     assert query["signature"][0] == expected
 
 
+def test_close_protection_uses_current_algo_order_contract(monkeypatch):
+    instance = monitor()
+    captured = {}
+
+    def fake_request(method, path, params=None, signed=False):
+        captured.update({"method": method, "path": path, "params": params, "signed": signed})
+        return {"algoId": 123, "clientAlgoId": "helloworld_sl"}
+
+    monkeypatch.setattr(instance, "_request", fake_request)
+    response = instance.place_close_protection("BULLAUSDT", "SELL", 0.0735, "helloworld_sl", "STOP_MARKET")
+    assert response["algoId"] == 123
+    assert captured["path"] == "/fapi/v1/algoOrder"
+    assert captured["params"]["algoType"] == "CONDITIONAL"
+    assert captured["params"]["triggerPrice"] == "0.0735"
+    assert captured["params"]["clientAlgoId"] == "helloworld_sl"
+    assert "stopPrice" not in captured["params"]
+
+
 def test_account_update_exposes_balance_position_and_order_event():
     instance = monitor()
     instance._handle_event({

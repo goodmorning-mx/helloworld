@@ -144,19 +144,19 @@ class BinanceAccountMonitor:
         return self._request("POST", "/fapi/v1/order", params, signed=True)
 
     def place_close_protection(self, symbol: str, side: str, stop_price: float, client_order_id: str, order_type: str) -> dict:
-        """Place a server-side close-all protective trigger."""
+        """Place a server-side close-all Algo protective trigger."""
         requested = symbol.strip().upper()
         trigger_type = order_type.strip().upper()
         if trigger_type not in {"STOP_MARKET", "TAKE_PROFIT_MARKET"} or stop_price <= 0:
             raise ValueError("Protección Binance inválida.")
-        return self._request("POST", "/fapi/v1/order", {
-            "symbol": requested, "side": side.strip().upper(), "type": trigger_type,
-            "stopPrice": format(stop_price, ".16g"), "closePosition": "true",
+        return self._request("POST", "/fapi/v1/algoOrder", {
+            "algoType": "CONDITIONAL", "symbol": requested, "side": side.strip().upper(), "type": trigger_type,
+            "triggerPrice": format(stop_price, ".16g"), "closePosition": "true",
             # MARK_PRICE avoids depending on the browser's last trade stream.
             # Do not enable priceProtect: it can delay a valid protective
             # trigger when mark and contract prices temporarily diverge.
             "workingType": "MARK_PRICE", "priceProtect": "FALSE",
-            "newClientOrderId": client_order_id,
+            "clientAlgoId": client_order_id,
         }, signed=True)
 
     def _run(self) -> None:

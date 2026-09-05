@@ -428,7 +428,7 @@ def open_binance_real_operation(payload: BinanceRealOrderInput, identity: AuthId
         target = _align_binance_value(target, current_tick_size or tick_size, price_precision, ceiling=payload.side == "LONG")
         binance_execution_store.update(intent["id"], identity.user_id, quantity=quantity, stop_loss=stop, take_profit=target)
         stop_order = binance_manager.place_close_protection(identity.user_id, symbol, close_side, stop, f"{intent['client_order_id']}_sl", "STOP_MARKET")
-        if not isinstance(stop_order, dict) or not (stop_order.get("orderId") or stop_order.get("clientOrderId")):
+        if not isinstance(stop_order, dict) or not (stop_order.get("algoId") or stop_order.get("clientAlgoId")):
             raise RuntimeError("Binance no confirmó la orden STOP_MARKET de protección.")
         saved = binance_execution_store.update(intent["id"], identity.user_id, status="PROTECTED", last_error=None)
         if saved:
