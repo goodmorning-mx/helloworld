@@ -649,6 +649,8 @@ function Workspace() {
   const candlesRef = useRef<ReturnType<ReturnType<typeof createChart>['addSeries']> | null>(null);
   const candleBarsRef = useRef<Array<{ time: UTCTimestamp; open: number; high: number; low: number; close: number }>>([]);
   const binanceLivePriceRef = useRef<BinanceLivePrice | null>(null);
+  const productionDrawingsRef = useRef<Drawing[]>([]);
+  const productionOnlyRef = useRef(false);
   const loadingOlderRef = useRef(false);
   const candleDataRef = useRef<Array<{ time: UTCTimestamp; close: number }>>([]);
   const [symbol, setSymbol] = useState(() => localStorage.getItem('helloworld-selected-symbol') ?? 'BTCUSDT');
@@ -1021,7 +1023,8 @@ function Workspace() {
     trackerPriceLinesRef.current = [];
     const addLines = (canvas: ChartCanvas, series: ReturnType<ReturnType<typeof createChart>['addSeries']> | null) => {
       if (!series) return;
-      drawings.forEach((drawing, index) => {
+      const operationDrawings = productionOnlyRef.current ? productionDrawingsRef.current : drawings;
+      operationDrawings.forEach((drawing, index) => {
         if (!drawing.paper || (drawing.type !== 'long' && drawing.type !== 'short')) return;
         if (drawing.symbol && drawing.symbol !== symbol) return;
         if (drawing.closed) return;
@@ -1030,7 +1033,7 @@ function Workspace() {
         const stopPrice = drawing.stop?.price;
         if (stopPrice === undefined) return;
         const targetLine = series.createPriceLine({
-          id: `paper-${index}-tp-${canvas}`,
+          id: `${drawing.real ? 'binance' : 'paper'}-${index}-tp-${canvas}`,
           price: targetPrice,
           color: '#3b82f6',
           lineWidth: 3,
@@ -1042,7 +1045,7 @@ function Workspace() {
           axisLabelTextColor: '#eff6ff',
         });
         const stopLine = series.createPriceLine({
-          id: `paper-${index}-sl-${canvas}`,
+          id: `${drawing.real ? 'binance' : 'paper'}-${index}-sl-${canvas}`,
           price: stopPrice,
           color: '#ef4444',
           lineWidth: 4,
@@ -1085,7 +1088,7 @@ function Workspace() {
       nativePriceLinesRef.current = [];
       trackerPriceLinesRef.current = [];
     };
-  }, [drawings, symbol, interval, mobilePwa, visibleClosedId, showTracker, trackerPeriod, trackerRevision]);
+  }, [drawings, binanceLiveAccount, binanceExecutionIntents, executionMode, broker, symbol, interval, mobilePwa, visibleClosedId, showTracker, trackerPeriod, trackerRevision]);
 
   useEffect(() => {
     if (!chartStage.current) return;
@@ -2269,6 +2272,8 @@ function Workspace() {
   }, 0);
   const paperEquity = paperInitialBalance + realizedPnl + unrealizedPnl;
   const productionOnly = broker === 'binance' && executionMode === 'production';
+  productionDrawingsRef.current = productionDrawings;
+  productionOnlyRef.current = productionOnly;
   const displayedBinanceClosedIntents = paperTab === 'closed' ? binanceExecutionIntents.filter(intent => intent.status === 'CLOSED') : [];
   const closedBinanceDrawings: Drawing[] = displayedBinanceClosedIntents.map((intent, index) => ({
     id: `binance-history-${intent.id ?? index}`, symbol: intent.symbol, type: String(intent.side ?? '').toLowerCase() === 'long' ? 'long' : 'short',
