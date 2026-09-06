@@ -228,6 +228,11 @@ class BinanceCloseOrderInput(BaseModel):
     confirmed: bool = False
 
 
+class BinanceTakeProfitUpdateInput(BaseModel):
+    take_profit: float = Field(gt=0)
+    confirmed: bool = False
+
+
 def _binance_public_execution_rules(symbol: str) -> tuple[float, float, float, float, int, int]:
     """Return live price and the current public exchange filters for a symbol."""
     base = settings.binance_base_url.rstrip("/")
@@ -274,12 +279,8 @@ def initialize_auth_schema() -> None:
     auth_service.create_schema()
     ctrader_manager.start_configured()
     binance_execution_supervisor.start()
-    # Restore programmatic TP watchers after a backend restart. This scans
-    # durable intents only; price execution remains WebSocket-driven.
-    for user_id in binance_credentials.user_ids():
-        for intent in binance_execution_store.list(user_id):
-            if intent.get("status") in {"PROTECTED", "CLOSING"}:
-                binance_tp_worker.register(user_id, intent)
+    # Native Binance TP/SL orders survive backend and browser restarts. The
+    # execution supervisor still reconciles their state through User Stream.
 
 
 @app.on_event("shutdown")
@@ -434,10 +435,14 @@ def open_binance_real_operation(payload: BinanceRealOrderInput, identity: AuthId
         stop_order = binance_manager.place_close_protection(identity.user_id, symbol, close_side, stop, f"{intent['client_order_id']}_sl", "STOP_MARKET")
         if not isinstance(stop_order, dict) or not (stop_order.get("algoId") or stop_order.get("clientAlgoId")):
             raise RuntimeError("Binance no confirmó la orden STOP_MARKET de protección.")
-        saved = binance_execution_store.update(intent["id"], identity.user_id, status="PROTECTED", last_error=None)
-        if saved:
-            binance_tp_worker.register(identity.user_id, saved)
-        return {"broker": "binance", "mode": "real", "operation": saved, "entry": entry, "stop": stop, "target": target, "take_profit_mode": "programmatic"}
+        take_profit_order = binance_manager.place_close_protection(identity.user_id, symbol, close_side, target, f"{intent['client_order_id']}_tp", "TAKE_PROFIT_MARKET", working_type="CONTRACT_PRICE")
+        if not isinstance(take_profit_order, dict) or not (take_profit_order.get("algoId") or take_profit_order.get("clientAlgoId")):
+            raise RuntimeError("Binance no confirmó la orden TAKE_PROFIT_MARKET.")
+        saved = binance_execution_store.update(
+            intent["id"], identity.user_id, status="PROTECTED", stop_algo_id=str(stop_order.get("algoId") or stop_order.get("clientAlgoId")),
+            take_profit_algo_id=str(take_profit_order.get("algoId") or take_profit_order.get("clientAlgoId")), last_error=None,
+        )
+        return {"broker": "binance", "mode": "real", "operation": saved, "entry": entry, "stop": stop, "target": target, "take_profit_mode": "native"}
     except Exception as exc:
         emergency_error = None
         if entry is not None:
@@ -477,6 +482,33 @@ def close_binance_real_operation(symbol: str, payload: BinanceCloseOrderInput, i
             binance_execution_store.update(str(intent["id"]), identity.user_id, status="PROTECTED", last_error=str(exc))
         raise HTTPException(status_code=502, detail=f"Binance no pudo cerrar {requested}: {exc}") from exc
     return {"broker": "binance", "mode": "real", "symbol": requested, "side": side, "quantity": quantity, "order": order}
+
+
+@app.post("/trading/binance/real/operations/{symbol}/take-profit")
+def update_binance_real_take_profit(symbol: str, payload: BinanceTakeProfitUpdateInput, identity: AuthIdentity = Depends(identity_dependency(auth_service))) -> dict[str, object]:
+    """Replace the native Binance take-profit after explicit confirmation."""
+    if not settings.binance_real_trading_enabled:
+        raise HTTPException(status_code=503, detail="El trading real de Binance está bloqueado en este entorno.")
+    if not payload.confirmed:
+        raise HTTPException(status_code=409, detail="Confirma explícitamente el cambio de TP.")
+    requested = symbol.strip().upper()
+    intent = next((item for item in binance_execution_store.list(identity.user_id)
+                   if str(item.get("symbol", "")).upper() == requested and item.get("status") == "PROTECTED"), None)
+    if not intent:
+        raise HTTPException(status_code=409, detail=f"No hay una operación Binance protegida de {requested}.")
+    old_algo_id = intent.get("take_profit_algo_id")
+    if old_algo_id:
+        binance_manager.cancel_close_protection(identity.user_id, requested, str(old_algo_id))
+    close_side = "SELL" if str(intent.get("side", "")).upper() == "LONG" else "BUY"
+    new_order = binance_manager.place_close_protection(
+        identity.user_id, requested, close_side, payload.take_profit,
+        f"{intent['client_order_id']}_tp_{uuid4().hex[:8]}", "TAKE_PROFIT_MARKET", working_type="CONTRACT_PRICE",
+    )
+    algo_id = new_order.get("algoId") or new_order.get("clientAlgoId") if isinstance(new_order, dict) else None
+    if not algo_id:
+        raise HTTPException(status_code=502, detail="Binance no confirmó el nuevo TAKE_PROFIT_MARKET.")
+    saved = binance_execution_store.update(str(intent["id"]), identity.user_id, take_profit=float(payload.take_profit), take_profit_algo_id=str(algo_id), last_error=None)
+    return {"broker": "binance", "mode": "real", "symbol": requested, "take_profit": payload.take_profit, "operation": saved}
 
 
 @app.get("/trading/binance/symbol-config/{symbol}")

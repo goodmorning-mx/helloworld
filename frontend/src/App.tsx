@@ -660,6 +660,8 @@ function Workspace() {
   const [binanceLeverageBusy, setBinanceLeverageBusy] = useState(false);
   const [binanceLeverageError, setBinanceLeverageError] = useState('');
   const [binanceCloseBusy, setBinanceCloseBusy] = useState<string | null>(null);
+  const [pendingBinanceTp, setPendingBinanceTp] = useState<{ symbol: string; price: number } | null>(null);
+  const pendingBinanceTpRef = useRef<{ symbol: string; price: number } | null>(null);
   const [binanceProductionAvailable, setBinanceProductionAvailable] = useState(false);
   const [executionMode, setExecutionMode] = useState<'paper' | 'production'>('paper');
   const [binanceLiveAccount, setBinanceLiveAccount] = useState<BinanceAccount | null>(null);
@@ -737,7 +739,7 @@ function Workspace() {
   const [drawings, setDrawings] = useState<Drawing[]>([]);
   const [drawingStart, setDrawingStart] = useState<ChartPoint | null>(null);
   const [drawingEnd, setDrawingEnd] = useState<ChartPoint | null>(null);
-  const [resizeStart, setResizeStart] = useState<{ index: number; endpoint: 'start' | 'end' | 'stop' | 'target' } | null>(null);
+  const [resizeStart, setResizeStart] = useState<{ index: number; endpoint: 'start' | 'end' | 'stop' | 'target'; source?: 'paper' | 'binance' } | null>(null);
   const [selectedDrawing, setSelectedDrawing] = useState<number | null>(null);
   const [selectedDrawings, setSelectedDrawings] = useState<number[]>([]);
   const [lassoStart, setLassoStart] = useState<{ x: number; y: number } | null>(null);
@@ -1088,7 +1090,7 @@ function Workspace() {
       nativePriceLinesRef.current = [];
       trackerPriceLinesRef.current = [];
     };
-  }, [drawings, binanceLiveAccount, binanceExecutionIntents, executionMode, broker, symbol, interval, mobilePwa, visibleClosedId, showTracker, trackerPeriod, trackerRevision]);
+  }, [drawings, binanceLiveAccount, binanceExecutionIntents, pendingBinanceTp, executionMode, broker, symbol, interval, mobilePwa, visibleClosedId, showTracker, trackerPeriod, trackerRevision]);
 
   useEffect(() => {
     if (!chartStage.current) return;
@@ -1618,11 +1620,11 @@ function Workspace() {
     return null;
   }
 
-  function startPriceLineDrag(event: PointerEvent<SVGLineElement>, index: number, endpoint: 'target' | 'stop', canvas: ChartCanvas) {
+  function startPriceLineDrag(event: PointerEvent<SVGLineElement>, index: number, endpoint: 'target' | 'stop', canvas: ChartCanvas, source: 'paper' | 'binance' = 'paper') {
     event.preventDefault();
     event.stopPropagation();
     setDrawingCanvas(canvas);
-    setResizeStart({ index, endpoint });
+    setResizeStart({ index, endpoint, source });
     event.currentTarget.setPointerCapture(event.pointerId);
   }
 
@@ -1631,13 +1633,20 @@ function Workspace() {
     if (!candles) return null;
     const height = canvas === 'context' ? overviewSize.height : stageSize.height;
     const width = canvas === 'context' ? overviewSize.width : stageSize.width;
-    return <><g className="price-indicator-layer">{renderPriceIndicators(canvas)}</g><g className="price-line-hit-areas">{drawings.map((drawing, index) => {
+    const paperHitAreas = productionOnly ? [] : drawings;
+    const productionHitAreas = productionOnly ? productionDrawings : [];
+    return <><g className="price-indicator-layer">{renderPriceIndicators(canvas)}</g><g className="price-line-hit-areas">{paperHitAreas.map((drawing, index) => {
       if (!drawing.paper || drawing.closed || (drawing.type !== 'long' && drawing.type !== 'short')) return null;
       if (drawing.symbol && drawing.symbol !== symbol) return null;
       // A paper position is shared by both chart views.
       const targetY = drawing.target ? candles.priceToCoordinate(drawing.target.price) : null;
       const stopY = drawing.stop ? candles.priceToCoordinate(drawing.stop.price) : null;
       return <g key={`price-hit-${index}`}><line x1="0" y1={targetY ?? -100} x2={width} y2={targetY ?? -100} className="price-line-hit-target" pointerEvents="stroke" onPointerDown={event => startPriceLineDrag(event, index, 'target', canvas)} /><line x1="0" y1={stopY ?? -100} x2={width} y2={stopY ?? -100} className="price-line-hit-stop" pointerEvents="stroke" onPointerDown={event => startPriceLineDrag(event, index, 'stop', canvas)} /></g>;
+    })}{productionHitAreas.map((drawing, index) => {
+      if (!drawing.real || drawing.closed || (drawing.type !== 'long' && drawing.type !== 'short')) return null;
+      if (drawing.symbol && drawing.symbol !== symbol) return null;
+      const targetY = drawing.target ? candles.priceToCoordinate(drawing.target.price) : null;
+      return <g key={`binance-price-hit-${index}`}><line x1="0" y1={targetY ?? -100} x2={width} y2={targetY ?? -100} className="price-line-hit-target" pointerEvents="stroke" onPointerDown={event => startPriceLineDrag(event, index, 'target', canvas, 'binance')} /></g>;
     })}</g></>;
   }
 
@@ -1898,6 +1907,15 @@ function Workspace() {
       const price = candles?.coordinateToPrice(point.y);
       if (price === null || price === undefined) return;
       const resize = resizeStart;
+      if (resize.source === 'binance' && resize.endpoint === 'target') {
+        const drawing = productionDrawings[resize.index];
+        if (!drawing || !drawing.symbol || !drawing.stop) return;
+        const boundedPrice = drawing.type === 'long' ? Math.max(price, drawing.stop.price) : Math.min(price, drawing.stop.price);
+        const next = { symbol: drawing.symbol, price: boundedPrice };
+        pendingBinanceTpRef.current = next;
+        setPendingBinanceTp(next);
+        return;
+      }
       setDrawings(current => current.map((drawing, index) => {
         if (index !== resize.index || drawing.closed) return drawing;
         if (resize.endpoint === 'target' && drawing.paper && drawing.target && drawing.stop) {
@@ -2139,6 +2157,24 @@ function Workspace() {
     }
   }
 
+  async function confirmBinanceTakeProfit() {
+    const draft = pendingBinanceTpRef.current;
+    if (!draft || !auth.accessToken) return;
+    try {
+      const response = await fetch(`${apiUrl}/trading/binance/real/operations/${encodeURIComponent(draft.symbol)}/take-profit`, {
+        method: 'POST', headers: { Authorization: `Bearer ${auth.accessToken}`, 'Content-Type': 'application/json' },
+        credentials: 'include', body: JSON.stringify({ take_profit: draft.price, confirmed: true }),
+      });
+      const payload = await response.json() as { detail?: string };
+      if (!response.ok) throw new Error(payload.detail ?? 'Binance no pudo actualizar el TP.');
+      pendingBinanceTpRef.current = null;
+      setPendingBinanceTp(null);
+      setPaperSyncError('');
+    } catch (reason) {
+      setPaperSyncError(reason instanceof Error ? reason.message : 'No se pudo actualizar el TP real.');
+    }
+  }
+
   async function closePaperPosition(position: Drawing) {
     if (!position.id || position.closed || !auth.accessToken) return;
     const direction = position.type === 'long' ? 1 : -1;
@@ -2235,7 +2271,8 @@ function Workspace() {
     const intent = binanceExecutionIntents.find(item => item.symbol === position.symbol && item.side === (type === 'long' ? 'LONG' : 'SHORT') && item.stop_loss && item.take_profit)
       ?? binanceExecutionIntents.find(item => item.symbol === position.symbol && item.stop_loss && item.take_profit);
     const stop = Number(intent?.stop_loss ?? entry * (1 - (type === 'long' ? 1 : -1) * FIXED_BINANCE_STOP_PERCENT / 100));
-    const target = Number(intent?.take_profit ?? entry * (1 + (type === 'long' ? 1 : -1) * FIXED_BINANCE_TARGET_PERCENT / 100));
+    const draftTarget = pendingBinanceTp && pendingBinanceTp.symbol === position.symbol ? pendingBinanceTp.price : undefined;
+    const target = Number(draftTarget ?? intent?.take_profit ?? entry * (1 + (type === 'long' ? 1 : -1) * FIXED_BINANCE_TARGET_PERCENT / 100));
     return { id: `binance-real-${position.symbol}-${index}`, symbol: position.symbol, type, paper: true, real: true, status: 'OPEN', quantity: Math.abs(quantity), start: { time: (Number(lastTime) - 5 * 60) as UTCTimestamp, price: entry }, end: { time: lastTime, price: current }, stop: { time: lastTime, price: stop }, target: { time: lastTime, price: target }, notional: Math.abs(quantity) * entry, margin: Number(position.isolated_wallet ?? 0) || Math.abs(quantity) * entry / BINANCE_MIN_OPERATION_LEVERAGE, pnl: Number(position.unrealized_pnl ?? 0), riskPercent: FIXED_BINANCE_STOP_PERCENT };
   });
       const paperPositions = drawings.filter(drawing => drawing.paper && (drawing.type === 'long' || drawing.type === 'short'));
@@ -2457,6 +2494,7 @@ function Workspace() {
     return { side, entry, stop, target, targetPercent, quantity, notional, fees, leverage, margin: leverage > 0 ? notional / leverage : 0 };
   }) : [];
   const chartStageView = <div ref={chartStage} className={`chart-stage ${tool ? 'drawing-mode' : ''}`} onWheelCapture={event => handleChartWheel(event, 'entry')} onPointerDownCapture={startDrawing} onPointerMoveCapture={updateDrawing} onPointerUpCapture={finishDrawing} onPointerCancelCapture={() => { setDrawingStart(null); setDrawingEnd(null); setMoveStart(null); panStartRef.current = null; setResizeStart(null); setLassoStart(null); setLassoEnd(null); }}>
+    {pendingBinanceTp && <div className="binance-tp-confirm" role="status"><span>Nuevo TP {pendingBinanceTp.symbol}: {formatPaperPrice(pendingBinanceTp.price)}</span><button type="button" onClick={() => void confirmBinanceTakeProfit()}>Confirmar TP</button><button type="button" onClick={() => { pendingBinanceTpRef.current = null; setPendingBinanceTp(null); }} aria-label="Cancelar cambio de TP">Cancelar</button></div>}
     <div ref={chartContainer} className="candlestick-chart" /><svg className="drawing-overlay" viewBox={`0 0 ${stageSize.width} ${stageSize.height}`} preserveAspectRatio="none" aria-hidden="true">{renderSessionIndicator()}{renderInterestMarkers()}{renderPriceLineHitAreas('entry')}{[...drawings, ...productionDrawings].map((drawing, index) => (!drawing.paper || !drawing.closed || drawing.id === visibleClosedId) && (!drawing.paper || !drawing.symbol || drawing.symbol === symbol) && (drawing.chart !== 'context' || drawing.paper) ? renderDrawing(drawing, index, 'entry') : null)}{tool && drawingStart && drawingEnd && drawingCanvas === 'entry' && renderDrawing({ type: tool, chart: 'entry', start: drawingStart, end: drawingEnd }, 'preview', 'entry')}{lassoStart && lassoEnd && drawingCanvas === 'entry' && <rect x={Math.min(lassoStart.x, lassoEnd.x)} y={Math.min(lassoStart.y, lassoEnd.y)} width={Math.abs(lassoStart.x - lassoEnd.x)} height={Math.abs(lassoStart.y - lassoEnd.y)} className="selection-lasso" />}</svg><div className="chart-bottom-controls"><span className="timezone-icon" aria-hidden="true">◷</span><select className="timezone-select" value={timezone} onChange={event => setTimezone(event.target.value)} aria-label="Zona horaria">{TIMEZONES.map(([label, value]) => <option key={value} value={value}>{label}</option>)}</select></div>
     <div className="floating-order-buttons" aria-label="Abrir operación simulada"><button className="open-long-button" disabled={!paperReady} onClick={() => void openSimulatedPosition('long')}>▲ <span>Abrir Long</span><small>{binancePreview.find(preview => preview.side === 'LONG') ? `SL -${FIXED_BINANCE_STOP_PERCENT.toFixed(2)}% · TP +${binancePreview.find(preview => preview.side === 'LONG')!.targetPercent.toFixed(2)}% · N ${binancePreview.find(preview => preview.side === 'LONG')!.notional.toFixed(2)} · M ${binancePreview.find(preview => preview.side === 'LONG')!.margin.toFixed(4)} · ${binancePreview.find(preview => preview.side === 'LONG')!.leverage}x` : labRecommendations ? `${labRecommendations.long.label} · R:R ${labRecommendations.long.rr.toFixed(2)}:1` : 'Calculando recomendación…'}</small></button><button className="open-short-button" disabled={!paperReady} onClick={() => void openSimulatedPosition('short')}>▼ <span>Abrir Short</span><small>{binancePreview.find(preview => preview.side === 'SHORT') ? `SL -${FIXED_BINANCE_STOP_PERCENT.toFixed(2)}% · TP +${binancePreview.find(preview => preview.side === 'SHORT')!.targetPercent.toFixed(2)}% · N ${binancePreview.find(preview => preview.side === 'SHORT')!.notional.toFixed(2)} · M ${binancePreview.find(preview => preview.side === 'SHORT')!.margin.toFixed(4)} · ${binancePreview.find(preview => preview.side === 'SHORT')!.leverage}x` : labRecommendations ? `${labRecommendations.short.label} · R:R ${labRecommendations.short.rr.toFixed(2)}:1` : 'Calculando recomendación…'}</small></button></div>
   </div>;

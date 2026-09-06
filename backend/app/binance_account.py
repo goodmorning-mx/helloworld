@@ -143,11 +143,12 @@ class BinanceAccountMonitor:
             params["reduceOnly"] = "true"
         return self._request("POST", "/fapi/v1/order", params, signed=True)
 
-    def place_close_protection(self, symbol: str, side: str, stop_price: float, client_order_id: str, order_type: str) -> dict:
+    def place_close_protection(self, symbol: str, side: str, stop_price: float, client_order_id: str, order_type: str, *, working_type: str = "MARK_PRICE") -> dict:
         """Place a server-side close-all Algo protective trigger."""
         requested = symbol.strip().upper()
         trigger_type = order_type.strip().upper()
-        if trigger_type not in {"STOP_MARKET", "TAKE_PROFIT_MARKET"} or stop_price <= 0:
+        trigger_price_type = working_type.strip().upper()
+        if trigger_type not in {"STOP_MARKET", "TAKE_PROFIT_MARKET"} or trigger_price_type not in {"MARK_PRICE", "CONTRACT_PRICE"} or stop_price <= 0:
             raise ValueError("Protección Binance inválida.")
         return self._request("POST", "/fapi/v1/algoOrder", {
             "algoType": "CONDITIONAL", "symbol": requested, "side": side.strip().upper(), "type": trigger_type,
@@ -155,9 +156,16 @@ class BinanceAccountMonitor:
             # MARK_PRICE avoids depending on the browser's last trade stream.
             # Do not enable priceProtect: it can delay a valid protective
             # trigger when mark and contract prices temporarily diverge.
-            "workingType": "MARK_PRICE", "priceProtect": "FALSE",
+            "workingType": trigger_price_type, "priceProtect": "FALSE",
             "clientAlgoId": client_order_id,
         }, signed=True)
+
+    def cancel_close_protection(self, symbol: str, algo_id: str | int) -> dict:
+        """Cancel one active Binance Futures algo protection order."""
+        requested = symbol.strip().upper()
+        if not str(algo_id).strip():
+            raise ValueError("Algo ID inválido.")
+        return self._request("DELETE", "/fapi/v1/algoOrder", {"symbol": requested, "algoId": str(algo_id)}, signed=True)
 
     def _run(self) -> None:
         if connect is None:
