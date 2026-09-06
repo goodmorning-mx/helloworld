@@ -660,7 +660,7 @@ function Workspace() {
   const [binanceProductionAvailable, setBinanceProductionAvailable] = useState(false);
   const [executionMode, setExecutionMode] = useState<'paper' | 'production'>('paper');
   const [binanceLiveAccount, setBinanceLiveAccount] = useState<BinanceAccount | null>(null);
-  const [binanceExecutionIntents, setBinanceExecutionIntents] = useState<Array<{ symbol?: string; side?: string; quantity?: number | string; stop_loss?: number; take_profit?: number; status?: string }>>([]);
+  const [binanceExecutionIntents, setBinanceExecutionIntents] = useState<Array<{ id?: string; symbol?: string; side?: string; quantity?: number | string; stop_loss?: number; take_profit?: number; status?: string }>>([]);
   const [broker, setBroker] = useState<'binance' | 'ctrader'>('binance');
   const [interval, setInterval] = useState<'1s' | '1m' | '3m' | '5m' | '15m'>('5m');
   const entryInterval = '1m' as const;
@@ -2080,6 +2080,10 @@ function Workspace() {
         setPaperSyncError(reason instanceof Error ? reason.message : 'No se pudo abrir la operación real en Binance.');
         return;
       }
+      // In production the Binance position is rendered directly from the
+      // account stream. Do not create a second Paper database operation.
+      setPaperSyncError('');
+      return;
     }
     const response = await fetch(`${apiUrl}/trading/paper/operations`, {
       method: 'POST',
@@ -2210,7 +2214,7 @@ function Workspace() {
     const target = Number(intent?.take_profit ?? entry * (1 + (type === 'long' ? 1 : -1) * FIXED_BINANCE_TARGET_PERCENT / 100));
     return { id: `binance-real-${position.symbol}-${index}`, symbol: position.symbol, type, paper: true, real: true, status: 'OPEN', quantity: Math.abs(quantity), start: { time: (Number(lastTime) - 5 * 60) as UTCTimestamp, price: entry }, end: { time: lastTime, price: current }, stop: { time: lastTime, price: stop }, target: { time: lastTime, price: target }, notional: Math.abs(quantity) * entry, margin: Number(position.isolated_wallet ?? 0) || Math.abs(quantity) * entry / BINANCE_MIN_OPERATION_LEVERAGE, pnl: Number(position.unrealized_pnl ?? 0), riskPercent: FIXED_BINANCE_STOP_PERCENT };
   });
-  const paperPositions = drawings.filter(drawing => drawing.paper && (drawing.type === 'long' || drawing.type === 'short'));
+      const paperPositions = drawings.filter(drawing => drawing.paper && (drawing.type === 'long' || drawing.type === 'short'));
   const assist = JSON.parse(localStorage.getItem('helloworld-paper-assist') ?? '{}') as { leverage?: number };
   const theoreticalPaperLeverage = Number.isFinite(assist.leverage) && (assist.leverage ?? 0) > 0 ? (assist.leverage as number) : 10;
   const brokerMaxLeverage = maxLeverageFor(broker, symbol);
@@ -2243,7 +2247,15 @@ function Workspace() {
     return sum + tradingCosts(broker, notional).total;
   }, 0);
   const paperEquity = paperInitialBalance + realizedPnl + unrealizedPnl;
-  const displayedPaperPositions = [...paperPositions, ...productionDrawings].filter(position => paperTab === 'open' ? !position.closed : position.closed);
+  const productionOnly = broker === 'binance' && executionMode === 'production';
+  const displayedBinanceClosedIntents = paperTab === 'closed' ? binanceExecutionIntents.filter(intent => intent.status === 'CLOSED') : [];
+  const closedBinanceDrawings: Drawing[] = displayedBinanceClosedIntents.map((intent, index) => ({
+    id: `binance-history-${intent.id ?? index}`, symbol: intent.symbol, type: String(intent.side ?? '').toLowerCase() === 'long' ? 'long' : 'short',
+    paper: true, real: true, closed: true, status: 'CLOSED - WIN', quantity: Number(intent.quantity ?? 0),
+    start: { time: Math.floor(Date.now() / 1000) as UTCTimestamp, price: 0 }, end: { time: Math.floor(Date.now() / 1000) as UTCTimestamp, price: 0 },
+    stop: { time: Math.floor(Date.now() / 1000) as UTCTimestamp, price: Number(intent.stop_loss ?? 0) }, target: { time: Math.floor(Date.now() / 1000) as UTCTimestamp, price: Number(intent.take_profit ?? 0) },
+  }));
+  const displayedPaperPositions = [...(productionOnly ? [] : paperPositions), ...closedBinanceDrawings].filter(position => paperTab === 'open' ? !position.closed : position.closed);
   const displayedBinancePositions = paperTab === 'open'
     ? (binanceLiveAccount?.positions ?? []).filter(position => Math.abs(Number(position.quantity ?? 0)) > 0)
     : [];
@@ -2301,6 +2313,12 @@ function Workspace() {
       const roe = margin > 0 ? pnl / margin * 100 : 0;
       return <tr key={`binance-${position.symbol}-${index}`}><td><button type="button" className="paper-symbol-link" onClick={() => { if (position.symbol) { setSymbol(position.symbol); localStorage.setItem('helloworld-selected-symbol', position.symbol); } }}>{position.symbol ?? '—'}</button></td><td><span className="operation-source source-binance">BINANCE</span></td><td className={side === 'LONG' ? 'value-positive' : 'value-negative'}>{side}</td><td>{position.size ?? position.quantity ?? '—'}</td><td>{entry > 0 ? formatPaperPrice(entry) : '—'}</td><td>{mark > 0 ? formatPaperPrice(mark) : '—'}</td><td>{stopPercent == null ? '—' : `-${stopPercent.toFixed(4)}%`}</td><td>{targetPercent == null ? '—' : `+${targetPercent.toFixed(4)}%`}</td><td>{leverage}x</td><td>{margin > 0 ? `${margin.toFixed(2)} USDT` : '—'}</td><td>{notional > 0 ? `${notional.toFixed(2)} USDT` : '—'}</td><td>{fees > 0 ? `${fees.toFixed(4)} USDT est.` : '—'}</td><td>{rr == null ? '—' : `${rr.toFixed(2)}:1`}</td><td className={pnl >= 0 ? 'value-positive' : 'value-negative'}>{pnl >= 0 ? '+' : ''}{pnl.toFixed(8)} USDT</td><td className={roe >= 0 ? 'value-positive' : 'value-negative'}>{roe >= 0 ? '+' : ''}{roe.toFixed(4)}%</td><td><span className="operation-readonly">Broker</span></td></tr>;
     })}{displayedPaperPositions.map((position, index) => {
+      if (position.real && position.closed) {
+        const historyStop = Number(position.stop?.price ?? 0);
+        const historyTarget = Number(position.target?.price ?? 0);
+        const historyRr = historyStop > 0 && historyTarget > 0 ? Math.abs(historyTarget - historyStop) / Math.abs(historyStop) : null;
+        return <tr key={`${position.id ?? position.start.time}-${index}`}><td>{position.symbol ?? '—'}</td><td><span className="operation-source source-binance">BINANCE</span></td><td><span className={`position-side ${position.type}`}>{position.type.toUpperCase()}</span></td><td>{position.quantity ?? '—'}</td><td>—</td><td>—</td><td>{historyStop > 0 ? 'Configurado' : '—'}</td><td>{historyTarget > 0 ? 'Programático' : '—'}</td><td>—</td><td>—</td><td>—</td><td>—</td><td>{historyRr == null ? '—' : `${historyRr.toFixed(2)}:1`}</td><td>—</td><td>—</td><td><span className="operation-readonly">Historial Binance</span></td></tr>;
+      }
       const direction = position.type === 'long' ? 1 : -1;
       const stopDistance = Math.abs(position.start.price - (position.stop?.price ?? position.start.price));
       const stopPercent = position.start.price > 0 ? stopDistance / position.start.price : 0;
@@ -2330,6 +2348,9 @@ function Workspace() {
 
   const renderDrawing = (drawing: Drawing, index: number | string, canvas: ChartCanvas = 'entry') => {
     void viewportRevision;
+    // Production charts show only the live Binance adapter; persisted Paper
+    // rows from older sessions must not create duplicate visual operations.
+    if (productionOnly && drawing.paper && !drawing.real) return null;
     const { chart, candles } = chartContext(canvas);
     if (!chart || !candles) return null;
     // Paper operations originate on the live 1m stream but are rendered on
