@@ -278,7 +278,7 @@ def initialize_auth_schema() -> None:
     # durable intents only; price execution remains WebSocket-driven.
     for user_id in binance_credentials.user_ids():
         for intent in binance_execution_store.list(user_id):
-            if intent.get("status") == "PROTECTED":
+            if intent.get("status") in {"PROTECTED", "CLOSING"}:
                 binance_tp_worker.register(user_id, intent)
 
 

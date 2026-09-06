@@ -81,10 +81,27 @@ class BinanceTakeProfitWorker:
                             if not intent:
                                 return
                             logger.info("binance_tp_triggered user=%s symbol=%s price=%s target=%s", user_id, symbol, price, target)
-                            self._manager.place_market_order(
-                                user_id, symbol, close_side, quantity,
-                                f"{intent['client_order_id']}_tp", reduce_only=True,
-                            )
+                            remaining = quantity
+                            for attempt in range(3):
+                                position = self._manager.position_risk(user_id, symbol)
+                                live_quantity = abs(float(position.get("positionAmt") or 0))
+                                if live_quantity <= 0:
+                                    remaining = 0
+                                    break
+                                remaining = live_quantity
+                                self._manager.place_market_order(
+                                    user_id, symbol, close_side, remaining,
+                                    f"{intent['client_order_id']}_tp_{attempt}", reduce_only=True,
+                                )
+                                # Confirm the exchange position, not merely
+                                # the HTTP response. This also handles a stale
+                                # quantity or a partial market fill.
+                                self._stop.wait(1.0)
+                            if remaining > 0:
+                                final_position = self._manager.position_risk(user_id, symbol)
+                                remaining = abs(float(final_position.get("positionAmt") or 0))
+                            if remaining > 0:
+                                raise RuntimeError(f"Binance dejó un remanente de {remaining} en {symbol} después del TP.")
                             self._store.update(intent_id, user_id, status="CLOSED", last_error=None)
                             return
                 except Exception:
