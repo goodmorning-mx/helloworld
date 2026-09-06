@@ -2053,8 +2053,12 @@ function Workspace() {
     const sizingStop = broker === 'binance' ? stopPercent : stopPercent + tradingCostRate(broker);
     const riskBoundNotional = sizingStop > 0 ? riskAmount / sizingStop : 0;
     const operationLeverage = Math.min(recommendation?.leverage ?? paperLeverage, brokerMaxLeverage);
+    const maximumBinanceLeverage = maxLeverageFor('binance', symbol);
+    const requestedBinanceLeverage = binanceSizingMode === 'maximum'
+      ? Math.floor(Math.max(BINANCE_MIN_OPERATION_LEVERAGE, labRecommendations?.[type]?.leverage ?? maximumBinanceLeverage))
+      : BINANCE_MIN_OPERATION_LEVERAGE;
     const effectiveLeverage = broker === 'binance'
-      ? binanceSizingMode === 'maximum' ? Math.max(BINANCE_MIN_OPERATION_LEVERAGE, maxLeverageFor('binance', symbol)) : BINANCE_MIN_OPERATION_LEVERAGE
+      ? Math.min(requestedBinanceLeverage, maximumBinanceLeverage)
       : operationLeverage;
     // Minimum mode uses Binance's minimum notional. Maximum mode sizes the
     // position up to the 1% balance budget, including estimated round-trip
@@ -2510,7 +2514,12 @@ function Workspace() {
     const targetPercent = FIXED_BINANCE_TARGET_PERCENT;
     const target = roundToBinance(entry * (1 + direction * targetPercent / 100), binanceRules.tick_size, binanceRules.price_precision);
     const availableBalance = Number(binanceLiveAccount?.available_balance ?? binanceSymbolConfig?.futures_balance ?? 0);
-    const leverage = binanceSizingMode === 'maximum' ? Math.max(BINANCE_MIN_OPERATION_LEVERAGE, maxLeverageFor('binance', symbol)) : BINANCE_MIN_OPERATION_LEVERAGE;
+    const maximumLeverage = maxLeverageFor('binance', symbol);
+    const recommendedLeverage = binanceSizingMode === 'maximum'
+      ? Math.floor(Math.max(BINANCE_MIN_OPERATION_LEVERAGE, labRecommendations?.long.leverage ?? maximumLeverage))
+      : BINANCE_MIN_OPERATION_LEVERAGE;
+    const leverage = Math.min(recommendedLeverage, maximumLeverage);
+    const marginMultiplier = leverage > 0 ? recommendedLeverage / leverage : 1;
     const riskBudget = (availableBalance > 0 ? availableBalance : paperInitialBalance) * activeRiskPercent / 100;
     const riskBoundNotional = (FIXED_BINANCE_STOP_PERCENT / 100 + tradingCostRate('binance')) > 0 ? riskBudget / (FIXED_BINANCE_STOP_PERCENT / 100 + tradingCostRate('binance')) : 0;
     const desiredNotional = binanceSizingMode === 'minimum' ? binanceRules.min_notional : Math.max(binanceRules.min_notional, riskBoundNotional);
@@ -2519,7 +2528,7 @@ function Workspace() {
     const quantity = roundUpToBinance(requestedNotional / entry, binanceRules.step_size, binanceRules.quantity_precision);
     const notional = quantity * entry;
     const fees = tradingCosts('binance', notional).total;
-    return { side, entry, stop, target, targetPercent, quantity, notional, fees, leverage, margin: leverage > 0 ? notional / leverage : 0 };
+    return { side, entry, stop, target, targetPercent, quantity, notional, fees, leverage, marginMultiplier, margin: leverage > 0 ? notional / leverage : 0 };
   }) : [];
   const chartStageView = <div ref={chartStage} className={`chart-stage ${tool ? 'drawing-mode' : ''}`} onWheelCapture={event => handleChartWheel(event, 'entry')} onPointerDownCapture={startDrawing} onPointerMoveCapture={updateDrawing} onPointerUpCapture={finishDrawing} onPointerCancelCapture={() => { setDrawingStart(null); setDrawingEnd(null); setMoveStart(null); panStartRef.current = null; setResizeStart(null); setLassoStart(null); setLassoEnd(null); }}>
     {pendingBinanceTp && <div className="binance-tp-confirm" role="status"><span>Nuevo TP {pendingBinanceTp.symbol}: {formatPaperPrice(pendingBinanceTp.price)}</span><button type="button" onClick={() => void confirmBinanceTakeProfit()}>Confirmar TP</button><button type="button" onClick={() => { pendingBinanceTpRef.current = null; setPendingBinanceTp(null); }} aria-label="Cancelar cambio de TP">Cancelar</button></div>}
@@ -2536,9 +2545,9 @@ function Workspace() {
   const trainingOperations = paperPositions.filter(position => calendarDayKey(position.end.time) === trainingTodayKey);
   const trainingPnl = trainingOperations.filter(position => position.closed).reduce((sum, position) => sum + paperPnl(position), 0);
   const trainingProgress = Math.max(0, Math.min(1, trainingPnl / 40));
-  const productionPreviewData = binancePreview.find(preview => preview.side === 'LONG');
+    const productionPreviewData = binancePreview.find(preview => preview.side === 'LONG');
   const productionOrderPreview = broker === 'binance'
-    ? <span className="production-order-preview" aria-label="Preview de la próxima operación Binance"><span className="preview-mode"><small>MODO</small><strong>{binanceSizingMode === 'minimum' ? 'MÍNIMO' : 'MÁXIMO'}</strong></span><span><small>MARGIN</small><strong>{productionPreviewData ? `${productionPreviewData.margin.toFixed(4)} USDT` : '—'}</strong></span><span><small>NOTIONAL</small><strong>{productionPreviewData ? `${productionPreviewData.notional.toFixed(4)} USDT` : '—'}</strong></span><span><small>LEVERAGE</small><strong>{productionPreviewData ? `${productionPreviewData.leverage}x` : '—'}</strong></span><span className="preview-sl"><small>SL</small><strong>−{FIXED_BINANCE_STOP_PERCENT.toFixed(2)}%</strong></span><span className="preview-tp"><small>TP</small><strong>+{FIXED_BINANCE_TARGET_PERCENT.toFixed(2)}%</strong></span></span>
+    ? <span className="production-order-preview" aria-label="Preview de la próxima operación Binance"><span className="preview-mode"><small>MODO</small><strong>{binanceSizingMode === 'minimum' ? 'MÍNIMO' : 'MÁXIMO'}</strong></span><span><small>MARGIN</small><strong>{productionPreviewData ? `${productionPreviewData.margin.toFixed(4)} USDT` : '—'}</strong></span><span><small>MARGIN ×</small><strong>{productionPreviewData ? productionPreviewData.marginMultiplier.toFixed(2) : '—'}</strong></span><span><small>NOTIONAL</small><strong>{productionPreviewData ? `${productionPreviewData.notional.toFixed(4)} USDT` : '—'}</strong></span><span><small>LEVERAGE</small><strong>{productionPreviewData ? `${productionPreviewData.leverage}x` : '—'}</strong></span><span className="preview-sl"><small>SL</small><strong>−{FIXED_BINANCE_STOP_PERCENT.toFixed(2)}%</strong></span><span className="preview-tp"><small>TP</small><strong>+{FIXED_BINANCE_TARGET_PERCENT.toFixed(2)}%</strong></span></span>
     : null;
   const productionPositionLabel = productionPositions.length > 0
     ? productionPositions.map(position => {
