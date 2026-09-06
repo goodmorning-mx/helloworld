@@ -2513,8 +2513,8 @@ function Workspace() {
   const trainingPnl = trainingOperations.filter(position => position.closed).reduce((sum, position) => sum + paperPnl(position), 0);
   const trainingProgress = Math.max(0, Math.min(1, trainingPnl / 40));
   const productionPreviewData = binancePreview.find(preview => preview.side === 'LONG');
-  const productionOrderPreview = broker === 'binance' && executionMode === 'production'
-    ? <span className="production-order-preview" aria-label="Preview de la próxima operación Binance"><span><small>MARGIN</small><strong>{productionPreviewData ? `${productionPreviewData.margin.toFixed(4)} USDT` : '—'}</strong></span><span><small>LEVERAGE</small><strong>{productionPreviewData ? `${productionPreviewData.leverage}x` : '—'}</strong></span><span className="preview-sl"><small>SL</small><strong>−{FIXED_BINANCE_STOP_PERCENT.toFixed(2)}%</strong></span><span className="preview-tp"><small>TP</small><strong>+{FIXED_BINANCE_TARGET_PERCENT.toFixed(2)}%</strong></span></span>
+  const productionOrderPreview = broker === 'binance'
+    ? <span className="production-order-preview" aria-label="Preview de la próxima operación Binance"><span><small>MARGIN</small><strong>{productionPreviewData ? `${productionPreviewData.margin.toFixed(4)} USDT` : '—'}</strong></span><span><small>NOTIONAL</small><strong>{productionPreviewData ? `${productionPreviewData.notional.toFixed(4)} USDT` : '—'}</strong></span><span><small>LEVERAGE</small><strong>{productionPreviewData ? `${productionPreviewData.leverage}x` : '—'}</strong></span><span className="preview-sl"><small>SL</small><strong>−{FIXED_BINANCE_STOP_PERCENT.toFixed(2)}%</strong></span><span className="preview-tp"><small>TP</small><strong>+{FIXED_BINANCE_TARGET_PERCENT.toFixed(2)}%</strong></span></span>
     : null;
   const productionPositionLabel = productionPositions.length > 0
     ? productionPositions.map(position => {
