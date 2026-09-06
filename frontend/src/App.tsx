@@ -2021,8 +2021,9 @@ function Workspace() {
     setVisibleClosedId(null);
     const latest = candleDataRef.current[candleDataRef.current.length - 1];
     if (!latest) return;
+    const marketPrice = broker === 'binance' ? (binanceLivePriceRef.current?.price ?? latest.close) : latest.close;
     const entry = broker === 'binance' && binanceRules?.tick_size
-      ? roundToBinance(latest.close, binanceRules.tick_size, binanceRules.price_precision)
+      ? roundToBinance(marketPrice, binanceRules.tick_size, binanceRules.price_precision)
       : latest.close;
     const direction = type === 'long' ? 1 : -1;
     const recommendation = labRecommendations?.[type];
@@ -2077,6 +2078,10 @@ function Workspace() {
       return;
     }
     const margin = effectiveLeverage > 0 ? notional / effectiveLeverage : 0;
+    if (broker === 'binance' && binanceSizingMode === 'maximum' && binanceAvailableBalance > 0 && margin > binanceAvailableBalance + 1e-8) {
+      setPaperSyncError(`El margin calculado (${margin.toFixed(4)} USDT) supera el balance disponible (${binanceAvailableBalance.toFixed(4)} USDT).`);
+      return;
+    }
     let paperEntry = entry;
     let paperStop = stop;
     let paperTarget = target;
@@ -2497,6 +2502,7 @@ function Workspace() {
   };
 
   const liveReferencePrice = binanceLivePriceRef.current?.price ?? candleBarsRef.current[candleBarsRef.current.length - 1]?.close ?? 0;
+  const activeRiskPercent = Number((JSON.parse(localStorage.getItem('helloworld-paper-assist') ?? '{}') as { riskPercent?: number }).riskPercent) || paperRiskPercent;
   const binancePreview = broker === 'binance' && binanceRules && liveReferencePrice > 0 ? (['LONG', 'SHORT'] as const).map(side => {
     const direction = side === 'LONG' ? 1 : -1;
     const entry = roundToBinance(liveReferencePrice, binanceRules.tick_size, binanceRules.price_precision);
@@ -2505,7 +2511,7 @@ function Workspace() {
     const target = roundToBinance(entry * (1 + direction * targetPercent / 100), binanceRules.tick_size, binanceRules.price_precision);
     const availableBalance = Number(binanceLiveAccount?.available_balance ?? binanceSymbolConfig?.futures_balance ?? 0);
     const leverage = binanceSizingMode === 'maximum' ? Math.max(BINANCE_MIN_OPERATION_LEVERAGE, maxLeverageFor('binance', symbol)) : BINANCE_MIN_OPERATION_LEVERAGE;
-    const riskBudget = (availableBalance > 0 ? availableBalance : paperInitialBalance) * paperRiskPercent / 100;
+    const riskBudget = (availableBalance > 0 ? availableBalance : paperInitialBalance) * activeRiskPercent / 100;
     const riskBoundNotional = (FIXED_BINANCE_STOP_PERCENT / 100 + tradingCostRate('binance')) > 0 ? riskBudget / (FIXED_BINANCE_STOP_PERCENT / 100 + tradingCostRate('binance')) : 0;
     const desiredNotional = binanceSizingMode === 'minimum' ? binanceRules.min_notional : Math.max(binanceRules.min_notional, riskBoundNotional);
     const affordableNotional = availableBalance > 0 ? availableBalance * leverage : 0;
