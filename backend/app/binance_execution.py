@@ -24,7 +24,7 @@ logger = logging.getLogger(__name__)
 
 execution_intents_table = table(
     "binance_execution_intents",
-    column("id"), column("user_id"), column("symbol"), column("side"), column("quantity"),
+    column("id"), column("user_id"), column("symbol"), column("side"), column("quantity"), column("entry_time"), column("entry_price"),
     column("stop_loss"), column("take_profit"), column("status"), column("exchange_order_id"),
     column("client_order_id"), column("stop_algo_id"), column("take_profit_algo_id"), column("last_error"), column("created_at"), column("updated_at"),
 )

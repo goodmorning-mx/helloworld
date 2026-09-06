@@ -665,7 +665,7 @@ function Workspace() {
   const [binanceProductionAvailable, setBinanceProductionAvailable] = useState(false);
   const [executionMode, setExecutionMode] = useState<'paper' | 'production'>('paper');
   const [binanceLiveAccount, setBinanceLiveAccount] = useState<BinanceAccount | null>(null);
-  const [binanceExecutionIntents, setBinanceExecutionIntents] = useState<Array<{ id?: string; symbol?: string; side?: string; quantity?: number | string; stop_loss?: number; take_profit?: number; status?: string }>>([]);
+  const [binanceExecutionIntents, setBinanceExecutionIntents] = useState<Array<{ id?: string; symbol?: string; side?: string; quantity?: number | string; entry_time?: number | string; entry_price?: number; stop_loss?: number; take_profit?: number; status?: string; created_at?: string }>>([]);
   const [broker, setBroker] = useState<'binance' | 'ctrader'>('binance');
   const [interval, setInterval] = useState<'1s' | '1m' | '3m' | '5m' | '15m'>('5m');
   const entryInterval = '1m' as const;
@@ -2262,18 +2262,22 @@ function Workspace() {
   const productionDrawings: Drawing[] = productionPositions.map((position, index) => {
     const quantity = Number(position.quantity ?? 0);
     const type: 'long' | 'short' = quantity >= 0 ? 'long' : 'short';
-    const entry = Number(position.entry_price ?? 0);
+    const matchingIntent = binanceExecutionIntents.find(item => item.symbol === position.symbol && item.side === (type === 'long' ? 'LONG' : 'SHORT'))
+      ?? binanceExecutionIntents.find(item => item.symbol === position.symbol);
+    const entry = Number(matchingIntent?.entry_price ?? position.entry_price ?? 0);
     const current = Number(position.mark_price ?? 0) || binanceLivePriceRef.current?.price || entry;
     const lastTime = candleBarsRef.current[candleBarsRef.current.length - 1]?.time ?? (Math.floor(Date.now() / 1000) as UTCTimestamp);
     // The exchange position is authoritative for existence. Keep the latest
     // matching intent even when it temporarily carries ERROR/CLOSING, so an
     // already-open real position never loses its visual SL/TP levels.
-    const intent = binanceExecutionIntents.find(item => item.symbol === position.symbol && item.side === (type === 'long' ? 'LONG' : 'SHORT') && item.stop_loss && item.take_profit)
+    const intent = matchingIntent && matchingIntent.stop_loss && matchingIntent.take_profit ? matchingIntent : binanceExecutionIntents.find(item => item.symbol === position.symbol && item.side === (type === 'long' ? 'LONG' : 'SHORT') && item.stop_loss && item.take_profit)
       ?? binanceExecutionIntents.find(item => item.symbol === position.symbol && item.stop_loss && item.take_profit);
+    const parsedEntryTime = Number(matchingIntent?.entry_time ?? 0);
+    const entryTime = parsedEntryTime > 0 ? parsedEntryTime as UTCTimestamp : lastTime;
     const stop = Number(intent?.stop_loss ?? entry * (1 - (type === 'long' ? 1 : -1) * FIXED_BINANCE_STOP_PERCENT / 100));
     const draftTarget = pendingBinanceTp && pendingBinanceTp.symbol === position.symbol ? pendingBinanceTp.price : undefined;
     const target = Number(draftTarget ?? intent?.take_profit ?? entry * (1 + (type === 'long' ? 1 : -1) * FIXED_BINANCE_TARGET_PERCENT / 100));
-    return { id: `binance-real-${position.symbol}-${index}`, symbol: position.symbol, type, paper: true, real: true, status: 'OPEN', quantity: Math.abs(quantity), start: { time: (Number(lastTime) - 5 * 60) as UTCTimestamp, price: entry }, end: { time: lastTime, price: current }, stop: { time: lastTime, price: stop }, target: { time: lastTime, price: target }, notional: Math.abs(quantity) * entry, margin: Number(position.isolated_wallet ?? 0) || Math.abs(quantity) * entry / BINANCE_MIN_OPERATION_LEVERAGE, pnl: Number(position.unrealized_pnl ?? 0), riskPercent: FIXED_BINANCE_STOP_PERCENT };
+    return { id: `binance-real-${position.symbol}-${index}`, symbol: position.symbol, type, paper: true, real: true, status: 'OPEN', quantity: Math.abs(quantity), start: { time: entryTime, price: entry }, end: { time: lastTime, price: current }, stop: { time: lastTime, price: stop }, target: { time: lastTime, price: target }, notional: Math.abs(quantity) * entry, margin: Number(position.isolated_wallet ?? 0) || Math.abs(quantity) * entry / BINANCE_MIN_OPERATION_LEVERAGE, pnl: Number(position.unrealized_pnl ?? 0), riskPercent: FIXED_BINANCE_STOP_PERCENT };
   });
       const paperPositions = drawings.filter(drawing => drawing.paper && (drawing.type === 'long' || drawing.type === 'short'));
   const assist = JSON.parse(localStorage.getItem('helloworld-paper-assist') ?? '{}') as { leverage?: number };
