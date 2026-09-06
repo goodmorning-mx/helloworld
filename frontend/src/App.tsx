@@ -2512,13 +2512,16 @@ function Workspace() {
   const trainingOperations = paperPositions.filter(position => calendarDayKey(position.end.time) === trainingTodayKey);
   const trainingPnl = trainingOperations.filter(position => position.closed).reduce((sum, position) => sum + paperPnl(position), 0);
   const trainingProgress = Math.max(0, Math.min(1, trainingPnl / 40));
+  const productionOrderPreview = broker === 'binance' && executionMode === 'production'
+    ? ` · PREVIEW M ${binancePreview.find(preview => preview.side === 'LONG')?.margin.toFixed(4) ?? '—'} USDT · LEV ${binancePreview.find(preview => preview.side === 'LONG')?.leverage ?? '—'}x · SL -${FIXED_BINANCE_STOP_PERCENT.toFixed(2)}% · TP +${FIXED_BINANCE_TARGET_PERCENT.toFixed(2)}%`
+    : '';
   const productionPositionLabel = productionPositions.length > 0
     ? productionPositions.map(position => {
       const pnl = Number(position.unrealized_pnl ?? 0);
       const side = Number(position.quantity ?? 0) >= 0 ? 'LONG' : 'SHORT';
-      return `${position.symbol ?? '—'} ${side} · PNL ${pnl >= 0 ? '+' : ''}${pnl.toFixed(2)} USDT`;
+      return `${position.symbol ?? '—'} ${side} · PNL ${pnl >= 0 ? '+' : ''}${pnl.toFixed(2)} USDT${productionOrderPreview}`;
     }).join(' · ')
-    : '';
+    : `BINANCE · SIN OPERACIÓN ABIERTA${productionOrderPreview}`;
   const statusBarMessage = paperSyncError || binanceLeverageError || activeMarketError;
   const binanceReady = Boolean(binanceLiveAccount?.healthy && binanceLiveAccount?.stream_connected);
   const binanceStatusClass = binanceReady
