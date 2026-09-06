@@ -51,6 +51,7 @@ const FIXED_BINANCE_TARGET_PERCENT = 1;
 // Safe Binance validation profile: use the smallest permitted exposure and
 // the lowest leverage. This keeps margin equal to the symbol minimum notional.
 const BINANCE_MIN_OPERATION_LEVERAGE = 1;
+type BinanceSizingMode = 'minimum' | 'maximum';
 function renderBars(bars: Array<{ time: UTCTimestamp; open: number; high: number; low: number; close: number }>, max: number) {
   return bars.slice(-max);
 }
@@ -664,6 +665,7 @@ function Workspace() {
   const pendingBinanceTpRef = useRef<{ symbol: string; price: number } | null>(null);
   const [binanceProductionAvailable, setBinanceProductionAvailable] = useState(false);
   const [executionMode, setExecutionMode] = useState<'paper' | 'production'>('paper');
+  const [binanceSizingMode, setBinanceSizingMode] = useState<BinanceSizingMode>(() => localStorage.getItem('helloworld-binance-sizing-mode') === 'maximum' ? 'maximum' : 'minimum');
   const [binanceLiveAccount, setBinanceLiveAccount] = useState<BinanceAccount | null>(null);
   const [binanceExecutionIntents, setBinanceExecutionIntents] = useState<Array<{ id?: string; symbol?: string; side?: string; quantity?: number | string; entry_time?: number | string; entry_price?: number; stop_loss?: number; take_profit?: number; status?: string; created_at?: string }>>([]);
   const [broker, setBroker] = useState<'binance' | 'ctrader'>('binance');
@@ -2050,11 +2052,21 @@ function Workspace() {
     const sizingStop = broker === 'binance' ? stopPercent : stopPercent + tradingCostRate(broker);
     const riskBoundNotional = sizingStop > 0 ? riskAmount / sizingStop : 0;
     const operationLeverage = Math.min(recommendation?.leverage ?? paperLeverage, brokerMaxLeverage);
-    const effectiveLeverage = broker === 'binance' ? BINANCE_MIN_OPERATION_LEVERAGE : operationLeverage;
-    // Binance test entries use the symbol minimum notional. This keeps the
-    // displayed final margin identical to the margin stored on the order.
+    const effectiveLeverage = broker === 'binance'
+      ? binanceSizingMode === 'maximum' ? Math.max(BINANCE_MIN_OPERATION_LEVERAGE, maxLeverageFor('binance', symbol)) : BINANCE_MIN_OPERATION_LEVERAGE
+      : operationLeverage;
+    // Minimum mode uses Binance's minimum notional. Maximum mode sizes the
+    // position up to the 1% balance budget, including estimated round-trip
+    // fees/slippage, while respecting the available margin and leverage.
+    const binanceAvailableBalance = Number(binanceLiveAccount?.available_balance ?? binanceSymbolConfig?.futures_balance ?? 0);
+    const binanceRiskBudget = (binanceAvailableBalance > 0 ? binanceAvailableBalance : paperInitialBalance) * riskPercent / 100;
+    const binanceCostRate = tradingCostRate('binance');
+    const riskBoundBinanceNotional = (stopPercent + binanceCostRate) > 0 ? binanceRiskBudget / (stopPercent + binanceCostRate) : 0;
+    const maximumAffordableNotional = binanceAvailableBalance > 0 ? binanceAvailableBalance * effectiveLeverage : 0;
     const requestedNotional = broker === 'binance' && binanceRules
-      ? binanceRules.min_notional
+      ? binanceSizingMode === 'minimum'
+        ? binanceRules.min_notional
+        : Math.min(Math.max(binanceRules.min_notional, riskBoundBinanceNotional), maximumAffordableNotional || Math.max(binanceRules.min_notional, riskBoundBinanceNotional))
       : Math.min(riskBoundNotional, paperInitialBalance * effectiveLeverage);
     const quantity = broker === 'binance' && binanceRules
       ? roundUpToBinance(requestedNotional / entry, binanceRules.step_size, binanceRules.quantity_precision)
@@ -2491,8 +2503,14 @@ function Workspace() {
     const stop = roundToBinance(entry * (1 - direction * FIXED_BINANCE_STOP_PERCENT / 100), binanceRules.tick_size, binanceRules.price_precision);
     const targetPercent = FIXED_BINANCE_TARGET_PERCENT;
     const target = roundToBinance(entry * (1 + direction * targetPercent / 100), binanceRules.tick_size, binanceRules.price_precision);
-    const leverage = BINANCE_MIN_OPERATION_LEVERAGE;
-    const quantity = roundUpToBinance(binanceRules.min_notional / entry, binanceRules.step_size, binanceRules.quantity_precision);
+    const availableBalance = Number(binanceLiveAccount?.available_balance ?? binanceSymbolConfig?.futures_balance ?? 0);
+    const leverage = binanceSizingMode === 'maximum' ? Math.max(BINANCE_MIN_OPERATION_LEVERAGE, maxLeverageFor('binance', symbol)) : BINANCE_MIN_OPERATION_LEVERAGE;
+    const riskBudget = (availableBalance > 0 ? availableBalance : paperInitialBalance) * paperRiskPercent / 100;
+    const riskBoundNotional = (FIXED_BINANCE_STOP_PERCENT / 100 + tradingCostRate('binance')) > 0 ? riskBudget / (FIXED_BINANCE_STOP_PERCENT / 100 + tradingCostRate('binance')) : 0;
+    const desiredNotional = binanceSizingMode === 'minimum' ? binanceRules.min_notional : Math.max(binanceRules.min_notional, riskBoundNotional);
+    const affordableNotional = availableBalance > 0 ? availableBalance * leverage : 0;
+    const requestedNotional = binanceSizingMode === 'maximum' && affordableNotional > 0 ? Math.min(desiredNotional, affordableNotional) : desiredNotional;
+    const quantity = roundUpToBinance(requestedNotional / entry, binanceRules.step_size, binanceRules.quantity_precision);
     const notional = quantity * entry;
     const fees = tradingCosts('binance', notional).total;
     return { side, entry, stop, target, targetPercent, quantity, notional, fees, leverage, margin: leverage > 0 ? notional / leverage : 0 };
@@ -2514,7 +2532,7 @@ function Workspace() {
   const trainingProgress = Math.max(0, Math.min(1, trainingPnl / 40));
   const productionPreviewData = binancePreview.find(preview => preview.side === 'LONG');
   const productionOrderPreview = broker === 'binance'
-    ? <span className="production-order-preview" aria-label="Preview de la próxima operación Binance"><span><small>MARGIN</small><strong>{productionPreviewData ? `${productionPreviewData.margin.toFixed(4)} USDT` : '—'}</strong></span><span><small>NOTIONAL</small><strong>{productionPreviewData ? `${productionPreviewData.notional.toFixed(4)} USDT` : '—'}</strong></span><span><small>LEVERAGE</small><strong>{productionPreviewData ? `${productionPreviewData.leverage}x` : '—'}</strong></span><span className="preview-sl"><small>SL</small><strong>−{FIXED_BINANCE_STOP_PERCENT.toFixed(2)}%</strong></span><span className="preview-tp"><small>TP</small><strong>+{FIXED_BINANCE_TARGET_PERCENT.toFixed(2)}%</strong></span></span>
+    ? <span className="production-order-preview" aria-label="Preview de la próxima operación Binance"><span className="preview-mode"><small>MODO</small><strong>{binanceSizingMode === 'minimum' ? 'MÍNIMO' : 'MÁXIMO'}</strong></span><span><small>MARGIN</small><strong>{productionPreviewData ? `${productionPreviewData.margin.toFixed(4)} USDT` : '—'}</strong></span><span><small>NOTIONAL</small><strong>{productionPreviewData ? `${productionPreviewData.notional.toFixed(4)} USDT` : '—'}</strong></span><span><small>LEVERAGE</small><strong>{productionPreviewData ? `${productionPreviewData.leverage}x` : '—'}</strong></span><span className="preview-sl"><small>SL</small><strong>−{FIXED_BINANCE_STOP_PERCENT.toFixed(2)}%</strong></span><span className="preview-tp"><small>TP</small><strong>+{FIXED_BINANCE_TARGET_PERCENT.toFixed(2)}%</strong></span></span>
     : null;
   const productionPositionLabel = productionPositions.length > 0
     ? productionPositions.map(position => {
@@ -2543,7 +2561,7 @@ function Workspace() {
   const marginSummary = broker === 'binance' ? <span className="margin-summary" aria-label="Margen de la próxima operación">MARGIN REC. {formatMargin(recommendedBinanceMargin)} · FINAL {formatMargin(finalBinanceMargin)} · LEV {appliedBinanceLeverage > 0 ? `${appliedBinanceLeverage}x` : '—'}</span> : null;
   const desktopHeader = <div className="symbol-bar"><select className={`broker-select ${broker === 'binance' ? binanceStatusClass : ''}`} value={broker} onChange={event => { const next = event.target.value as 'binance' | 'ctrader'; setBroker(next); setSymbol(next === 'ctrader' ? 'AUDUSD' : 'BTCUSDT'); }} aria-label="Broker"><option value="binance">Binance</option><option value="ctrader">cTrader</option></select><select className="symbol-select" value={symbol} onChange={event => setSymbol(event.target.value)} aria-label="Símbolo">
     {selectableSymbols.map(option => <option key={option}>{option}</option>)}
-  </select><select className="interval-select" value={interval} onChange={event => setInterval(event.target.value as typeof interval)} aria-label="Intervalo de contexto">{(['1s', '1m', '3m', '5m', '15m'] as const).map(value => <option key={value} value={value}>{value}</option>)}</select>{broker === 'binance' && <><span className={`production-position-summary ${productionPositions.length === 0 ? '' : productionPositions.some(position => Number(position.unrealized_pnl ?? 0) >= 0) ? 'production-profit' : 'production-loss'}`}>{productionPositionLabel || 'BINANCE · SIN OPERACIÓN ABIERTA'}</span>{productionOrderPreview}<button type="button" className={`production-mode-icon ${executionMode === 'production' ? 'production-mode-active' : ''}`} disabled={!binanceProductionAvailable} onClick={() => { if (executionMode === 'paper' && window.confirm('Producción enviará órdenes reales a Binance. ¿Continuar?')) setExecutionMode('production'); else if (executionMode === 'production') setExecutionMode('paper'); }} aria-label="Cambiar Paper/Producción" title={binanceProductionAvailable ? 'Cambiar Paper/Producción' : 'Producción deshabilitada'}>◉</button></>}{statusBarMessage && <span className="header-status-error" role="status" title={statusBarMessage}>⚠ {statusBarMessage}</span>}<div className="chart-tools" aria-label="Herramientas del gráfico">
+  </select><select className="interval-select" value={interval} onChange={event => setInterval(event.target.value as typeof interval)} aria-label="Intervalo de contexto">{(['1s', '1m', '3m', '5m', '15m'] as const).map(value => <option key={value} value={value}>{value}</option>)}</select>{broker === 'binance' && <><span className={`production-position-summary ${productionPositions.length === 0 ? '' : productionPositions.some(position => Number(position.unrealized_pnl ?? 0) >= 0) ? 'production-profit' : 'production-loss'}`}>{productionPositionLabel || 'BINANCE · SIN OPERACIÓN ABIERTA'}</span><button type="button" className={`binance-sizing-toggle ${binanceSizingMode === 'maximum' ? 'binance-sizing-maximum' : ''}`} onClick={() => setBinanceSizingMode(current => { const next = current === 'minimum' ? 'maximum' : 'minimum'; localStorage.setItem('helloworld-binance-sizing-mode', next); return next; })} aria-label="Cambiar modo de sizing Binance" title="Alternar modo mínimo/máximo">{binanceSizingMode === 'minimum' ? 'MÍN' : 'MÁX'}</button>{productionOrderPreview}<button type="button" className={`production-mode-icon ${executionMode === 'production' ? 'production-mode-active' : ''}`} disabled={!binanceProductionAvailable} onClick={() => { if (executionMode === 'paper' && window.confirm('Producción enviará órdenes reales a Binance. ¿Continuar?')) setExecutionMode('production'); else if (executionMode === 'production') setExecutionMode('paper'); }} aria-label="Cambiar Paper/Producción" title={binanceProductionAvailable ? 'Cambiar Paper/Producción' : 'Producción deshabilitada'}>◉</button></>}{statusBarMessage && <span className="header-status-error" role="status" title={statusBarMessage}>⚠ {statusBarMessage}</span>}<div className="chart-tools" aria-label="Herramientas del gráfico">
     {labButton}{riskEngineButton}{pnlCalendarButton}<button className={`indicator-bar-button ${showHeikinAshi ? 'indicator-toggle-active' : ''}`} onClick={() => setShowHeikinAshi(value => !value)} aria-pressed={showHeikinAshi} aria-label="Alternar Heikin Ashi" title="Heikin Ashi">HA</button><button className={!tool ? 'tool-active' : ''} onClick={() => setTool(null)} aria-label="Seleccionar y navegar" title="Seleccionar y navegar">↖</button>
     {([['line', '╱', 'Línea'], ['ruler', '▥', 'Regla'], ['long', 'L', 'Long'], ['short', 'S', 'Short'], ['zoom', '⌗', 'Zoom lazo']] as const).map(([key, icon, label]) => <button key={key} className={tool === key ? 'tool-active' : ''} onClick={() => chooseTool(key)} aria-label={label} title={label}>{icon}</button>)}<button onClick={() => { resetChartZoom('entry'); resetChartZoom('context'); }} aria-label="Restablecer zoom" title="Restablecer zoom">↺</button>
     <button onClick={() => setDrawings(current => current.filter(drawing => drawing.paper))} aria-label="Borrar dibujos" title="Borrar dibujos">×</button>
