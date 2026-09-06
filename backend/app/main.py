@@ -224,6 +224,10 @@ class BinanceRealOrderInput(BaseModel):
     confirmed: bool = False
 
 
+class BinanceCloseOrderInput(BaseModel):
+    confirmed: bool = False
+
+
 def _binance_public_execution_rules(symbol: str) -> tuple[float, float, float, float, int, int]:
     """Return live price and the current public exchange filters for a symbol."""
     base = settings.binance_base_url.rstrip("/")
@@ -444,6 +448,35 @@ def open_binance_real_operation(payload: BinanceRealOrderInput, identity: AuthId
         message = _binance_error_message(exc) if emergency_error is None else f"{_binance_error_message(exc)}; cierre de emergencia falló: {emergency_error}"
         binance_execution_store.update(intent["id"], identity.user_id, status="ERROR", last_error=message)
         raise HTTPException(status_code=502, detail=f"Binance rechazó la operación; revisa el estado antes de reintentar: {message}") from exc
+
+
+@app.post("/trading/binance/real/operations/{symbol}/close")
+def close_binance_real_operation(symbol: str, payload: BinanceCloseOrderInput, identity: AuthIdentity = Depends(identity_dependency(auth_service))) -> dict[str, object]:
+    """Close the complete live Binance position with a reduce-only market order."""
+    if not settings.binance_real_trading_enabled:
+        raise HTTPException(status_code=503, detail="El trading real de Binance está bloqueado en este entorno.")
+    if not payload.confirmed:
+        raise HTTPException(status_code=409, detail="Confirma explícitamente el cierre real.")
+    requested = symbol.strip().upper()
+    position = binance_manager.position_risk(identity.user_id, requested)
+    quantity = abs(float(position.get("positionAmt") or 0))
+    if quantity <= 0:
+        raise HTTPException(status_code=409, detail=f"No hay una posición abierta de {requested} para cerrar.")
+    side = "SELL" if float(position.get("positionAmt") or 0) > 0 else "BUY"
+    intent = next((item for item in binance_execution_store.list(identity.user_id)
+                   if str(item.get("symbol", "")).upper() == requested
+                   and str(item.get("status", "")) not in {"CLOSED", "ERROR"}), None)
+    client_root = str(intent.get("client_order_id")) if intent else f"helloworld_manual_{uuid4().hex[:16]}"
+    client_order_id = f"{client_root}_manual"
+    if intent:
+        binance_execution_store.update(str(intent["id"]), identity.user_id, status="CLOSING")
+    try:
+        order = binance_manager.place_market_order(identity.user_id, requested, side, quantity, client_order_id, reduce_only=True)
+    except Exception as exc:
+        if intent:
+            binance_execution_store.update(str(intent["id"]), identity.user_id, status="PROTECTED", last_error=str(exc))
+        raise HTTPException(status_code=502, detail=f"Binance no pudo cerrar {requested}: {exc}") from exc
+    return {"broker": "binance", "mode": "real", "symbol": requested, "side": side, "quantity": quantity, "order": order}
 
 
 @app.get("/trading/binance/symbol-config/{symbol}")
