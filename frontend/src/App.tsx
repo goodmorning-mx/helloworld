@@ -2077,7 +2077,12 @@ function Workspace() {
         : Math.min(Math.max(binanceRules.min_notional, riskBoundBinanceNotional), maximumAffordableNotional || Math.max(binanceRules.min_notional, riskBoundBinanceNotional))
       : Math.min(riskBoundNotional, paperInitialBalance * effectiveLeverage);
     const quantity = broker === 'binance' && binanceRules
-      ? roundUpToBinance(requestedNotional / entry, binanceRules.step_size, binanceRules.quantity_precision)
+      ? (() => {
+        const roundedUp = roundUpToBinance(requestedNotional / entry, binanceRules.step_size, binanceRules.quantity_precision);
+        const roundedDown = roundToBinance(requestedNotional / entry, binanceRules.step_size, binanceRules.quantity_precision);
+        const roundedUpMargin = effectiveLeverage > 0 ? roundedUp * entry / effectiveLeverage : 0;
+        return binanceSizingMode === 'maximum' && binanceAvailableBalance > 0 && roundedUpMargin > binanceAvailableBalance ? roundedDown : roundedUp;
+      })()
       : (entry > 0 ? requestedNotional / entry : 0);
     const notional = quantity * entry;
     if (broker === 'binance' && binanceRules && (quantity < binanceRules.min_qty || notional < binanceRules.min_notional)) {
@@ -2530,7 +2535,9 @@ function Workspace() {
     const desiredNotional = binanceSizingMode === 'minimum' ? binanceRules.min_notional : Math.max(binanceRules.min_notional, riskBoundNotional);
     const affordableNotional = availableBalance > 0 ? availableBalance * leverage : 0;
     const requestedNotional = binanceSizingMode === 'maximum' && affordableNotional > 0 ? Math.min(desiredNotional, affordableNotional) : desiredNotional;
-    const quantity = roundUpToBinance(requestedNotional / entry, binanceRules.step_size, binanceRules.quantity_precision);
+    const roundedUpQuantity = roundUpToBinance(requestedNotional / entry, binanceRules.step_size, binanceRules.quantity_precision);
+    const roundedDownQuantity = roundToBinance(requestedNotional / entry, binanceRules.step_size, binanceRules.quantity_precision);
+    const quantity = binanceSizingMode === 'maximum' && availableBalance > 0 && roundedUpQuantity * entry / leverage > availableBalance ? roundedDownQuantity : roundedUpQuantity;
     const notional = quantity * entry;
     const fees = tradingCosts('binance', notional).total;
     const slAmount = quantity * Math.abs(entry - stop);
