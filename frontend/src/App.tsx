@@ -2058,7 +2058,7 @@ function Workspace() {
     const operationLeverage = Math.min(recommendation?.leverage ?? paperLeverage, brokerMaxLeverage);
     const maximumBinanceLeverage = maxLeverageFor('binance', symbol);
     const requestedBinanceLeverage = binanceSizingMode === 'maximum'
-      ? Math.floor(Math.max(BINANCE_MIN_OPERATION_LEVERAGE, labRecommendations?.[type]?.leverage ?? maximumBinanceLeverage))
+      ? Math.floor(Math.max(BINANCE_MIN_OPERATION_LEVERAGE, maximumBinanceLeverage))
       : BINANCE_MIN_OPERATION_LEVERAGE;
     const effectiveLeverage = broker === 'binance'
       ? Math.min(requestedBinanceLeverage, maximumBinanceLeverage)
@@ -2526,7 +2526,7 @@ function Workspace() {
     const availableBalance = Number(binanceLiveAccount?.available_balance ?? binanceSymbolConfig?.futures_balance ?? 0);
     const maximumLeverage = maxLeverageFor('binance', symbol);
     const recommendedLeverage = binanceSizingMode === 'maximum'
-      ? Math.floor(Math.max(BINANCE_MIN_OPERATION_LEVERAGE, labRecommendations?.long.leverage ?? maximumLeverage))
+      ? Math.floor(Math.max(BINANCE_MIN_OPERATION_LEVERAGE, maximumLeverage))
       : BINANCE_MIN_OPERATION_LEVERAGE;
     const leverage = Math.min(recommendedLeverage, maximumLeverage);
     const marginMultiplier = leverage > 0 ? recommendedLeverage / leverage : 1;
