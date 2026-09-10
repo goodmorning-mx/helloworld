@@ -668,6 +668,7 @@ function Workspace() {
   const [binanceSizingMode, setBinanceSizingMode] = useState<BinanceSizingMode>(() => localStorage.getItem('helloworld-binance-sizing-mode') === 'maximum' ? 'maximum' : 'minimum');
   const [binanceStopPercent, setBinanceStopPercent] = useState(() => Number(localStorage.getItem('helloworld-binance-stop-percent') ?? FIXED_BINANCE_STOP_PERCENT) || FIXED_BINANCE_STOP_PERCENT);
   const [binanceTargetPercent, setBinanceTargetPercent] = useState(() => Number(localStorage.getItem('helloworld-binance-target-percent') ?? FIXED_BINANCE_TARGET_PERCENT) || FIXED_BINANCE_TARGET_PERCENT);
+  const [riskBalancePreview, setRiskBalancePreview] = useState<number | null>(null);
   const [binanceLiveAccount, setBinanceLiveAccount] = useState<BinanceAccount | null>(null);
   const [binanceExecutionIntents, setBinanceExecutionIntents] = useState<Array<{ id?: string; symbol?: string; side?: string; quantity?: number | string; entry_time?: number | string; entry_price?: number; stop_loss?: number; take_profit?: number; status?: string; created_at?: string }>>([]);
   const [broker, setBroker] = useState<'binance' | 'ctrader'>('binance');
@@ -2066,7 +2067,7 @@ function Workspace() {
     // position up to the 1% balance budget, including estimated round-trip
     // fees/slippage, while respecting the available margin and leverage.
     const binanceAvailableBalance = Number(binanceLiveAccount?.available_balance ?? binanceSymbolConfig?.futures_balance ?? 0);
-    const binanceRiskBudget = (binanceAvailableBalance > 0 ? binanceAvailableBalance : paperInitialBalance) * riskPercent / 100;
+    const binanceRiskBudget = riskBalanceForSizing * riskPercent / 100;
     const binanceCostRate = tradingCostRate('binance');
     const riskBoundBinanceNotional = (stopPercent + binanceCostRate) > 0 ? binanceRiskBudget / (stopPercent + binanceCostRate) : 0;
     const maximumAffordableNotional = binanceAvailableBalance > 0 ? binanceAvailableBalance * effectiveLeverage : 0;
@@ -2508,6 +2509,8 @@ function Workspace() {
   };
 
   const liveReferencePrice = binanceLivePriceRef.current?.price ?? candleBarsRef.current[candleBarsRef.current.length - 1]?.close ?? 0;
+  const availableRiskBalance = Number(binanceLiveAccount?.available_balance ?? binanceSymbolConfig?.futures_balance ?? 0) || paperInitialBalance;
+  const riskBalanceForSizing = riskBalancePreview ?? availableRiskBalance;
   const activeRiskPercent = Number((JSON.parse(localStorage.getItem('helloworld-paper-assist') ?? '{}') as { riskPercent?: number }).riskPercent) || paperRiskPercent;
   const binancePreview = broker === 'binance' && binanceRules && liveReferencePrice > 0 ? (['LONG', 'SHORT'] as const).map(side => {
     const direction = side === 'LONG' ? 1 : -1;
@@ -2522,7 +2525,7 @@ function Workspace() {
       : BINANCE_MIN_OPERATION_LEVERAGE;
     const leverage = Math.min(recommendedLeverage, maximumLeverage);
     const marginMultiplier = leverage > 0 ? recommendedLeverage / leverage : 1;
-    const riskBudget = (availableBalance > 0 ? availableBalance : paperInitialBalance) * activeRiskPercent / 100;
+    const riskBudget = riskBalanceForSizing * activeRiskPercent / 100;
     const riskBoundNotional = (binanceStopPercent / 100 + tradingCostRate('binance')) > 0 ? riskBudget / (binanceStopPercent / 100 + tradingCostRate('binance')) : 0;
     const desiredNotional = binanceSizingMode === 'minimum' ? binanceRules.min_notional : Math.max(binanceRules.min_notional, riskBoundNotional);
     const affordableNotional = availableBalance > 0 ? availableBalance * leverage : 0;
@@ -2551,8 +2554,22 @@ function Workspace() {
   const trainingProgress = Math.max(0, Math.min(1, trainingPnl / 40));
   const productionPreviewData = binancePreview.find(preview => preview.side === 'LONG');
   const productionPnl = productionPositions.reduce((sum, position) => sum + Number(position.unrealized_pnl ?? 0), 0);
-  const riskPreviewBalance = Number(binanceLiveAccount?.available_balance ?? binanceSymbolConfig?.futures_balance ?? 0) || paperInitialBalance;
+  const riskPreviewBalance = riskBalanceForSizing;
   const riskPreviewUsd = riskPreviewBalance * activeRiskPercent / 100;
+  const adjustRiskBalance = (delta: number) => setRiskBalancePreview(Math.max(.01, Number((riskPreviewBalance + delta).toFixed(4))));
+  const adjustRiskPercent = (delta: number) => {
+    const next = Math.max(.05, Math.min(100, Number((activeRiskPercent + delta).toFixed(2))));
+    const current = JSON.parse(localStorage.getItem('helloworld-paper-assist') ?? '{}');
+    localStorage.setItem('helloworld-paper-assist', JSON.stringify({ ...current, riskPercent: next }));
+    setPaperRiskPercent(next);
+  };
+  const adjustRiskUsd = (delta: number) => {
+    const nextRiskUsd = Math.max(.01, Number((riskPreviewUsd + delta).toFixed(4)));
+    const nextPercent = Math.max(.05, Math.min(100, Number((nextRiskUsd / riskPreviewBalance * 100).toFixed(2))));
+    const current = JSON.parse(localStorage.getItem('helloworld-paper-assist') ?? '{}');
+    localStorage.setItem('helloworld-paper-assist', JSON.stringify({ ...current, riskPercent: nextPercent }));
+    setPaperRiskPercent(nextPercent);
+  };
   const adjustProtectionPercent = (kind: 'sl' | 'tp', delta: number) => {
     const setter = kind === 'sl' ? setBinanceStopPercent : setBinanceTargetPercent;
     const current = kind === 'sl' ? binanceStopPercent : binanceTargetPercent;
@@ -2561,7 +2578,7 @@ function Workspace() {
     localStorage.setItem(kind === 'sl' ? 'helloworld-binance-stop-percent' : 'helloworld-binance-target-percent', String(next));
   };
   const productionOrderPreview = broker === 'binance'
-    ? <span className={`production-order-preview ${productionPositions.length > 0 ? 'production-preview-active' : ''}`} aria-label="Preview de la próxima operación Binance"><span className="preview-mode"><small>MODO</small><strong>{binanceSizingMode === 'minimum' ? 'MÍNIMO' : 'MÁXIMO'}</strong></span><span className="preview-risk"><small>RISK %</small><strong>{activeRiskPercent.toFixed(2)}%</strong></span><span className="preview-risk"><small>RISK $</small><strong>{riskPreviewUsd.toFixed(4)} USDT</strong></span><span><small>MARGIN</small><strong>{productionPreviewData ? `${productionPreviewData.margin.toFixed(4)} USDT` : '—'}</strong></span><span><small>MULTIPLICADOR</small><strong>{productionPreviewData ? `×${productionPreviewData.marginMultiplier.toFixed(2)}` : '—'}</strong></span><span><small>NOTIONAL</small><strong>{productionPreviewData ? `${productionPreviewData.notional.toFixed(4)} USDT` : '—'}</strong></span><span><small>LEVERAGE</small><strong>{productionPreviewData ? `${productionPreviewData.leverage}x` : '—'}</strong></span><span className="preview-sl"><small>SL <button type="button" className="preview-adjust-button" onClick={() => adjustProtectionPercent('sl', .05)} aria-label="Aumentar SL">↑</button><button type="button" className="preview-adjust-button" onClick={() => adjustProtectionPercent('sl', -.05)} aria-label="Disminuir SL">↓</button></small><strong>−{binanceStopPercent.toFixed(2)}% · −{productionPreviewData ? productionPreviewData.slAmount.toFixed(4) : '—'} $</strong></span><span className="preview-tp"><small>TP <button type="button" className="preview-adjust-button" onClick={() => adjustProtectionPercent('tp', .05)} aria-label="Aumentar TP">↑</button><button type="button" className="preview-adjust-button" onClick={() => adjustProtectionPercent('tp', -.05)} aria-label="Disminuir TP">↓</button></small><strong>+{binanceTargetPercent.toFixed(2)}% · +{productionPreviewData ? productionPreviewData.tpAmount.toFixed(4) : '—'} $</strong></span><span className="preview-pnl"><small>PNL</small><strong>{productionPositions.length > 0 ? `${productionPnl >= 0 ? '+' : ''}${productionPnl.toFixed(4)} USDT` : '—'}</strong></span></span>
+    ? <span className={`production-order-preview ${productionPositions.length > 0 ? 'production-preview-active' : ''}`} aria-label="Preview de la próxima operación Binance"><span className="preview-mode"><small>MODO</small><strong>{binanceSizingMode === 'minimum' ? 'MÍNIMO' : 'MÁXIMO'}</strong></span><span className="preview-risk"><small>BALANCE <button type="button" className="preview-adjust-button" onClick={() => adjustRiskBalance(.1)} aria-label="Aumentar balance">↑</button><button type="button" className="preview-adjust-button" onClick={() => adjustRiskBalance(-.1)} aria-label="Disminuir balance">↓</button></small><strong>{riskPreviewBalance.toFixed(4)} USDT</strong></span><span className="preview-risk"><small>RISK % <button type="button" className="preview-adjust-button" onClick={() => adjustRiskPercent(.1)} aria-label="Aumentar riesgo porcentual">↑</button><button type="button" className="preview-adjust-button" onClick={() => adjustRiskPercent(-.1)} aria-label="Disminuir riesgo porcentual">↓</button></small><strong>{activeRiskPercent.toFixed(2)}%</strong></span><span className="preview-risk"><small>RISK $ <button type="button" className="preview-adjust-button" onClick={() => adjustRiskUsd(.01)} aria-label="Aumentar riesgo en dólares">↑</button><button type="button" className="preview-adjust-button" onClick={() => adjustRiskUsd(-.01)} aria-label="Disminuir riesgo en dólares">↓</button></small><strong>{riskPreviewUsd.toFixed(4)} USDT</strong></span><span><small>MARGIN</small><strong>{productionPreviewData ? `${productionPreviewData.margin.toFixed(4)} USDT` : '—'}</strong></span><span><small>MULTIPLICADOR</small><strong>{productionPreviewData ? `×${productionPreviewData.marginMultiplier.toFixed(2)}` : '—'}</strong></span><span><small>NOTIONAL</small><strong>{productionPreviewData ? `${productionPreviewData.notional.toFixed(4)} USDT` : '—'}</strong></span><span><small>LEVERAGE</small><strong>{productionPreviewData ? `${productionPreviewData.leverage}x` : '—'}</strong></span><span><small>FEE</small><strong>{productionPreviewData ? `${productionPreviewData.fees.toFixed(4)} USDT` : '—'}</strong></span><span className="preview-sl"><small>SL <button type="button" className="preview-adjust-button" onClick={() => adjustProtectionPercent('sl', .05)} aria-label="Aumentar SL">↑</button><button type="button" className="preview-adjust-button" onClick={() => adjustProtectionPercent('sl', -.05)} aria-label="Disminuir SL">↓</button></small><strong>−{binanceStopPercent.toFixed(2)}% · −{productionPreviewData ? productionPreviewData.slAmount.toFixed(4) : '—'} $</strong></span><span className="preview-tp"><small>TP <button type="button" className="preview-adjust-button" onClick={() => adjustProtectionPercent('tp', .05)} aria-label="Aumentar TP">↑</button><button type="button" className="preview-adjust-button" onClick={() => adjustProtectionPercent('tp', -.05)} aria-label="Disminuir TP">↓</button></small><strong>+{binanceTargetPercent.toFixed(2)}% · +{productionPreviewData ? productionPreviewData.tpAmount.toFixed(4) : '—'} $</strong></span><span className="preview-pnl"><small>PNL</small><strong>{productionPositions.length > 0 ? `${productionPnl >= 0 ? '+' : ''}${productionPnl.toFixed(4)} USDT` : '—'}</strong></span></span>
     : null;
   const previewControls = <div className="preview-controls"><button type="button" className={`binance-sizing-toggle ${binanceSizingMode === 'maximum' ? 'binance-sizing-maximum' : ''}`} onClick={() => setBinanceSizingMode(current => { const next = current === 'minimum' ? 'maximum' : 'minimum'; localStorage.setItem('helloworld-binance-sizing-mode', next); return next; })} aria-label="Cambiar modo de sizing Binance" title="Alternar modo mínimo/máximo">{binanceSizingMode === 'minimum' ? 'MÍN' : 'MÁX'}</button><button type="button" className={`production-mode-icon ${executionMode === 'production' ? 'production-mode-active' : ''}`} disabled={!binanceProductionAvailable} onClick={() => { if (executionMode === 'paper' && window.confirm('Producción enviará órdenes reales a Binance. ¿Continuar?')) setExecutionMode('production'); else if (executionMode === 'production') setExecutionMode('paper'); }} aria-label="Cambiar Paper/Producción" title={binanceProductionAvailable ? 'Cambiar Paper/Producción' : 'Producción deshabilitada'}>◉</button></div>;
   const productionPositionLabel = productionPositions.length > 0
