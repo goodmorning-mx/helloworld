@@ -51,6 +51,7 @@ const FIXED_BINANCE_TARGET_PERCENT = 1;
 // Safe Binance validation profile: use the smallest permitted exposure and
 // the lowest leverage. This keeps margin equal to the symbol minimum notional.
 const BINANCE_MIN_OPERATION_LEVERAGE = 1;
+const BINANCE_MARGIN_RESERVE_USDT = 1;
 type BinanceSizingMode = 'minimum' | 'maximum';
 function renderBars(bars: Array<{ time: UTCTimestamp; open: number; high: number; low: number; close: number }>, max: number) {
   return bars.slice(-max);
@@ -2070,7 +2071,8 @@ function Workspace() {
     const binanceRiskBudget = riskBalanceForSizing * riskPercent / 100;
     const binanceCostRate = tradingCostRate('binance');
     const riskBoundBinanceNotional = (stopPercent + binanceCostRate) > 0 ? binanceRiskBudget / (stopPercent + binanceCostRate) : 0;
-    const maximumAffordableNotional = binanceAvailableBalance > 0 ? binanceAvailableBalance * effectiveLeverage : 0;
+    const usableBinanceMargin = binanceAvailableBalance > 0 ? Math.max(0, binanceAvailableBalance - BINANCE_MARGIN_RESERVE_USDT) : 0;
+    const maximumAffordableNotional = usableBinanceMargin * effectiveLeverage;
     const requestedNotional = broker === 'binance' && binanceRules
       ? binanceSizingMode === 'minimum'
         ? binanceRules.min_notional
@@ -2090,8 +2092,8 @@ function Workspace() {
       return;
     }
     const margin = effectiveLeverage > 0 ? notional / effectiveLeverage : 0;
-    if (broker === 'binance' && binanceSizingMode === 'maximum' && binanceAvailableBalance > 0 && margin > binanceAvailableBalance + 1e-8) {
-      setPaperSyncError(`El margin calculado (${margin.toFixed(4)} USDT) supera el balance disponible (${binanceAvailableBalance.toFixed(4)} USDT).`);
+    if (broker === 'binance' && binanceAvailableBalance > 0 && margin > usableBinanceMargin + 1e-8) {
+      setPaperSyncError(`El margin calculado (${margin.toFixed(4)} USDT) supera el margin utilizable (${usableBinanceMargin.toFixed(4)} USDT); se reserva ${BINANCE_MARGIN_RESERVE_USDT.toFixed(2)} USDT.`);
       return;
     }
     let paperEntry = entry;
@@ -2533,7 +2535,8 @@ function Workspace() {
     const riskBudget = riskBalanceForSizing * activeRiskPercent / 100;
     const riskBoundNotional = (binanceStopPercent / 100 + tradingCostRate('binance')) > 0 ? riskBudget / (binanceStopPercent / 100 + tradingCostRate('binance')) : 0;
     const desiredNotional = binanceSizingMode === 'minimum' ? binanceRules.min_notional : Math.max(binanceRules.min_notional, riskBoundNotional);
-    const affordableNotional = availableBalance > 0 ? availableBalance * leverage : 0;
+    const usableMargin = availableBalance > 0 ? Math.max(0, availableBalance - BINANCE_MARGIN_RESERVE_USDT) : 0;
+    const affordableNotional = usableMargin * leverage;
     const requestedNotional = binanceSizingMode === 'maximum' && affordableNotional > 0 ? Math.min(desiredNotional, affordableNotional) : desiredNotional;
     const roundedUpQuantity = roundUpToBinance(requestedNotional / entry, binanceRules.step_size, binanceRules.quantity_precision);
     const roundedDownQuantity = roundToBinance(requestedNotional / entry, binanceRules.step_size, binanceRules.quantity_precision);
