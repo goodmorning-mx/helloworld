@@ -769,9 +769,27 @@ function Workspace() {
   const [paperRiskPercent, setPaperRiskPercent] = useState(() => Number(JSON.parse(localStorage.getItem('helloworld-paper-assist') ?? '{}').riskPercent ?? 1) || 1);
   type ActiveMarketSymbol = { symbol: string; last_price: number; change_pct: number; movement_pct: number; range_pct: number; quote_volume: number; trades: number; score: number; max_leverage: number | null; horizon: number; interval: string; variation_sum_pct: number; variation_average_pct: number };
   const [activeMarketSymbols, setActiveMarketSymbols] = useState<ActiveMarketSymbol[]>([]);
+  const [marketReviewTimes, setMarketReviewTimes] = useState<Record<string, string>>(() => {
+    try {
+      const stored = JSON.parse(localStorage.getItem('helloworld-market-review-times') ?? '{}') as unknown;
+      return stored && typeof stored === 'object' ? stored as Record<string, string> : {};
+    } catch {
+      return {};
+    }
+  });
   const [activeMarketLoading, setActiveMarketLoading] = useState(false);
   const [activeMarketError, setActiveMarketError] = useState('');
   const selectableSymbols = [...new Set([...brokerSymbols, ...activeMarketSymbols.map(candidate => candidate.symbol)])];
+
+  const updateMarketReviewTime = (candidateSymbol: string, reviewTime: string) => {
+    setMarketReviewTimes(current => {
+      const next = { ...current };
+      if (reviewTime) next[candidateSymbol] = reviewTime;
+      else delete next[candidateSymbol];
+      localStorage.setItem('helloworld-market-review-times', JSON.stringify(next));
+      return next;
+    });
+  };
 
   useEffect(() => {
     if (broker !== 'binance') { setBinanceProductionAvailable(false); setExecutionMode('paper'); return; }
@@ -2600,7 +2618,7 @@ function Workspace() {
       return `${position.symbol ?? '—'} ${side} · PNL ${pnl >= 0 ? '+' : ''}${pnl.toFixed(2)} USDT`;
     }).join(' · ')
     : '';
-  const scannerStatusBar = broker === 'binance' ? <div className="header-market-scanner" aria-label="Market scanner Binance">{activeMarketSymbols.map(candidate => { const variation = candidate.variation_sum_pct; return <button key={candidate.symbol} type="button" className={`header-market-item ${candidate.symbol === symbol ? 'active' : ''}`} onClick={() => { setLabRecommendations(null); setSymbol(candidate.symbol); }}><b>{candidate.symbol}</b><span className={variation >= 0 ? 'ticker-up' : 'ticker-down'}>{variation >= 0 ? '▲' : '▼'} {Math.abs(variation).toFixed(2)}%</span></button>; })}</div> : null;
+  const scannerStatusBar = broker === 'binance' ? <div className="header-market-scanner" aria-label="Market scanner Binance">{[...activeMarketSymbols].sort((a, b) => (marketReviewTimes[a.symbol] ? 0 : 1) - (marketReviewTimes[b.symbol] ? 0 : 1) || (marketReviewTimes[a.symbol] ?? '99:99').localeCompare(marketReviewTimes[b.symbol] ?? '99:99')).map(candidate => { const variation = candidate.variation_sum_pct; const reviewTime = marketReviewTimes[candidate.symbol] ?? ''; return <article key={candidate.symbol} className={`header-market-item ${candidate.symbol === symbol ? 'active' : ''} ${reviewTime ? 'has-review-time' : ''}`}><button type="button" className="header-market-main" onClick={() => { setLabRecommendations(null); setSymbol(candidate.symbol); }}><b>{candidate.symbol}</b><span className={variation >= 0 ? 'ticker-up' : 'ticker-down'}>{variation >= 0 ? '▲' : '▼'} {Math.abs(variation).toFixed(2)}%</span></button><label className="header-market-review" title="Próxima revisión"><span>REVISAR</span><input type="time" value={reviewTime} onChange={event => updateMarketReviewTime(candidate.symbol, event.target.value)} aria-label={`Próxima revisión de ${candidate.symbol}`} /></label></article>; })}</div> : null;
   const statusBarMessage = paperSyncError || binanceLeverageError || activeMarketError;
   const binanceReady = Boolean(binanceLiveAccount?.healthy && binanceLiveAccount?.stream_connected);
   const binanceStatusClass = binanceReady
