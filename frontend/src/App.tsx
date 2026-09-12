@@ -777,9 +777,19 @@ function Workspace() {
       return {};
     }
   });
+  const [marketReviewClock, setMarketReviewClock] = useState(() => Date.now());
   const [activeMarketLoading, setActiveMarketLoading] = useState(false);
   const [activeMarketError, setActiveMarketError] = useState('');
   const selectableSymbols = [...new Set([...brokerSymbols, ...activeMarketSymbols.map(candidate => candidate.symbol)])];
+
+  useEffect(() => {
+    let interval = 0;
+    const timeout = window.setTimeout(() => {
+      setMarketReviewClock(Date.now());
+      interval = window.setInterval(() => setMarketReviewClock(Date.now()), 60_000);
+    }, 60_000 - (Date.now() % 60_000));
+    return () => { window.clearTimeout(timeout); if (interval) window.clearInterval(interval); };
+  }, []);
 
   const updateMarketReviewTime = (candidateSymbol: string, reviewTime: string) => {
     setMarketReviewTimes(current => {
@@ -2618,7 +2628,7 @@ function Workspace() {
       return `${position.symbol ?? '—'} ${side} · PNL ${pnl >= 0 ? '+' : ''}${pnl.toFixed(2)} USDT`;
     }).join(' · ')
     : '';
-  const scannerStatusBar = broker === 'binance' ? <div className="header-market-scanner" aria-label="Market scanner Binance">{[...activeMarketSymbols].sort((a, b) => b.variation_sum_pct - a.variation_sum_pct).map(candidate => { const variation = candidate.variation_sum_pct; const reviewTime = marketReviewTimes[candidate.symbol] ?? ''; return <article key={candidate.symbol} className={`header-market-item ${candidate.symbol === symbol ? 'active' : ''} ${reviewTime ? 'has-review-time' : ''}`}><button type="button" className="header-market-main" onClick={() => { setLabRecommendations(null); setSymbol(candidate.symbol); }}><b>{candidate.symbol}</b><span className={variation >= 0 ? 'ticker-up' : 'ticker-down'}>{variation >= 0 ? '▲' : '▼'} {Math.abs(variation).toFixed(2)}%</span></button><label className="header-market-review" title="Próxima revisión"><span>REVISAR</span><input type="time" value={reviewTime} onChange={event => updateMarketReviewTime(candidate.symbol, event.target.value)} aria-label={`Próxima revisión de ${candidate.symbol}`} /></label></article>; })}</div> : null;
+  const scannerStatusBar = broker === 'binance' ? <div className="header-market-scanner" aria-label="Market scanner Binance">{[...activeMarketSymbols].sort((a, b) => b.variation_sum_pct - a.variation_sum_pct).map(candidate => { const variation = candidate.variation_sum_pct; const reviewTime = marketReviewTimes[candidate.symbol] ?? ''; const reviewState = reviewTime ? (() => { const [hours, minutes] = reviewTime.split(':').map(Number); const now = new Date(marketReviewClock); const currentMinutes = now.getHours() * 60 + now.getMinutes(); const scheduledMinutes = hours * 60 + minutes; let delta = scheduledMinutes - currentMinutes; if (delta < -720) delta += 1440; if (delta > 720) delta -= 1440; return delta === 0 ? 'due' : delta > 0 ? 'waiting' : 'overdue'; })() : ''; return <article key={candidate.symbol} className={`header-market-item ${candidate.symbol === symbol ? 'active' : ''} ${reviewTime ? `has-review-time review-${reviewState}` : ''}`}><button type="button" className="header-market-main" onClick={() => { setLabRecommendations(null); setSymbol(candidate.symbol); }}><b>{candidate.symbol}</b><span className={variation >= 0 ? 'ticker-up' : 'ticker-down'}>{variation >= 0 ? '▲' : '▼'} {Math.abs(variation).toFixed(2)}%</span></button><label className="header-market-review" title="Próxima revisión"><span>REVISAR</span><input type="time" value={reviewTime} onChange={event => updateMarketReviewTime(candidate.symbol, event.target.value)} aria-label={`Próxima revisión de ${candidate.symbol}`} />{reviewState === 'overdue' && <button type="button" className="header-market-reset" onClick={event => { event.stopPropagation(); updateMarketReviewTime(candidate.symbol, ''); }} aria-label={`Eliminar revisión de ${candidate.symbol}`} title="Eliminar revisión vencida">↻</button>}</label></article>; })}</div> : null;
   const statusBarMessage = paperSyncError || binanceLeverageError || activeMarketError;
   const binanceReady = Boolean(binanceLiveAccount?.healthy && binanceLiveAccount?.stream_connected);
   const binanceStatusClass = binanceReady
