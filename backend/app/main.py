@@ -7,6 +7,7 @@ import time
 from decimal import Decimal, ROUND_CEILING, ROUND_FLOOR
 from uuid import uuid4
 from urllib.parse import urlencode
+from zoneinfo import ZoneInfoNotFoundError
 
 from fastapi import Depends, FastAPI, HTTPException, WebSocket
 from fastapi.middleware.cors import CORSMiddleware
@@ -32,6 +33,7 @@ from app.paper_operations import PaperOperationStore
 from app.market_gateway import BinanceMarketGateway, SUPPORTED_INTERVALS
 from app.binance_execution import BinanceExecutionStore, BinanceExecutionSupervisor
 from app.binance_tp_worker import BinanceTakeProfitWorker
+from app.backtest_engine import MAX_BACKTEST_DAYS, fetch_binance_history, run_storycard_backtest, _bar_context
 
 settings = get_settings()
 engine = create_database_engine()
@@ -67,19 +69,22 @@ class FallbackProvider:
         )
 
 
-def _backtest(*, context: RequestContext, symbol: str, strategy: str, days: int = 30) -> dict[str, object]:
-    days = max(1, min(days, 365))
-    return {
-        "mode": "paper",
-        "symbol": symbol.upper(),
-        "strategy": strategy,
-        "days": days,
-        "trades": max(1, days // 3),
-        "win_rate": 0.58,
-        "net_pnl": 124.50,
-        "max_drawdown": -48.20,
-        "message": "Resultado demostrativo; conecta el motor histórico real en la siguiente iteración.",
-    }
+async def _backtest(*, context: RequestContext, symbol: str, strategy: str = "", storycard: dict[str, object] | None = None, interval: str = "5m", days: int = MAX_BACKTEST_DAYS) -> dict[str, object]:
+    del context
+    card = storycard if isinstance(storycard, dict) else {"events": []}
+    bars = await fetch_binance_history(symbol=symbol, interval=interval, days=days, base_url=settings.binance_base_url)
+    result = run_storycard_backtest(bars=bars, symbol=symbol, storycard={**card, "strategy": strategy}, timezone_name=str(card.get("timezone", "America/Mexico_City")))
+    result["strategy"] = strategy
+    return result
+
+
+async def _backtest_context(*, context: RequestContext, symbol: str, interval: str = "5m", days: int = MAX_BACKTEST_DAYS, offset: int = 0, limit: int = 500) -> dict[str, object]:
+    del context
+    bars = await fetch_binance_history(symbol=symbol, interval=interval, days=days, base_url=settings.binance_base_url)
+    offset = max(0, int(offset))
+    limit = max(1, min(int(limit), 1000))
+    selected = bars[offset : offset + limit]
+    return {"symbol": symbol.upper(), "interval": interval, "days": MAX_BACKTEST_DAYS, "offset": offset, "limit": limit, "total_bars": len(bars), "bars": [_bar_context(bars, offset + index, 9) for index in range(len(selected))]}
 
 
 def _open_order(*, context: RequestContext, symbol: str, side: str, quantity: float) -> dict[str, object]:
@@ -98,10 +103,17 @@ def _open_order(*, context: RequestContext, symbol: str, side: str, quantity: fl
 tool_registry.register(tool(
     name="trading.backtest",
     description="Run a paper backtest for a named trading strategy.",
-    input_schema={"type": "object", "properties": {"symbol": {"type": "string"}, "strategy": {"type": "string"}, "days": {"type": "integer"}}, "required": ["symbol", "strategy"]},
+    input_schema={"type": "object", "properties": {"symbol": {"type": "string"}, "strategy": {"type": "string"}, "interval": {"type": "string", "enum": ["1m", "5m", "15m"]}, "days": {"type": "integer", "maximum": 7}, "storycard": {"type": "object", "description": "Storycard with timezone and events. Events use weekday/time/action=open_long|open_short|close_all|observe and optional sl_percent, tp_percent, risk_usdt, notional and leverage."}}, "required": ["symbol", "storycard"]},
     permission=Permission.READ,
     permissions={"read"},
 )(_backtest))
+tool_registry.register(tool(
+    name="trading.backtest_context",
+    description="Read paginated historical candles and SSL context used by the seven-day backtest.",
+    input_schema={"type": "object", "properties": {"symbol": {"type": "string"}, "interval": {"type": "string", "enum": ["1m", "5m", "15m"]}, "days": {"type": "integer", "maximum": 7}, "offset": {"type": "integer"}, "limit": {"type": "integer", "maximum": 1000}}, "required": ["symbol"]},
+    permission=Permission.READ,
+    permissions={"read"},
+)(_backtest_context))
 tool_registry.register(tool(
     name="trading.open_order",
     description="Open a paper order after explicit user confirmation.",
@@ -145,6 +157,32 @@ class ChatInput(BaseModel):
     prompt: str = ""
     conversation_id: str | None = None
     confirm: bool = False
+
+
+class BacktestEventInput(BaseModel):
+    id: str | None = None
+    action: Literal["open_long", "open_short", "close", "close_all", "close_position", "observe"] = "observe"
+    weekday: str | int | None = None
+    time: str | None = None
+    timestamp: str | None = None
+    sl_percent: float = Field(default=0.2, gt=0, le=100)
+    tp_percent: float = Field(default=1.0, gt=0, le=1_000)
+    risk_usdt: float = Field(default=1.0, gt=0)
+    notional: float | None = Field(default=None, gt=0)
+    leverage: float = Field(default=1.0, gt=0)
+
+
+class BacktestStorycardInput(BaseModel):
+    timezone: str = "America/Mexico_City"
+    events: list[BacktestEventInput] = Field(default_factory=list, max_length=100)
+
+
+class BacktestInput(BaseModel):
+    symbol: str = Field(min_length=3, max_length=32)
+    interval: Literal["1m", "5m", "15m"] = "5m"
+    days: int = Field(default=7, ge=1, le=7)
+    strategy: str = Field(default="storycard", max_length=200)
+    storycard: BacktestStorycardInput
 
 
 class BinanceCredentialsInput(BaseModel):
@@ -322,6 +360,35 @@ def register(payload: RegisterInput) -> dict[str, object]:
 @app.get("/health")
 def health() -> dict[str, str]:
     return {"service": settings.app_name, "status": "ok", "environment": settings.app_env}
+
+
+@app.post("/trading/backtest")
+async def run_backtest(payload: BacktestInput, identity: AuthIdentity = Depends(identity_dependency(auth_service))) -> dict[str, object]:
+    """Run a read-only seven-day storycard backtest with real Binance history."""
+    del identity
+    try:
+        bars = await fetch_binance_history(symbol=payload.symbol, interval=payload.interval, days=payload.days, base_url=settings.binance_base_url)
+        return run_storycard_backtest(
+            bars=bars,
+            symbol=payload.symbol,
+            storycard=payload.storycard.model_dump(),
+            timezone_name=payload.storycard.timezone,
+        ) | {"strategy": payload.strategy, "interval": payload.interval}
+    except (httpx.HTTPError, ValueError, ZoneInfoNotFoundError) as exc:
+        raise HTTPException(status_code=502, detail=f"No se pudo ejecutar el backtest: {exc}") from exc
+
+
+@app.get("/trading/backtest/context/{symbol}")
+async def backtest_context(symbol: str, interval: Literal["1m", "5m", "15m"] = "5m", days: int = 7, offset: int = 0, limit: int = 500, identity: AuthIdentity = Depends(identity_dependency(auth_service))) -> dict[str, object]:
+    """Expose the same paginated OHLC + SSL context available to gm-agent."""
+    del identity
+    try:
+        bars = await fetch_binance_history(symbol=symbol, interval=interval, days=min(days, MAX_BACKTEST_DAYS), base_url=settings.binance_base_url)
+        offset = max(0, offset)
+        selected = bars[offset : offset + max(1, min(limit, 1000))]
+        return {"symbol": symbol.upper(), "interval": interval, "days": MAX_BACKTEST_DAYS, "offset": offset, "limit": limit, "total_bars": len(bars), "bars": [_bar_context(bars, offset + index, 9) for index in range(len(selected))]}
+    except (httpx.HTTPError, ValueError) as exc:
+        raise HTTPException(status_code=502, detail=f"No se pudo cargar el contexto histórico: {exc}") from exc
 
 
 @app.get("/trading/summary")
