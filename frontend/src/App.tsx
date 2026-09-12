@@ -379,8 +379,10 @@ function BalanceSummary({ paperBalance, revision = 0 }: { paperBalance: number; 
       if (ctraderResponse.status === 'fulfilled' && ctraderResponse.value.ok) setCtrader(await ctraderResponse.value.json() as CTraderAccount);
     };
     void load();
-    const timer = window.setInterval(() => void load(), 10_000);
-    return () => { active = false; window.clearInterval(timer); };
+    const closeStream = auth.accessToken ? createBinanceAccountStream(auth.accessToken, account => {
+      if (active) setBinance(account);
+    }) : () => undefined;
+    return () => { active = false; closeStream(); };
   }, [auth.accessToken, revision]);
   return <section className="balances-panel" aria-label="Balances"><div className="positions-panel-head"><div><span className="positions-kicker">ACCOUNT SUMMARY</span><h2>Balances</h2></div></div><div className="balances-table-wrap"><table className="balances-table"><thead><tr><th>Cuenta</th><th>Balance</th><th>Estado</th></tr></thead><tbody><tr><td>Paper</td><td>{paperBalance.toFixed(2)} USD</td><td><span className="stream-badge stream-good">Simulado</span></td></tr><tr><td>Binance</td><td>{binance?.futures_balance ?? '—'}</td><td><span className={`stream-badge ${binance?.healthy ? 'stream-good' : 'stream-bad'}`}>{binance?.healthy ? 'Saludable' : 'Sin conexión'}</span></td></tr><tr><td>cTrader</td><td>{ctrader?.balance == null ? '—' : `${ctrader.balance.toFixed(ctrader.money_digits ?? 2)} USD`}</td><td><span className={`stream-badge ${ctrader?.healthy ? 'stream-good' : 'stream-bad'}`}>{ctrader?.healthy ? 'Saludable' : 'Sin conexión'}</span></td></tr></tbody></table></div></section>;
 }
@@ -536,8 +538,10 @@ function CTraderAccountPanel({ revision = 0 }: { revision?: number }) {
       } finally { if (active) setLoading(false); }
     };
     void load();
-    const timer = window.setInterval(() => void load(), 10_000);
-    return () => { active = false; window.clearInterval(timer); };
+    const closeStream = auth.accessToken ? createBinanceAccountStream(auth.accessToken, payload => {
+      if (active) setAccount(payload);
+    }) : () => undefined;
+    return () => { active = false; closeStream(); };
   }, [auth.accessToken, revision]);
   const online = Boolean(account?.healthy && account?.stream_connected);
   return <section className="binance-account-panel ctrader-account-panel" aria-label="Estado de cTrader">
