@@ -97,6 +97,7 @@ class BinanceExecutionSupervisor:
         self._thread: threading.Thread | None = None
         self._status = {"enabled": settings.binance_execution_worker_enabled, "running": False, "last_cycle": None, "users": 0}
         self._lock = threading.Lock()
+        self._subscribed_users: set[str] = set()
 
     def start(self) -> None:
         if not self._settings.binance_execution_worker_enabled or self._thread is not None:
@@ -119,18 +120,37 @@ class BinanceExecutionSupervisor:
     def _run(self) -> None:
         with self._lock:
             self._status["running"] = True
-        delay = max(5, min(int(self._settings.binance_execution_poll_seconds), 120))
+        # This is only a low-frequency lifecycle sweep. Order/position state
+        # arrives through the private User Data Stream, never through this loop.
+        delay = max(30, min(int(self._settings.binance_execution_poll_seconds), 300))
         while not self._stop.is_set():
             try:
                 users = self._credentials.user_ids()
                 for user_id in users:
-                    # snapshot() starts/reuses the user's resilient User Data
-                    # Stream. No private endpoint is mutated by this call.
-                    account = self._monitors.snapshot(user_id)
-                    events = account.get("events") if isinstance(account.get("events"), list) else []
-                    self._store.reconcile_events(user_id, events)
+                    if user_id in self._subscribed_users:
+                        continue
+                    self._monitors.subscribe_events(user_id, lambda event, uid=user_id: self._on_account_event(uid, event))
+                    # snapshot() starts/reuses the resilient User Data Stream.
+                    self._monitors.snapshot(user_id)
+                    self._subscribed_users.add(user_id)
+                self._subscribed_users.intersection_update(users)
                 with self._lock:
                     self._status.update({"last_cycle": datetime.now(timezone.utc).isoformat(), "users": len(users)})
             except Exception:
                 logger.exception("binance_execution_supervisor_cycle_failed")
             self._stop.wait(delay)
+
+    def _on_account_event(self, user_id: str, event: dict[str, object]) -> None:
+        if event.get("type") != "ORDER_TRADE_UPDATE":
+            return
+        order = event.get("event")
+        if not isinstance(order, dict):
+            return
+        payload = order.get("o")
+        if not isinstance(payload, dict):
+            return
+        self._store.reconcile_events(user_id, [{
+            "client_order_id": payload.get("c"),
+            "status": payload.get("X"),
+            "exchange_order_id": payload.get("i"),
+        }])

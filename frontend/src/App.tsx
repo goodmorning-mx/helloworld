@@ -122,6 +122,53 @@ function createBinanceKlineStream(symbol: string, interval: string) {
   return controller;
 }
 
+type BinanceAccountStreamSubscriber = { onAccount: (account: BinanceAccount) => void; onIntents?: (intents: unknown) => void };
+const binanceAccountStreams = new Map<string, { subscribers: Set<BinanceAccountStreamSubscriber>; close: () => void }>();
+
+function createBinanceAccountStream(accessToken: string, onAccount: (account: BinanceAccount) => void, onIntents?: (intents: unknown) => void) {
+  let entry = binanceAccountStreams.get(accessToken);
+  if (!entry) {
+    const subscribers = new Set<BinanceAccountStreamSubscriber>();
+    let socket: WebSocket | null = null;
+    let reconnectTimer: number | null = null;
+    let stopped = false;
+    let delay = 1000;
+    const connect = () => {
+      if (stopped) return;
+      socket = new WebSocket(`${marketWsUrl}/trading/binance/stream?access_token=${encodeURIComponent(accessToken)}`);
+      socket.onopen = () => { delay = 1000; };
+      socket.onmessage = event => {
+        try {
+          const payload = JSON.parse(event.data) as { snapshot?: BinanceAccount; execution_intents?: unknown };
+          subscribers.forEach(subscriber => {
+            if (payload.snapshot) subscriber.onAccount(payload.snapshot);
+            if (payload.execution_intents) subscriber.onIntents?.(payload.execution_intents);
+          });
+        } catch { /* Ignore malformed frames and keep the stream alive. */ }
+      };
+      socket.onerror = () => socket?.close();
+      socket.onclose = () => {
+        socket = null;
+        if (stopped || subscribers.size === 0) return;
+        reconnectTimer = window.setTimeout(connect, delay);
+        delay = Math.min(delay * 2, 30_000);
+      };
+    };
+    entry = {
+      subscribers,
+      close: () => { stopped = true; if (reconnectTimer !== null) window.clearTimeout(reconnectTimer); socket?.close(); socket = null; binanceAccountStreams.delete(accessToken); },
+    };
+    binanceAccountStreams.set(accessToken, entry);
+    connect();
+  }
+  const subscriber = { onAccount, onIntents };
+  entry.subscribers.add(subscriber);
+  return () => {
+    entry?.subscribers.delete(subscriber);
+    if (entry && entry.subscribers.size === 0) entry.close();
+  };
+}
+
 // Broker contract limits used by paper trading until live symbol metadata is
 // available. The effective paper leverage is always the lower of the Lab
 // recommendation and this broker/symbol limit.
@@ -304,6 +351,7 @@ type BinanceAccount = {
   total_unrealized_pnl?: string | null; positions?: BinancePosition[];
   events?: Array<{ time?: string; type?: string; symbol?: string; status?: string }>;
 };
+type BinanceExecutionIntent = { id?: string; symbol?: string; side?: string; quantity?: number | string; entry_time?: number | string; entry_price?: number; stop_loss?: number; take_profit?: number; status?: string; created_at?: string };
 type BinanceSymbolConfig = { configured?: boolean; symbol?: string; margin_type?: string | null; leverage?: number | null; isolated_balance?: number | null; futures_balance?: number | string | null; error?: string | null };
 type CTraderAccount = {
   enabled?: boolean; configured?: boolean; healthy?: boolean; stream_connected?: boolean;
@@ -454,8 +502,10 @@ function BinanceAccountPanel({ revision = 0 }: { revision?: number }) {
       }
     };
     void load();
-    const timer = window.setInterval(() => void load(), 10_000);
-    return () => { active = false; window.clearInterval(timer); };
+    const closeStream = auth.accessToken ? createBinanceAccountStream(auth.accessToken, payload => {
+      if (active) setAccount(payload);
+    }) : () => undefined;
+    return () => { active = false; closeStream(); };
   }, [auth.accessToken, revision]);
   const online = Boolean(account?.healthy && account?.stream_connected);
   return <section className="binance-account-panel" aria-label="Estado de Binance">
@@ -672,7 +722,7 @@ function Workspace() {
   const [binanceTargetPercent, setBinanceTargetPercent] = useState(() => Number(localStorage.getItem('helloworld-binance-target-percent') ?? FIXED_BINANCE_TARGET_PERCENT) || FIXED_BINANCE_TARGET_PERCENT);
   const [riskBalancePreview, setRiskBalancePreview] = useState<number | null>(null);
   const [binanceLiveAccount, setBinanceLiveAccount] = useState<BinanceAccount | null>(null);
-  const [binanceExecutionIntents, setBinanceExecutionIntents] = useState<Array<{ id?: string; symbol?: string; side?: string; quantity?: number | string; entry_time?: number | string; entry_price?: number; stop_loss?: number; take_profit?: number; status?: string; created_at?: string }>>([]);
+  const [binanceExecutionIntents, setBinanceExecutionIntents] = useState<BinanceExecutionIntent[]>([]);
   const [broker, setBroker] = useState<'binance' | 'ctrader'>('binance');
   const [interval, setInterval] = useState<'1s' | '1m' | '3m' | '5m' | '15m'>('5m');
   const entryInterval = '1m' as const;
@@ -831,13 +881,12 @@ function Workspace() {
   useEffect(() => {
     if (broker !== 'binance' || !auth.accessToken) { setBinanceExecutionIntents([]); return; }
     let active = true;
-    const load = () => fetch(`${apiUrl}/trading/binance/execution-intents`, { headers: { Authorization: `Bearer ${auth.accessToken}` }, credentials: 'include' })
+    const loadInitial = () => fetch(`${apiUrl}/trading/binance/execution-intents`, { headers: { Authorization: `Bearer ${auth.accessToken}` }, credentials: 'include' })
       .then(response => response.ok ? response.json() as Promise<typeof binanceExecutionIntents> : Promise.reject(new Error('intents unavailable')))
       .then(intents => { if (active) setBinanceExecutionIntents(Array.isArray(intents) ? intents : []); })
       .catch(() => { if (active) setBinanceExecutionIntents([]); });
-    void load();
-    const timer = window.setInterval(load, 5_000);
-    return () => { active = false; window.clearInterval(timer); };
+    void loadInitial();
+    return () => { active = false; };
   }, [auth.accessToken, broker]);
 
   useEffect(() => {
@@ -857,13 +906,17 @@ function Workspace() {
   useEffect(() => {
     if (broker !== 'binance' || !auth.accessToken) { setBinanceLiveAccount(null); return; }
     let active = true;
-    const load = () => fetch(`${apiUrl}/trading/binance`, { headers: { Authorization: `Bearer ${auth.accessToken}` }, credentials: 'include' })
+    const loadInitial = () => fetch(`${apiUrl}/trading/binance`, { headers: { Authorization: `Bearer ${auth.accessToken}` }, credentials: 'include' })
       .then(response => response.ok ? response.json() as Promise<BinanceAccount> : Promise.reject(new Error('account unavailable')))
       .then(account => { if (active) setBinanceLiveAccount(account); })
       .catch(() => { if (active) setBinanceLiveAccount(null); });
-    void load();
-    const timer = window.setInterval(load, 5_000);
-    return () => { active = false; window.clearInterval(timer); };
+    void loadInitial();
+    const closeStream = createBinanceAccountStream(auth.accessToken, account => {
+      if (active) setBinanceLiveAccount(account);
+    }, intents => {
+      if (active && Array.isArray(intents)) setBinanceExecutionIntents(intents as BinanceExecutionIntent[]);
+    });
+    return () => { active = false; closeStream(); };
   }, [auth.accessToken, broker]);
 
   const applyBinanceLeverage = async () => {

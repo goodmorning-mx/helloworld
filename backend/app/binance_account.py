@@ -9,6 +9,7 @@ import json
 import logging
 import threading
 import time
+from typing import Callable
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
@@ -25,7 +26,7 @@ logger = logging.getLogger(__name__)
 
 
 class BinanceAccountMonitor:
-    def __init__(self, settings_or_key: Settings | str, api_secret: str | None = None, base_url: str | None = None):
+    def __init__(self, settings_or_key: Settings | str, api_secret: str | None = None, base_url: str | None = None, on_event: Callable[[dict[str, object]], None] | None = None):
         # Settings is retained for backwards-compatible unit tests. Runtime
         # monitors receive credentials belonging to exactly one authenticated user.
         if isinstance(settings_or_key, Settings):
@@ -35,7 +36,8 @@ class BinanceAccountMonitor:
         else:
             self._key = settings_or_key.strip()
             self._secret = (api_secret or "").strip()
-            self._base = (base_url or "https://fapi.binance.com").rstrip("/")
+        self._base = (base_url or "https://fapi.binance.com").rstrip("/")
+        self._on_event = on_event
         self._ws_base = "wss://fstream.binance.com/ws"
         if "testnet" in self._base:
             self._ws_base = "wss://stream.binancefuture.com/ws"
@@ -180,14 +182,10 @@ class BinanceAccountMonitor:
                     self._set(healthy=True, stream_connected=True, error=None)
                     retry = 1
                     last_keepalive = time.monotonic()
-                    last_account_refresh = time.monotonic()
                     while not self._stop.is_set():
                         if time.monotonic() - last_keepalive > 25 * 60:
                             self._keepalive(listen_key)
                             last_keepalive = time.monotonic()
-                        if time.monotonic() - last_account_refresh >= 15:
-                            self._refresh_account()
-                            last_account_refresh = time.monotonic()
                         try:
                             raw = socket.recv(timeout=2)
                         except TimeoutError:
@@ -251,6 +249,19 @@ class BinanceAccountMonitor:
                 self._snapshot["events"] = events[-20:]
                 self._snapshot["last_event"] = event_type
                 self._snapshot["last_update"] = item["time"]
+        if event_type in {"ACCOUNT_UPDATE", "ORDER_TRADE_UPDATE", "MARGIN_CALL", "listenKeyExpired"}:
+            self._emit_event({
+                "type": str(event_type), "event": event, "snapshot": self.snapshot(),
+                "backend_received_at_ms": int(time.time() * 1000),
+            })
+
+    def _emit_event(self, payload: dict[str, object]) -> None:
+        if self._on_event is None:
+            return
+        try:
+            self._on_event(payload)
+        except Exception:
+            logger.exception("Binance account event callback failed")
 
     @staticmethod
     def _position(row: dict) -> dict[str, object]:

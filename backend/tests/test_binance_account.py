@@ -66,6 +66,20 @@ def test_account_update_exposes_balance_position_and_order_event():
     assert snapshot["events"][0]["status"] == "FILLED"
 
 
+def test_account_events_are_emitted_immediately_for_realtime_consumers():
+    emitted = []
+    instance = BinanceAccountMonitor(Settings(
+        APIKEY="key", APISECRET="secret", BINANCE_BASE_URL="https://fapi.example.test",
+    ), on_event=emitted.append)
+    instance._handle_event({
+        "e": "ORDER_TRADE_UPDATE", "E": 123, "T": 122,
+        "o": {"s": "BTCUSDT", "S": "BUY", "X": "FILLED", "c": "helloworld_1", "i": 99},
+    })
+    assert emitted[0]["type"] == "ORDER_TRADE_UPDATE"
+    assert emitted[0]["event"]["o"]["i"] == 99
+    assert emitted[0]["backend_received_at_ms"] > 0
+
+
 def test_position_risk_projection_preserves_binance_risk_fields():
     projected = monitor()._position({
         "symbol": "BULLAUSDT", "positionAmt": "5", "entryPrice": "0.0743230",

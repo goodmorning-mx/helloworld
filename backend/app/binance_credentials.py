@@ -6,7 +6,9 @@ import base64
 import hashlib
 import logging
 import threading
+from collections import defaultdict
 from datetime import datetime, timezone
+from typing import Callable
 
 from cryptography.fernet import Fernet, InvalidToken
 from sqlalchemy import delete, insert, select, update
@@ -112,6 +114,7 @@ class BinanceMonitorManager:
         self._settings = settings
         self._monitors: dict[str, BinanceAccountMonitor] = {}
         self._fingerprints: dict[str, str] = {}
+        self._listeners: dict[str, set[Callable[[dict[str, object]], None]]] = defaultdict(set)
         self._lock = threading.RLock()
 
     def snapshot(self, user_id: str) -> dict[str, object]:
@@ -126,13 +129,35 @@ class BinanceMonitorManager:
             if monitor is None or self._fingerprints.get(user_id) != fingerprint:
                 if monitor is not None:
                     monitor.stop()
-                monitor = BinanceAccountMonitor(api_key, api_secret, self._settings.binance_base_url)
+                monitor = BinanceAccountMonitor(api_key, api_secret, self._settings.binance_base_url, on_event=lambda event, uid=user_id: self._publish(uid, event))
                 self._monitors[user_id] = monitor
                 self._fingerprints[user_id] = fingerprint
                 monitor.start()
         payload = monitor.snapshot()
         payload["configured"] = True
         return payload
+
+    def subscribe_events(self, user_id: str, listener: Callable[[dict[str, object]], None]) -> None:
+        with self._lock:
+            self._listeners[user_id].add(listener)
+
+    def unsubscribe_events(self, user_id: str, listener: Callable[[dict[str, object]], None]) -> None:
+        with self._lock:
+            listeners = self._listeners.get(user_id)
+            if listeners is None:
+                return
+            listeners.discard(listener)
+            if not listeners:
+                self._listeners.pop(user_id, None)
+
+    def _publish(self, user_id: str, event: dict[str, object]) -> None:
+        with self._lock:
+            listeners = list(self._listeners.get(user_id, ()))
+        for listener in listeners:
+            try:
+                listener(event)
+            except Exception:
+                logger.exception("Binance event listener failed user=%s", user_id)
 
     def symbol_config(self, user_id: str, symbol: str) -> dict[str, object]:
         credentials = self._store.get(user_id)
@@ -145,7 +170,7 @@ class BinanceMonitorManager:
             if monitor is None or self._fingerprints.get(user_id) != fingerprint:
                 if monitor is not None:
                     monitor.stop()
-                monitor = BinanceAccountMonitor(api_key, api_secret, self._settings.binance_base_url)
+                monitor = BinanceAccountMonitor(api_key, api_secret, self._settings.binance_base_url, on_event=lambda event, uid=user_id: self._publish(uid, event))
                 self._monitors[user_id] = monitor
                 self._fingerprints[user_id] = fingerprint
                 monitor.start()
@@ -168,7 +193,7 @@ class BinanceMonitorManager:
             if monitor is None or self._fingerprints.get(user_id) != fingerprint:
                 if monitor is not None:
                     monitor.stop()
-                monitor = BinanceAccountMonitor(api_key, api_secret, self._settings.binance_base_url)
+                monitor = BinanceAccountMonitor(api_key, api_secret, self._settings.binance_base_url, on_event=lambda event, uid=user_id: self._publish(uid, event))
                 self._monitors[user_id] = monitor
                 self._fingerprints[user_id] = fingerprint
                 monitor.start()
@@ -185,7 +210,7 @@ class BinanceMonitorManager:
             if monitor is None or self._fingerprints.get(user_id) != fingerprint:
                 if monitor is not None:
                     monitor.stop()
-                monitor = BinanceAccountMonitor(api_key, api_secret, self._settings.binance_base_url)
+                monitor = BinanceAccountMonitor(api_key, api_secret, self._settings.binance_base_url, on_event=lambda event, uid=user_id: self._publish(uid, event))
                 self._monitors[user_id] = monitor
                 self._fingerprints[user_id] = fingerprint
                 monitor.start()
@@ -241,7 +266,7 @@ class BinanceMonitorManager:
             if monitor is None or self._fingerprints.get(user_id) != fingerprint:
                 if monitor is not None:
                     monitor.stop()
-                monitor = BinanceAccountMonitor(api_key, api_secret, self._settings.binance_base_url)
+                monitor = BinanceAccountMonitor(api_key, api_secret, self._settings.binance_base_url, on_event=lambda event, uid=user_id: self._publish(uid, event))
                 self._monitors[user_id] = monitor
                 self._fingerprints[user_id] = fingerprint
                 monitor.start()

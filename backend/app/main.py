@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import asyncio
 import math
 import json
 import time
@@ -13,6 +14,7 @@ from fastapi import Depends, FastAPI, HTTPException, WebSocket
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 from typing import Literal
+from threading import Lock
 import httpx
 from openai import AsyncOpenAI
 from urllib.error import HTTPError
@@ -53,6 +55,8 @@ binance_market_gateway = BinanceMarketGateway()
 binance_execution_store = BinanceExecutionStore(engine)
 binance_execution_supervisor = BinanceExecutionSupervisor(settings, binance_credentials, binance_manager, binance_execution_store)
 binance_tp_worker = BinanceTakeProfitWorker(binance_manager, binance_execution_store, settings.binance_base_url)
+_binance_exchange_info_cache: tuple[float, dict[str, object]] | None = None
+_binance_exchange_info_lock = Lock()
 
 
 class FallbackProvider:
@@ -275,9 +279,19 @@ class BinanceTakeProfitUpdateInput(BaseModel):
 def _binance_public_execution_rules(symbol: str) -> tuple[float, float, float, float, int, int]:
     """Return live price and the current public exchange filters for a symbol."""
     base = settings.binance_base_url.rstrip("/")
-    exchange = httpx.get(f"{base}/fapi/v1/exchangeInfo", timeout=10)
-    exchange.raise_for_status()
-    item = next((value for value in exchange.json().get("symbols", []) if value.get("symbol") == symbol), None)
+    global _binance_exchange_info_cache
+    now = time.monotonic()
+    with _binance_exchange_info_lock:
+        cached = _binance_exchange_info_cache
+    if cached is None or now - cached[0] > 300:
+        exchange = httpx.get(f"{base}/fapi/v1/exchangeInfo", timeout=10)
+        exchange.raise_for_status()
+        payload = exchange.json()
+        with _binance_exchange_info_lock:
+            _binance_exchange_info_cache = (now, payload)
+    else:
+        payload = cached[1]
+    item = next((value for value in payload.get("symbols", []) if value.get("symbol") == symbol), None)
     if not item:
         raise RuntimeError(f"Binance no encontró el símbolo {symbol}.")
     filters = {str(value.get("filterType")): value for value in item.get("filters", [])}
@@ -452,10 +466,11 @@ def open_binance_real_operation(payload: BinanceRealOrderInput, identity: AuthId
         raise HTTPException(status_code=503, detail="El trading real de Binance está bloqueado en este entorno.")
     if not payload.confirmed:
         raise HTTPException(status_code=409, detail="Confirma explícitamente la operación real.")
+    started_at = time.perf_counter()
     symbol = payload.symbol.upper()
     order_side = "BUY" if payload.side == "LONG" else "SELL"
     close_side = "SELL" if order_side == "BUY" else "BUY"
-    live_price, step_size, tick_size, min_notional, _, quantity_precision = _binance_public_execution_rules(symbol)
+    live_price, step_size, tick_size, min_notional, price_precision, quantity_precision = _binance_public_execution_rules(symbol)
     if live_price <= 0 or min_notional <= 0:
         raise HTTPException(status_code=502, detail=f"No se pudieron cargar las reglas actuales de {symbol}.")
     # Add a tiny boundary buffer: an exact min-notional quantity can fall
@@ -480,25 +495,27 @@ def open_binance_real_operation(payload: BinanceRealOrderInput, identity: AuthId
     try:
         entry = binance_manager.place_market_order(identity.user_id, symbol, order_side, quantity, str(intent["client_order_id"]))
         binance_execution_store.update(intent["id"], identity.user_id, status="ENTRY_SUBMITTED", exchange_order_id=str(entry.get("orderId")))
-        # MARKET/RESULT can legally return avgPrice=0 while the fill is being
-        # projected. Read the just-filled position once so protection is based
-        # on Binance's actual entry and size, never on zero or stale UI data.
-        filled_position = binance_manager.position_risk(identity.user_id, symbol)
-        average_candidates = (filled_position.get("entryPrice"), entry.get("avgPrice"), entry.get("price"), live_price)
-        average_open = next((float(value) for value in average_candidates if value is not None and float(value) > 0), live_price)
-        actual_quantity = next((abs(float(value)) for value in (filled_position.get("positionAmt"), entry.get("executedQty"), quantity) if value is not None and float(value) > 0), quantity)
+        # RESULT normally contains the final MARKET fill. Use it immediately
+        # and only fall back to positionRisk when Binance returns a projected
+        # response with no average price/filled quantity. This removes a REST
+        # round trip from the normal protection path.
+        average_open = next((float(value) for value in (entry.get("avgPrice"), entry.get("price"), live_price) if value is not None and float(value) > 0), live_price)
+        actual_quantity = next((abs(float(value)) for value in (entry.get("executedQty"), quantity) if value is not None and float(value) > 0), quantity)
+        if not entry.get("avgPrice") or not entry.get("executedQty"):
+            filled_position = binance_manager.position_risk(identity.user_id, symbol)
+            average_open = next((float(value) for value in (filled_position.get("entryPrice"), average_open) if value is not None and float(value) > 0), average_open)
+            actual_quantity = next((abs(float(value)) for value in (filled_position.get("positionAmt"), actual_quantity) if value is not None and float(value) > 0), actual_quantity)
         quantity = _align_binance_value(actual_quantity, step_size, quantity_precision, ceiling=False)
         if quantity <= 0 or average_open <= 0:
             raise RuntimeError("Binance no devolvió una posición rellenada válida para proteger.")
         direction = 1 if payload.side == "LONG" else -1
         stop = average_open * (1 - direction * payload.stop_percent / 100)
         target = average_open * (1 + direction * payload.target_percent / 100)
-        _, _, current_tick_size, _, price_precision, _ = _binance_public_execution_rules(symbol)
         # Keep protective triggers on Binance's tick grid. A protective level
         # is biased away from the entry so rounding cannot turn it into an
         # immediately-triggering order.
-        stop = _align_binance_value(stop, current_tick_size or tick_size, price_precision, ceiling=payload.side == "SHORT")
-        target = _align_binance_value(target, current_tick_size or tick_size, price_precision, ceiling=payload.side == "LONG")
+        stop = _align_binance_value(stop, tick_size, price_precision, ceiling=payload.side == "SHORT")
+        target = _align_binance_value(target, tick_size, price_precision, ceiling=payload.side == "LONG")
         entry_time = int(float(entry.get("transactTime") or entry.get("updateTime") or time.time() * 1000) / 1000)
         binance_execution_store.update(intent["id"], identity.user_id, quantity=quantity, entry_time=entry_time, entry_price=average_open, stop_loss=stop, take_profit=target)
         stop_order = binance_manager.place_close_protection(identity.user_id, symbol, close_side, stop, f"{intent['client_order_id']}_sl", "STOP_MARKET")
@@ -511,7 +528,8 @@ def open_binance_real_operation(payload: BinanceRealOrderInput, identity: AuthId
             intent["id"], identity.user_id, status="PROTECTED", stop_algo_id=str(stop_order.get("algoId") or stop_order.get("clientAlgoId")),
             take_profit_algo_id=str(take_profit_order.get("algoId") or take_profit_order.get("clientAlgoId")), last_error=None,
         )
-        return {"broker": "binance", "mode": "real", "operation": saved, "entry": entry, "stop": stop, "target": target, "take_profit_mode": "native"}
+        latency_ms = round((time.perf_counter() - started_at) * 1000, 3)
+        return {"broker": "binance", "mode": "real", "operation": saved, "entry": entry, "stop": stop, "target": target, "take_profit_mode": "native", "backend_latency_ms": latency_ms}
     except Exception as exc:
         emergency_error = None
         if entry is not None:
@@ -795,6 +813,43 @@ async def binance_candles(
 @app.websocket("/market/binance/stream/{symbol}")
 async def binance_market_stream(websocket: WebSocket, symbol: str) -> None:
     await binance_market_gateway.subscribe(symbol, websocket)
+
+
+@app.websocket("/trading/binance/stream")
+async def binance_account_stream(websocket: WebSocket) -> None:
+    """Push private Binance account events without UI polling."""
+    token = websocket.query_params.get("access_token", "")
+    try:
+        identity = auth_service.identity_from_access_token(token)
+    except ValueError:
+        await websocket.close(code=4401, reason="Invalid access token")
+        return
+    await websocket.accept()
+    loop = asyncio.get_running_loop()
+    queue: asyncio.Queue[dict[str, object]] = asyncio.Queue(maxsize=64)
+
+    def on_event(event: dict[str, object]) -> None:
+        def enqueue() -> None:
+            if queue.full():
+                try:
+                    queue.get_nowait()
+                except asyncio.QueueEmpty:
+                    pass
+            queue.put_nowait(event)
+        loop.call_soon_threadsafe(enqueue)
+
+    binance_manager.subscribe_events(identity.user_id, on_event)
+    try:
+        snapshot = binance_manager.snapshot(identity.user_id)
+        await websocket.send_json({"type": "snapshot", "snapshot": snapshot, "execution_intents": binance_execution_store.list(identity.user_id), "server_time": int(time.time() * 1000)})
+        while True:
+            event = await queue.get()
+            event["execution_intents"] = binance_execution_store.list(identity.user_id)
+            await websocket.send_json(event)
+    except Exception:
+        pass
+    finally:
+        binance_manager.unsubscribe_events(identity.user_id, on_event)
 
 
 @app.get("/market/binance/symbol-info/{symbol}")
