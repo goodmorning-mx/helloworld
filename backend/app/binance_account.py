@@ -12,7 +12,7 @@ import time
 from typing import Callable
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
-from urllib.request import Request, urlopen
+import httpx
 
 from app.config import Settings
 
@@ -38,6 +38,7 @@ class BinanceAccountMonitor:
             self._secret = (api_secret or "").strip()
         self._base = (base_url or "https://fapi.binance.com").rstrip("/")
         self._on_event = on_event
+        self._http = httpx.Client(timeout=10, limits=httpx.Limits(max_connections=8, max_keepalive_connections=4), headers={"X-MBX-APIKEY": self._key, "Accept": "application/json"})
         self._ws_base = "wss://fstream.binance.com/ws"
         if "testnet" in self._base:
             self._ws_base = "wss://stream.binancefuture.com/ws"
@@ -63,6 +64,7 @@ class BinanceAccountMonitor:
         if self._thread is not None:
             self._thread.join(timeout=3)
         self._thread = None
+        self._http.close()
 
     def snapshot(self) -> dict[str, object]:
         with self._lock:
@@ -294,10 +296,9 @@ class BinanceAccountMonitor:
             params["recvWindow"] = 5000
             unsigned = urlencode(params)
             params["signature"] = hmac.new(self._secret.encode(), unsigned.encode(), hashlib.sha256).hexdigest()
-        request = Request(f"{self._base}{path}?{urlencode(params)}", method=method,
-                          headers={"X-MBX-APIKEY": self._key, "Accept": "application/json"})
-        with urlopen(request, timeout=10) as response:
-            return json.loads(response.read())
+        response = self._http.request(method, f"{self._base}{path}", params=params)
+        response.raise_for_status()
+        return response.json()
 
     def _set_error(self, exc: Exception) -> None:
         kind, title, message, action = self._friendly_error(exc)
@@ -307,9 +308,9 @@ class BinanceAccountMonitor:
     @staticmethod
     def _friendly_error(exc: Exception) -> tuple[str, str, str, str]:
         provider_code = None
-        if isinstance(exc, HTTPError):
+        if isinstance(exc, (HTTPError, httpx.HTTPStatusError)):
             try:
-                payload = json.loads(exc.read().decode("utf-8"))
+                payload = exc.response.json() if isinstance(exc, httpx.HTTPStatusError) else json.loads(exc.read().decode("utf-8"))
                 provider_code = payload.get("code")
             except (ValueError, UnicodeDecodeError, OSError):
                 pass

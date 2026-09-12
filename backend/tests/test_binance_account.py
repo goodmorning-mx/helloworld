@@ -1,7 +1,8 @@
 import hashlib
 import hmac
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, urlparse, urlencode
 from urllib.error import HTTPError
+from urllib.request import Request
 
 from app.binance_account import BinanceAccountMonitor
 from app.config import Settings
@@ -18,15 +19,15 @@ def test_signed_binance_request_has_valid_signature(monkeypatch):
     captured = {}
 
     class Response:
-        def __enter__(self): return self
-        def __exit__(self, *args): pass
-        def read(self): return b"{}"
+        def raise_for_status(self): pass
+        def json(self): return {}
 
-    def fake_urlopen(request, timeout):
-        captured["request"] = request
+    def fake_request(method, url, params=None):
+        from urllib.parse import urlunparse
+        captured["request"] = Request(urlunparse(("https", "fapi.example.test", "/fapi/v2/account", "", urlencode(params or {}), "")), method=method)
         return Response()
 
-    monkeypatch.setattr("app.binance_account.urlopen", fake_urlopen)
+    monkeypatch.setattr(instance._http, "request", fake_request)
     instance._request("GET", "/fapi/v2/account", {"foo": "bar"}, signed=True)
     query = parse_qs(urlparse(captured["request"].full_url).query)
     unsigned = "&".join(f"{key}={query[key][0]}" for key in ("foo", "timestamp", "recvWindow"))
