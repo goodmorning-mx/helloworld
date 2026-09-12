@@ -2600,7 +2600,7 @@ function Workspace() {
       return `${position.symbol ?? '—'} ${side} · PNL ${pnl >= 0 ? '+' : ''}${pnl.toFixed(2)} USDT`;
     }).join(' · ')
     : '';
-  const scannerStatusBar = broker === 'binance' ? <div className="header-market-scanner" aria-label="Market scanner Binance">{activeMarketSymbols.map(candidate => <button key={candidate.symbol} type="button" className={`header-market-item ${candidate.symbol === symbol ? 'active' : ''}`} onClick={() => { setLabRecommendations(null); setSymbol(candidate.symbol); }}><b>{candidate.symbol}</b><span>Σ {candidate.variation_sum_pct.toFixed(2)}%</span></button>)}</div> : null;
+  const scannerStatusBar = broker === 'binance' ? <div className="header-market-scanner" aria-label="Market scanner Binance">{activeMarketSymbols.map(candidate => { const variation = candidate.variation_sum_pct; return <button key={candidate.symbol} type="button" className={`header-market-item ${candidate.symbol === symbol ? 'active' : ''}`} onClick={() => { setLabRecommendations(null); setSymbol(candidate.symbol); }}><b>{candidate.symbol}</b><span className={variation >= 0 ? 'ticker-up' : 'ticker-down'}>{variation >= 0 ? '▲' : '▼'} {Math.abs(variation).toFixed(2)}%</span></button>; })}</div> : null;
   const statusBarMessage = paperSyncError || binanceLeverageError || activeMarketError;
   const binanceReady = Boolean(binanceLiveAccount?.healthy && binanceLiveAccount?.stream_connected);
   const binanceStatusClass = binanceReady
