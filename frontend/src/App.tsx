@@ -68,6 +68,43 @@ function mergeTickBar(bars: Array<{ time: UTCTimestamp; open: number; high: numb
 
 type LiveBar = { time: UTCTimestamp; open: number; high: number; low: number; close: number };
 type BinanceLivePrice = { symbol: string; price: number; time: number; receivedAt: number };
+type ChartEventMarker = { id: string; symbol: string; timestamp: number; title: string; description: string; color: string; source: 'manual' | 'ai' };
+
+function EventMarkersPanel({ activeSymbol, apiUrl, accessToken, events, onChange, onClose }: { activeSymbol: string; apiUrl: string; accessToken: string | null; events: ChartEventMarker[]; onChange: (events: ChartEventMarker[]) => void; onClose: () => void }) {
+  const [when, setWhen] = useState(() => { const now = new Date(); now.setSeconds(0, 0); return new Date(now.getTime() - now.getTimezoneOffset() * 60000).toISOString().slice(0, 16); });
+  const [title, setTitle] = useState('Evento');
+  const [description, setDescription] = useState('');
+  const [color, setColor] = useState('#f5b84b');
+  const [busy, setBusy] = useState(false);
+  const [message, setMessage] = useState('');
+  const add = (marker: ChartEventMarker) => onChange([...events, marker].sort((a, b) => a.timestamp - b.timestamp));
+  const addManual = () => {
+    const timestamp = new Date(when).getTime();
+    if (!Number.isFinite(timestamp) || !title.trim()) return;
+    add({ id: `event-${Date.now()}`, symbol: activeSymbol, timestamp: Math.floor(timestamp / 1000), title: title.trim(), description: description.trim(), color, source: 'manual' });
+    setMessage('Evento agregado al gráfico.');
+  };
+  const askAi = async () => {
+    if (!accessToken) return;
+    setBusy(true); setMessage('La IA está analizando el contexto…');
+    try {
+      const response = await fetch(`${apiUrl}/agent/chat`, { method: 'POST', headers: { Authorization: `Bearer ${accessToken}`, 'Content-Type': 'application/json' }, credentials: 'include', body: JSON.stringify({ prompt: `Para ${activeSymbol}, propón hasta 5 eventos relevantes para marcar en el gráfico actual. Devuelve SOLO un JSON array válido, sin markdown, con objetos {"timestamp":"ISO-8601", "title":"短", "description":"...", "color":"#hex"}. Usa únicamente momentos que puedan ubicarse en el contexto de mercado disponible.` }) });
+      const payload = await response.json() as { content?: string; detail?: string };
+      if (!response.ok) throw new Error(payload.detail ?? 'La IA no respondió.');
+      const raw = payload.content?.match(/\[[\s\S]*\]/)?.[0];
+      const proposed = raw ? JSON.parse(raw) as Array<{ timestamp?: string; title?: string; description?: string; color?: string }> : [];
+      const parsed = proposed.flatMap((item, index) => {
+        const timestamp = item.timestamp ? new Date(item.timestamp).getTime() : NaN;
+        return Number.isFinite(timestamp) && item.title ? [{ id: `ai-event-${Date.now()}-${index}`, symbol: activeSymbol, timestamp: Math.floor(timestamp / 1000), title: item.title.slice(0, 80), description: (item.description ?? '').slice(0, 240), color: /^#[0-9a-f]{6}$/i.test(item.color ?? '') ? item.color as string : '#a78bfa', source: 'ai' as const }] : [];
+      });
+      if (!parsed.length) throw new Error('La IA no devolvió eventos en formato válido.');
+      onChange([...events, ...parsed].sort((a, b) => a.timestamp - b.timestamp));
+      setMessage(`${parsed.length} evento(s) IA agregado(s).`);
+    } catch (error) { setMessage(error instanceof Error ? error.message : 'No se pudieron crear eventos con IA.'); }
+    finally { setBusy(false); }
+  };
+  return <div className="event-markers-backdrop" role="presentation" onClick={onClose}><section className="event-markers-panel" role="dialog" aria-modal="true" aria-label="Eventos del gráfico" onClick={event => event.stopPropagation()}><div className="event-markers-head"><div><span className="positions-kicker">CHART · EVENTOS</span><h2>Marcadores de eventos · {activeSymbol}</h2></div><button type="button" onClick={onClose} aria-label="Cerrar">×</button></div><p className="event-markers-help">Marca momentos precisos como miércoles 7:35. La IA puede proponer eventos usando el contexto disponible; revísalos antes de conservarlos.</p><div className="event-markers-form"><label>Momento<input type="datetime-local" value={when} onChange={event => setWhen(event.target.value)} /></label><label>Título<input value={title} onChange={event => setTitle(event.target.value)} placeholder="Ej. Confirmación de entrada" /></label><label>Descripción<input value={description} onChange={event => setDescription(event.target.value)} placeholder="Nota del evento" /></label><label>Color<input type="color" value={color} onChange={event => setColor(event.target.value)} /></label><button type="button" onClick={addManual}>Agregar evento</button><button type="button" className="event-markers-ai" onClick={() => void askAi()} disabled={busy || !accessToken}>{busy ? 'Analizando…' : 'Proponer con IA'}</button></div>{message && <p className="event-markers-message">{message}</p>}<div className="event-markers-list">{events.filter(event => event.symbol === activeSymbol).map(event => <div key={event.id} className="event-marker-row"><span style={{ color: event.color }}>●</span><time>{new Date(event.timestamp * 1000).toLocaleString('es-MX')}</time><strong>{event.title}</strong><small>{event.description || 'Sin descripción'} · {event.source === 'ai' ? 'IA' : 'Manual'}</small><button type="button" onClick={() => onChange(events.filter(item => item.id !== event.id))} aria-label={`Eliminar ${event.title}`}>×</button></div>)}</div></section></div>;
+}
 function upsertLiveBar(bars: LiveBar[], next: LiveBar) {
   const last = bars[bars.length - 1];
   if (!last || next.time > last.time) {
@@ -798,6 +835,13 @@ function Workspace() {
   type ChartCanvas = 'entry' | 'context';
   type Drawing = { id?: string; symbol?: string; type: 'line' | 'ruler' | 'long' | 'short' | 'zoom'; start: ChartPoint; end: ChartPoint; stop?: ChartPoint; target?: ChartPoint; chart?: ChartCanvas; paper?: boolean; real?: boolean; closed?: boolean; closeReason?: 'TP' | 'SL' | 'MANUAL'; status?: 'OPEN' | 'CLOSED - WIN' | 'CLOSED - FAILED'; riskPercent?: number; quantity?: number; notional?: number; margin?: number; pnl?: number };
   const [drawings, setDrawings] = useState<Drawing[]>([]);
+  const [chartEvents, setChartEvents] = useState<ChartEventMarker[]>(() => {
+    try {
+      const stored = JSON.parse(localStorage.getItem('helloworld-chart-events') ?? '[]') as unknown;
+      return Array.isArray(stored) ? stored.filter(item => item && typeof item === 'object') as ChartEventMarker[] : [];
+    } catch { return []; }
+  });
+  const [showEventMarkers, setShowEventMarkers] = useState(false);
   const [drawingStart, setDrawingStart] = useState<ChartPoint | null>(null);
   const [drawingEnd, setDrawingEnd] = useState<ChartPoint | null>(null);
   const [resizeStart, setResizeStart] = useState<{ index: number; endpoint: 'start' | 'end' | 'stop' | 'target'; source?: 'paper' | 'binance' } | null>(null);
@@ -839,6 +883,10 @@ function Workspace() {
   const [activeMarketLoading, setActiveMarketLoading] = useState(false);
   const [activeMarketError, setActiveMarketError] = useState('');
   const selectableSymbols = [...new Set([...brokerSymbols, ...activeMarketSymbols.map(candidate => candidate.symbol)])];
+
+  useEffect(() => {
+    localStorage.setItem('helloworld-chart-events', JSON.stringify(chartEvents));
+  }, [chartEvents]);
 
   useEffect(() => {
     let interval = 0;
@@ -1757,9 +1805,9 @@ function Workspace() {
   }
 
   function renderSessionIndicator() {
-    if (!showSessions || !chartRef.current) return null;
+    if (!showSessions || !chartRef.current) return renderChartEventMarkers('entry');
     const range = chartRef.current.timeScale().getVisibleRange();
-    if (!range) return null;
+    if (!range) return renderChartEventMarkers('entry');
     const from = timeNumber(range.from) - 2 * 86400;
     const to = timeNumber(range.to) + 2 * 86400;
     const events: Array<{ x: number; color: string; label: string; date: string }> = [];
@@ -1776,7 +1824,7 @@ function Workspace() {
         });
       });
     }
-    return <g className="session-indicator">{events.map((event, index) => <g key={`${event.label}-${event.x}-${index}`}><line x1={event.x} y1="0" x2={event.x} y2={stageSize.height} stroke={event.color} className="session-line" /><text x={event.x + 4} y="18" fill={event.color} className="session-label"><tspan x={event.x + 4} dy="0">{event.label}</tspan><tspan x={event.x + 4} dy="26">{event.date}</tspan></text></g>)}</g>;
+    return <><g className="session-indicator">{events.map((event, index) => <g key={`${event.label}-${event.x}-${index}`}><line x1={event.x} y1="0" x2={event.x} y2={stageSize.height} stroke={event.color} className="session-line" /><text x={event.x + 4} y="18" fill={event.color} className="session-label"><tspan x={event.x + 4} dy="0">{event.label}</tspan><tspan x={event.x + 4} dy="26">{event.date}</tspan></text></g>)}</g>{renderChartEventMarkers('entry')}</>;
   }
 
   function renderPriceIndicators(canvas: ChartCanvas) {
@@ -1852,11 +1900,27 @@ function Workspace() {
     return <g className="ny-interest-markers">{markers.map((marker, index) => <circle key={`${marker.x}-${index}`} cx={marker.x} cy={marker.y} r="6" className="ny-interest-marker" />)}</g>;
   }
 
+  function renderChartEventMarkers(canvas: ChartCanvas) {
+    const chart = canvas === 'context' ? overviewChartRef.current : chartRef.current;
+    const candles = canvas === 'context' ? overviewCandlesRef.current : candlesRef.current;
+    const bars = canvas === 'context' ? overviewBarsRef.current : candleBarsRef.current;
+    const height = canvas === 'context' ? overviewSize.height : stageSize.height;
+    if (!chart || !candles || !bars.length || !chartEvents.length) return null;
+    const visibleBars = renderBars(bars, canvas === 'context' ? MAX_CONTEXT_RENDER_BARS : MAX_ENTRY_RENDER_BARS);
+    const markers = chartEvents.filter(event => event.symbol === symbol).flatMap(event => {
+      const bar = visibleBars.reduce((closest, candidate) => Math.abs(Number(candidate.time) - event.timestamp) < Math.abs(Number(closest.time) - event.timestamp) ? candidate : closest, visibleBars[0]);
+      const x = chart.timeScale().timeToCoordinate(bar.time);
+      const y = candles.priceToCoordinate(bar.close);
+      return x === null || x === undefined || y === null || y === undefined ? [] : [{ event, x, y: Math.max(20, Math.min(height - 20, y)) }];
+    });
+    return <g className="chart-event-markers">{markers.map(({ event, x, y }) => <g key={`${canvas}-${event.id}`} className="chart-event-marker" pointerEvents="all"><line x1={x} y1="0" x2={x} y2={height} stroke={event.color} /><circle cx={x} cy={y} r="6" fill={event.color} /><path d={`M ${x - 5} ${y - 13} L ${x + 5} ${y - 13} L ${x} ${y - 5} Z`} fill={event.color} /><text x={x + 8} y={Math.max(16, y - 15)} fill={event.color}>{event.title}</text><title>{`${event.title} · ${new Date(event.timestamp * 1000).toLocaleString('es-MX')}${event.description ? ` · ${event.description}` : ''}`}</title></g>)}</g>;
+  }
+
   function renderOverviewSessions() {
     void overviewRevision;
-    if (!showSessions || !overviewChartRef.current) return null;
+    if (!showSessions || !overviewChartRef.current) return renderChartEventMarkers('context');
     const range = overviewChartRef.current.timeScale().getVisibleRange();
-    if (!range) return null;
+    if (!range) return renderChartEventMarkers('context');
     const from = timeNumber(range.from) - 2 * 86400;
     const to = timeNumber(range.to) + 2 * 86400;
     const events: Array<{ x: number; color: string; label: string; date: string }> = [];
@@ -1868,7 +1932,7 @@ function Workspace() {
         if (x !== null && x !== undefined) events.push({ x, color: session.color, label: `${session.name} ${type}`, date: sessionDateLabel(eventTime, timezone) });
       }));
     }
-    return <g className="session-indicator">{events.map((event, index) => <g key={`${event.label}-${event.x}-${index}`}><line x1={event.x} y1="0" x2={event.x} y2={overviewSize.height} stroke={event.color} className="session-line" /><text x={event.x + 4} y="18" fill={event.color} className="session-label"><tspan x={event.x + 4} dy="0">{event.label}</tspan><tspan x={event.x + 4} dy="26">{event.date}</tspan></text></g>)}</g>;
+    return <><g className="session-indicator">{events.map((event, index) => <g key={`${event.label}-${event.x}-${index}`}><line x1={event.x} y1="0" x2={event.x} y2={overviewSize.height} stroke={event.color} className="session-line" /><text x={event.x + 4} y="18" fill={event.color} className="session-label"><tspan x={event.x + 4} dy="0">{event.label}</tspan><tspan x={event.x + 4} dy="26">{event.date}</tspan></text></g>)}</g>{renderChartEventMarkers('context')}</>;
   }
 
   function renderOverviewInterestMarkers() {
@@ -2682,6 +2746,7 @@ function Workspace() {
   const labButton = <button className="indicator-bar-button" onClick={() => setShowIndicatorSettings(true)} aria-label="Configurar indicadores" title="Indicadores">◌</button>;
   const riskEngineButton = <button className="indicator-bar-button" onClick={() => setShowRiskEngine(true)} aria-label="Abrir Risk Engine" title="Risk Engine">⚖</button>;
   const pnlCalendarButton = <button className="indicator-bar-button" onClick={() => setShowPnlCalendar(true)} aria-label="Abrir calendario PNL" title="Calendario PNL">▦</button>;
+  const eventMarkersButton = <button className={`indicator-bar-button ${chartEvents.some(event => event.symbol === symbol) ? 'indicator-toggle-active' : ''}`} onClick={() => setShowEventMarkers(true)} aria-label="Abrir eventos del gráfico" title="Eventos">✦</button>;
   const trainingTodayKey = calendarDayKey(Math.floor(Date.now() / 1000) as UTCTimestamp);
   const trainingOperations = paperPositions.filter(position => calendarDayKey(position.end.time) === trainingTodayKey);
   const trainingPnl = trainingOperations.filter(position => position.closed).reduce((sum, position) => sum + paperPnl(position), 0);
@@ -2733,10 +2798,10 @@ function Workspace() {
   const desktopHeader = <div className="symbol-bar"><select className={`broker-select ${broker === 'binance' ? binanceStatusClass : ''}`} value={broker} onChange={event => { const next = event.target.value as 'binance' | 'ctrader'; setBroker(next); setSymbol(next === 'ctrader' ? 'AUDUSD' : 'BTCUSDT'); }} aria-label="Broker"><option value="binance">Binance</option><option value="ctrader">cTrader</option></select><select className="symbol-select" value={symbol} onChange={event => setSymbol(event.target.value)} aria-label="Símbolo">
     {selectableSymbols.map(option => <option key={option}>{option}</option>)}
   </select><select className="interval-select" value={interval} onChange={event => setInterval(event.target.value as typeof interval)} aria-label="Intervalo de contexto">{(['1s', '1m', '3m', '5m', '15m'] as const).map(value => <option key={value} value={value}>{value}</option>)}</select>{scannerStatusBar}{broker === 'binance' && <>{productionPositionLabel && <span className={`production-position-summary ${productionPositions.some(position => Number(position.unrealized_pnl ?? 0) >= 0) ? 'production-profit' : 'production-loss'}`}>{productionPositionLabel}</span>}</>}{statusBarMessage && <span className="header-status-error" role="status" title={statusBarMessage}>⚠ {statusBarMessage}</span>}<div className="chart-tools" aria-label="Herramientas del gráfico">
-    {labButton}{riskEngineButton}{pnlCalendarButton}<button className={`indicator-bar-button ${showHeikinAshi ? 'indicator-toggle-active' : ''}`} onClick={() => setShowHeikinAshi(value => !value)} aria-pressed={showHeikinAshi} aria-label="Alternar Heikin Ashi" title="Heikin Ashi">HA</button><button className={!tool ? 'tool-active' : ''} onClick={() => setTool(null)} aria-label="Seleccionar y navegar" title="Seleccionar y navegar">↖</button>
+    {labButton}{riskEngineButton}{pnlCalendarButton}{eventMarkersButton}<button className={`indicator-bar-button ${showHeikinAshi ? 'indicator-toggle-active' : ''}`} onClick={() => setShowHeikinAshi(value => !value)} aria-pressed={showHeikinAshi} aria-label="Alternar Heikin Ashi" title="Heikin Ashi">HA</button><button className={!tool ? 'tool-active' : ''} onClick={() => setTool(null)} aria-label="Seleccionar y navegar" title="Seleccionar y navegar">↖</button>
     {([['line', '╱', 'Línea'], ['ruler', '▥', 'Regla'], ['long', 'L', 'Long'], ['short', 'S', 'Short'], ['zoom', '⌗', 'Zoom lazo']] as const).map(([key, icon, label]) => <button key={key} className={tool === key ? 'tool-active' : ''} onClick={() => chooseTool(key)} aria-label={label} title={label}>{icon}</button>)}<button onClick={() => { resetChartZoom('entry'); resetChartZoom('context'); }} aria-label="Restablecer zoom" title="Restablecer zoom">↺</button>
     <button onClick={() => setDrawings(current => current.filter(drawing => drawing.paper))} aria-label="Borrar dibujos" title="Borrar dibujos">×</button>
-  </div>{profileButton}{showRiskEngine && <RiskEngineModal onClose={() => setShowRiskEngine(false)} />}<button className="logout-button" onClick={() => void auth.logout()} aria-label="Cerrar sesión">Salir</button></div>;
+  </div>{profileButton}{showRiskEngine && <RiskEngineModal onClose={() => setShowRiskEngine(false)} />}{showEventMarkers && <EventMarkersPanel activeSymbol={symbol} apiUrl={apiUrl} accessToken={auth.accessToken} events={chartEvents} onChange={setChartEvents} onClose={() => setShowEventMarkers(false)} />}<button className="logout-button" onClick={() => void auth.logout()} aria-label="Cerrar sesión">Salir</button></div>;
 
     const scannerStatus = (candidateSymbol: string) => {
       const operation = trainingOperations.filter(position => position.symbol === candidateSymbol).sort((a, b) => Number(b.start.time) - Number(a.start.time))[0];
