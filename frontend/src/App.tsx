@@ -1916,6 +1916,7 @@ function Workspace() {
   }
 
   function renderChartEventMarkers(canvas: ChartCanvas) {
+    if (chartEventsPaused) return null;
     const chart = canvas === 'context' ? overviewChartRef.current : chartRef.current;
     const candles = canvas === 'context' ? overviewCandlesRef.current : candlesRef.current;
     const bars = canvas === 'context' ? overviewBarsRef.current : candleBarsRef.current;
@@ -2761,7 +2762,7 @@ function Workspace() {
   const labButton = <button className="indicator-bar-button" onClick={() => setShowIndicatorSettings(true)} aria-label="Configurar indicadores" title="Indicadores">◌</button>;
   const riskEngineButton = <button className="indicator-bar-button" onClick={() => setShowRiskEngine(true)} aria-label="Abrir Risk Engine" title="Risk Engine">⚖</button>;
   const pnlCalendarButton = <button className="indicator-bar-button" onClick={() => setShowPnlCalendar(true)} aria-label="Abrir calendario PNL" title="Calendario PNL">▦</button>;
-  const eventMarkersButton = <><button className={`indicator-bar-button ${chartEventRules.some(event => event.symbol === symbol) ? 'indicator-toggle-active' : ''}`} onClick={() => setShowEventMarkers(true)} aria-label="Abrir eventos condicionales" title="Eventos condicionales">✦</button><button className={`indicator-bar-button ${chartEventsPaused ? 'event-rules-paused' : ''}`} onClick={() => setChartEventsPaused(value => !value)} aria-pressed={chartEventsPaused} aria-label={chartEventsPaused ? 'Activar recomendaciones' : 'Desactivar recomendaciones'} title={chartEventsPaused ? 'Activar recomendaciones' : 'Desactivar recomendaciones'}>{chartEventsPaused ? '▶' : 'Ⅱ'}</button></>;
+  const eventMarkersButton = <><button className={`indicator-bar-button ${chartEventRules.some(event => event.symbol === symbol) ? 'indicator-toggle-active' : ''}`} onClick={() => setShowEventMarkers(true)} aria-label="Abrir eventos condicionales" title="Eventos condicionales">✦</button><button className={`indicator-bar-button ${chartEventsPaused ? 'event-rules-paused' : ''}`} onClick={() => setChartEventsPaused(value => !value)} aria-pressed={chartEventsPaused} aria-label={chartEventsPaused ? 'Mostrar recomendaciones' : 'Ocultar recomendaciones'} title={chartEventsPaused ? 'Mostrar recomendaciones' : 'Ocultar recomendaciones'}>{chartEventsPaused ? '▶' : '✕'}</button></>;
   const trainingTodayKey = calendarDayKey(Math.floor(Date.now() / 1000) as UTCTimestamp);
   const trainingOperations = paperPositions.filter(position => calendarDayKey(position.end.time) === trainingTodayKey);
   const trainingPnl = trainingOperations.filter(position => position.closed).reduce((sum, position) => sum + paperPnl(position), 0);
