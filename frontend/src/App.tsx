@@ -68,42 +68,40 @@ function mergeTickBar(bars: Array<{ time: UTCTimestamp; open: number; high: numb
 
 type LiveBar = { time: UTCTimestamp; open: number; high: number; low: number; close: number };
 type BinanceLivePrice = { symbol: string; price: number; time: number; receivedAt: number };
-type ChartEventMarker = { id: string; symbol: string; timestamp: number; title: string; description: string; color: string; source: 'manual' | 'ai' };
+type EventConditionField = 'price.close' | 'price.open' | 'price.high' | 'price.low' | 'ssl.direction' | 'ssl.up' | 'ssl.down' | 'rsi.value' | 'tracker.h2' | 'tracker.h1' | 'tracker.l1' | 'tracker.l2';
+type EventConditionOperator = 'equals' | 'not_equals' | 'less_than' | 'less_or_equal' | 'greater_than' | 'greater_or_equal' | 'crosses_above' | 'crosses_below';
+type EventCondition = { field: EventConditionField; operator: EventConditionOperator; value: number | string };
+type ChartEventRule = { id: string; symbol: string; name: string; logic: 'AND' | 'OR'; conditions: EventCondition[]; color: string; enabled: boolean; source: 'manual' | 'ai' };
+type ChartEventOccurrence = { id: string; ruleId: string; symbol: string; timestamp: number; price: number; title: string; description: string; color: string };
 
-function EventMarkersPanel({ activeSymbol, apiUrl, accessToken, events, onChange, onClose }: { activeSymbol: string; apiUrl: string; accessToken: string | null; events: ChartEventMarker[]; onChange: (events: ChartEventMarker[]) => void; onClose: () => void }) {
-  const [when, setWhen] = useState(() => { const now = new Date(); now.setSeconds(0, 0); return new Date(now.getTime() - now.getTimezoneOffset() * 60000).toISOString().slice(0, 16); });
-  const [title, setTitle] = useState('Evento');
-  const [description, setDescription] = useState('');
-  const [color, setColor] = useState('#f5b84b');
-  const [busy, setBusy] = useState(false);
-  const [message, setMessage] = useState('');
-  const add = (marker: ChartEventMarker) => onChange([...events, marker].sort((a, b) => a.timestamp - b.timestamp));
-  const addManual = () => {
-    const timestamp = new Date(when).getTime();
-    if (!Number.isFinite(timestamp) || !title.trim()) return;
-    add({ id: `event-${Date.now()}`, symbol: activeSymbol, timestamp: Math.floor(timestamp / 1000), title: title.trim(), description: description.trim(), color, source: 'manual' });
-    setMessage('Evento agregado al gráfico.');
-  };
-  const askAi = async () => {
-    if (!accessToken) return;
-    setBusy(true); setMessage('La IA está analizando el contexto…');
-    try {
-      const response = await fetch(`${apiUrl}/agent/chat`, { method: 'POST', headers: { Authorization: `Bearer ${accessToken}`, 'Content-Type': 'application/json' }, credentials: 'include', body: JSON.stringify({ prompt: `Para ${activeSymbol}, propón hasta 5 eventos relevantes para marcar en el gráfico actual. Devuelve SOLO un JSON array válido, sin markdown, con objetos {"timestamp":"ISO-8601", "title":"短", "description":"...", "color":"#hex"}. Usa únicamente momentos que puedan ubicarse en el contexto de mercado disponible.` }) });
-      const payload = await response.json() as { content?: string; detail?: string };
-      if (!response.ok) throw new Error(payload.detail ?? 'La IA no respondió.');
-      const raw = payload.content?.match(/\[[\s\S]*\]/)?.[0];
-      const proposed = raw ? JSON.parse(raw) as Array<{ timestamp?: string; title?: string; description?: string; color?: string }> : [];
-      const parsed = proposed.flatMap((item, index) => {
-        const timestamp = item.timestamp ? new Date(item.timestamp).getTime() : NaN;
-        return Number.isFinite(timestamp) && item.title ? [{ id: `ai-event-${Date.now()}-${index}`, symbol: activeSymbol, timestamp: Math.floor(timestamp / 1000), title: item.title.slice(0, 80), description: (item.description ?? '').slice(0, 240), color: /^#[0-9a-f]{6}$/i.test(item.color ?? '') ? item.color as string : '#a78bfa', source: 'ai' as const }] : [];
-      });
-      if (!parsed.length) throw new Error('La IA no devolvió eventos en formato válido.');
-      onChange([...events, ...parsed].sort((a, b) => a.timestamp - b.timestamp));
-      setMessage(`${parsed.length} evento(s) IA agregado(s).`);
-    } catch (error) { setMessage(error instanceof Error ? error.message : 'No se pudieron crear eventos con IA.'); }
-    finally { setBusy(false); }
-  };
-  return <div className="event-markers-backdrop" role="presentation" onClick={onClose}><section className="event-markers-panel" role="dialog" aria-modal="true" aria-label="Eventos del gráfico" onClick={event => event.stopPropagation()}><div className="event-markers-head"><div><span className="positions-kicker">CHART · EVENTOS</span><h2>Marcadores de eventos · {activeSymbol}</h2></div><button type="button" onClick={onClose} aria-label="Cerrar">×</button></div><p className="event-markers-help">Marca momentos precisos como miércoles 7:35. La IA puede proponer eventos usando el contexto disponible; revísalos antes de conservarlos.</p><div className="event-markers-form"><label>Momento<input type="datetime-local" value={when} onChange={event => setWhen(event.target.value)} /></label><label>Título<input value={title} onChange={event => setTitle(event.target.value)} placeholder="Ej. Confirmación de entrada" /></label><label>Descripción<input value={description} onChange={event => setDescription(event.target.value)} placeholder="Nota del evento" /></label><label>Color<input type="color" value={color} onChange={event => setColor(event.target.value)} /></label><button type="button" onClick={addManual}>Agregar evento</button><button type="button" className="event-markers-ai" onClick={() => void askAi()} disabled={busy || !accessToken}>{busy ? 'Analizando…' : 'Proponer con IA'}</button></div>{message && <p className="event-markers-message">{message}</p>}<div className="event-markers-list">{events.filter(event => event.symbol === activeSymbol).map(event => <div key={event.id} className="event-marker-row"><span style={{ color: event.color }}>●</span><time>{new Date(event.timestamp * 1000).toLocaleString('es-MX')}</time><strong>{event.title}</strong><small>{event.description || 'Sin descripción'} · {event.source === 'ai' ? 'IA' : 'Manual'}</small><button type="button" onClick={() => onChange(events.filter(item => item.id !== event.id))} aria-label={`Eliminar ${event.title}`}>×</button></div>)}</div></section></div>;
+function eventFieldValue(field: EventConditionField, bar: LiveBar, ssl: ReturnType<typeof calculateSslChannel>, rsi: Array<number | null>, tracker: ReturnType<typeof calculateTrackerLevels>, index: number): number | string | null {
+  if (field === 'price.close') return bar.close; if (field === 'price.open') return bar.open; if (field === 'price.high') return bar.high; if (field === 'price.low') return bar.low;
+  if (field === 'ssl.direction') return ssl.bullish[index] ? 'positive' : 'negative'; if (field === 'ssl.up') return ssl.up[index]; if (field === 'ssl.down') return ssl.down[index]; if (field === 'rsi.value') return rsi[index];
+  const level = field.split('.')[1] as 'h2' | 'h1' | 'l1' | 'l2'; return tracker[index]?.[level] ?? null;
+}
+function eventOperand(value: number | string, bar: LiveBar, ssl: ReturnType<typeof calculateSslChannel>, rsi: Array<number | null>, tracker: ReturnType<typeof calculateTrackerLevels>, index: number) {
+  if (typeof value === 'string' && EVENT_FIELDS.some(([field]) => field === value)) return eventFieldValue(value as EventConditionField, bar, ssl, rsi, tracker, index);
+  return typeof value === 'number' ? value : Number(value);
+}
+function eventConditionMatches(condition: EventCondition, bar: LiveBar, previous: LiveBar | undefined, ssl: ReturnType<typeof calculateSslChannel>, rsi: Array<number | null>, tracker: ReturnType<typeof calculateTrackerLevels>, index: number) {
+  const current = eventFieldValue(condition.field, bar, ssl, rsi, tracker, index); const previousValue = previous ? eventFieldValue(condition.field, previous, ssl, rsi, tracker, Math.max(0, index - 1)) : null; const target = eventOperand(condition.value, bar, ssl, rsi, tracker, index);
+  if (current === null || target === null || (typeof current === 'number' && !Number.isFinite(current)) || (typeof target === 'number' && !Number.isFinite(target))) return false;
+  if (condition.field === 'ssl.direction') { const left = String(current).toLowerCase(); const right = String(target).toLowerCase(); return condition.operator === 'equals' ? left === right : condition.operator === 'not_equals' ? left !== right : false; }
+  const left = Number(current); const right = Number(target); if (!Number.isFinite(left) || !Number.isFinite(right)) return false;
+  if (condition.operator === 'less_than') return left < right; if (condition.operator === 'less_or_equal') return left <= right; if (condition.operator === 'greater_than') return left > right; if (condition.operator === 'greater_or_equal') return left >= right; if (condition.operator === 'equals') return left === right; if (condition.operator === 'not_equals') return left !== right;
+  const before = previousValue === null ? left : Number(previousValue); if (!Number.isFinite(before)) return false; return condition.operator === 'crosses_above' ? before <= right && left > right : before >= right && left < right;
+}
+
+const EVENT_FIELDS: Array<[EventConditionField, string]> = [['price.close', 'Precio cierre'], ['price.open', 'Precio apertura'], ['price.high', 'Máximo'], ['price.low', 'Mínimo'], ['ssl.direction', 'SSL dirección'], ['ssl.up', 'SSL arriba'], ['ssl.down', 'SSL abajo'], ['rsi.value', 'RSI'], ['tracker.h2', 'Tracker H2'], ['tracker.h1', 'Tracker H1'], ['tracker.l1', 'Tracker L1'], ['tracker.l2', 'Tracker L2']];
+const EVENT_OPERATORS: Array<[EventConditionOperator, string]> = [['less_than', '< menor que'], ['less_or_equal', '≤ menor/igual'], ['greater_than', '> mayor que'], ['greater_or_equal', '≥ mayor/igual'], ['equals', '= igual'], ['not_equals', '≠ distinto'], ['crosses_above', 'cruza arriba'], ['crosses_below', 'cruza abajo']];
+
+function EventMarkersPanel({ activeSymbol, apiUrl, accessToken, rules, occurrences, onChange, onDeleteOccurrence, onClose }: { activeSymbol: string; apiUrl: string; accessToken: string | null; rules: ChartEventRule[]; occurrences: ChartEventOccurrence[]; onChange: (rules: ChartEventRule[]) => void; onDeleteOccurrence: (id: string) => void; onClose: () => void }) {
+  const [name, setName] = useState('Condición de mercado'); const [field, setField] = useState<EventConditionField>('ssl.direction'); const [operator, setOperator] = useState<EventConditionOperator>('equals'); const [value, setValue] = useState('negative'); const [color, setColor] = useState('#f5b84b'); const [busy, setBusy] = useState(false); const [message, setMessage] = useState('');
+  const addRule = (rule: ChartEventRule) => onChange([...rules.filter(item => item.id !== rule.id), rule]);
+  const addManual = () => { if (!name.trim() || !value.trim()) return; addRule({ id: `rule-${Date.now()}`, symbol: activeSymbol, name: name.trim(), logic: 'AND', conditions: [{ field, operator, value: field === 'ssl.direction' ? value.trim().toLowerCase() : Number(value) }], color, enabled: true, source: 'manual' }); setMessage('Regla guardada. Se dibujará un marcador cuando cambie de falso a verdadero.'); };
+  const askAi = async () => { if (!accessToken) return; setBusy(true); setMessage('La IA está leyendo el contexto de mercado…'); try { const response = await fetch(`${apiUrl}/agent/chat`, { method: 'POST', headers: { Authorization: `Bearer ${accessToken}`, 'Content-Type': 'application/json' }, credentials: 'include', body: JSON.stringify({ prompt: `Para ${activeSymbol}, crea hasta 5 reglas de eventos para evaluar con el contexto actual. Una regla debe dispararse por transición de falso a verdadero, no por hora. Condiciones flexibles como SSL negativo, precio menor que un nivel, RSI o Tracker. Devuelve SOLO JSON array válido, sin markdown: [{"name":"...","logic":"AND|OR","conditions":[{"field":"price.close|price.open|price.high|price.low|ssl.direction|ssl.up|ssl.down|rsi.value|tracker.h2|tracker.h1|tracker.l1|tracker.l2","operator":"equals|not_equals|less_than|less_or_equal|greater_than|greater_or_equal|crosses_above|crosses_below","value":"negative|positive|número|otro campo"}],"color":"#hex"}]. No inventes timestamps.` }) }); const payload = await response.json() as { content?: string; detail?: string }; if (!response.ok) throw new Error(payload.detail ?? 'La IA no respondió.'); const raw = payload.content?.match(/\[[\s\S]*\]/)?.[0]; const proposed = raw ? JSON.parse(raw) as Array<{ name?: string; logic?: 'AND' | 'OR'; conditions?: EventCondition[]; color?: string }> : []; const parsed = proposed.flatMap((item, index) => { const conditions = Array.isArray(item.conditions) ? item.conditions.filter(condition => EVENT_FIELDS.some(([key]) => key === condition.field) && EVENT_OPERATORS.some(([key]) => key === condition.operator) && condition.value !== undefined).slice(0, 5) : []; return item.name && conditions.length ? [{ id: `ai-rule-${Date.now()}-${index}`, symbol: activeSymbol, name: item.name.slice(0, 80), logic: item.logic === 'OR' ? 'OR' as const : 'AND' as const, conditions, color: /^#[0-9a-f]{6}$/i.test(item.color ?? '') ? item.color as string : '#a78bfa', enabled: true, source: 'ai' as const }] : []; }); if (!parsed.length) throw new Error('La IA no devolvió reglas válidas.'); onChange([...rules, ...parsed]); setMessage(`${parsed.length} regla(s) IA agregada(s).`); } catch (error) { setMessage(error instanceof Error ? error.message : 'No se pudieron crear reglas con IA.'); } finally { setBusy(false); } };
+  const symbolRules = rules.filter(rule => rule.symbol === activeSymbol); const symbolOccurrences = occurrences.filter(event => event.symbol === activeSymbol).slice(-20);
+  return <div className="event-markers-backdrop" role="presentation" onClick={onClose}><section className="event-markers-panel" role="dialog" aria-modal="true" aria-label="Eventos condicionales" onClick={event => event.stopPropagation()}><div className="event-markers-head"><div><span className="positions-kicker">CHART · EVENTOS</span><h2>Eventos condicionales · {activeSymbol}</h2></div><button type="button" onClick={onClose} aria-label="Cerrar">×</button></div><p className="event-markers-help">Crea reglas con la información presente: SSL negativo, precio bajo un nivel, RSI o Tracker. El marcador aparece solo cuando la condición cruza a verdadera.</p><div className="event-markers-form"><label>Nombre<input value={name} onChange={event => setName(event.target.value)} /></label><label>Campo<select value={field} onChange={event => { const next = event.target.value as EventConditionField; setField(next); if (next === 'ssl.direction') setValue('negative'); }}>{EVENT_FIELDS.map(([key, label]) => <option key={key} value={key}>{label}</option>)}</select></label><label>Operador<select value={operator} onChange={event => setOperator(event.target.value as EventConditionOperator)}>{EVENT_OPERATORS.map(([key, label]) => <option key={key} value={key}>{label}</option>)}</select></label><label>Valor<input value={value} onChange={event => setValue(event.target.value)} placeholder="Ej. 0.235 o negative" /></label><label>Color<input type="color" value={color} onChange={event => setColor(event.target.value)} /></label><button type="button" onClick={addManual}>Agregar regla</button><button type="button" className="event-markers-ai" onClick={() => void askAi()} disabled={busy || !accessToken}>{busy ? 'Analizando…' : 'Proponer reglas con IA'}</button></div>{message && <p className="event-markers-message">{message}</p>}<div className="event-markers-list">{symbolRules.map(rule => <div key={rule.id} className="event-marker-row"><span style={{ color: rule.color }}>◆</span><strong>{rule.name}</strong><small>{rule.conditions.map(condition => `${condition.field} ${condition.operator} ${condition.value}`).join(` ${rule.logic} `)} · {rule.source === 'ai' ? 'IA' : 'Manual'}</small><button type="button" onClick={() => onChange(rules.filter(item => item.id !== rule.id))} aria-label={`Eliminar ${rule.name}`}>×</button></div>)}{symbolOccurrences.map(event => <div key={event.id} className="event-marker-row"><span style={{ color: event.color }}>●</span><time>{new Date(event.timestamp * 1000).toLocaleString('es-MX')}</time><strong>{event.title}</strong><small>{event.description}</small><button type="button" onClick={() => onDeleteOccurrence(event.id)} aria-label="Eliminar marcador">×</button></div>)}</div></section></div>;
 }
 function upsertLiveBar(bars: LiveBar[], next: LiveBar) {
   const last = bars[bars.length - 1];
@@ -835,12 +833,28 @@ function Workspace() {
   type ChartCanvas = 'entry' | 'context';
   type Drawing = { id?: string; symbol?: string; type: 'line' | 'ruler' | 'long' | 'short' | 'zoom'; start: ChartPoint; end: ChartPoint; stop?: ChartPoint; target?: ChartPoint; chart?: ChartCanvas; paper?: boolean; real?: boolean; closed?: boolean; closeReason?: 'TP' | 'SL' | 'MANUAL'; status?: 'OPEN' | 'CLOSED - WIN' | 'CLOSED - FAILED'; riskPercent?: number; quantity?: number; notional?: number; margin?: number; pnl?: number };
   const [drawings, setDrawings] = useState<Drawing[]>([]);
-  const [chartEvents, setChartEvents] = useState<ChartEventMarker[]>(() => {
+  const [chartEventRules, setChartEventRules] = useState<ChartEventRule[]>(() => {
     try {
-      const stored = JSON.parse(localStorage.getItem('helloworld-chart-events') ?? '[]') as unknown;
-      return Array.isArray(stored) ? stored.filter(item => item && typeof item === 'object') as ChartEventMarker[] : [];
+      const stored = JSON.parse(localStorage.getItem('helloworld-chart-event-rules') ?? '[]') as unknown;
+      return Array.isArray(stored) ? stored.filter(item => item && typeof item === 'object') as ChartEventRule[] : [];
     } catch { return []; }
   });
+  const [chartEventOccurrences, setChartEventOccurrences] = useState<ChartEventOccurrence[]>(() => {
+    try { const stored = JSON.parse(localStorage.getItem('helloworld-chart-event-occurrences') ?? '[]') as unknown; return Array.isArray(stored) ? stored as ChartEventOccurrence[] : []; } catch { return []; }
+  });
+  useEffect(() => { localStorage.setItem('helloworld-chart-event-rules', JSON.stringify(chartEventRules)); }, [chartEventRules]);
+  useEffect(() => { localStorage.setItem('helloworld-chart-event-occurrences', JSON.stringify(chartEventOccurrences.slice(-200))); }, [chartEventOccurrences]);
+  useEffect(() => {
+    const bars = candleBarsRef.current; if (bars.length < 3 || !chartEventRules.length) return;
+    const source = renderBars(bars, Math.max(MAX_ENTRY_RENDER_BARS, 300)); const indicatorBars = source.map(({ high, low, close }) => ({ high, low, close }));
+    const ssl = calculateSslChannel(indicatorBars, sslPeriod); const rsi = calculateRsi(indicatorBars, rsiPeriod); const tracker = calculateTrackerLevels(source, trackerPeriod);
+    const existing = new Set(chartEventOccurrences.map(event => event.id)); const next: ChartEventOccurrence[] = [];
+    chartEventRules.filter(rule => rule.symbol === symbol && rule.enabled).forEach(rule => source.forEach((bar, index) => {
+      if (index === 0) return; const matches = rule.conditions.map(condition => eventConditionMatches(condition, bar, source[index - 1], ssl, rsi, tracker, index)); const active = rule.logic === 'OR' ? matches.some(Boolean) : matches.every(Boolean); const previousMatches = rule.conditions.map(condition => eventConditionMatches(condition, source[index - 1], source[index - 2], ssl, rsi, tracker, Math.max(0, index - 1))); const previouslyActive = rule.logic === 'OR' ? previousMatches.some(Boolean) : previousMatches.every(Boolean); const id = `${rule.id}-${Number(bar.time)}`;
+      if (active && !previouslyActive && !existing.has(id)) next.push({ id, ruleId: rule.id, symbol, timestamp: Number(bar.time), price: bar.close, title: rule.name, description: rule.conditions.map(condition => `${condition.field} ${condition.operator} ${condition.value}`).join(` ${rule.logic} `), color: rule.color });
+    }));
+    if (next.length) setChartEventOccurrences(current => [...current, ...next].slice(-200));
+  }, [chartEventRules, symbol, rsiPeriod, sslPeriod, trackerPeriod, trackerRevision, viewportRevision]);
   const [showEventMarkers, setShowEventMarkers] = useState(false);
   const [drawingStart, setDrawingStart] = useState<ChartPoint | null>(null);
   const [drawingEnd, setDrawingEnd] = useState<ChartPoint | null>(null);
@@ -883,10 +897,6 @@ function Workspace() {
   const [activeMarketLoading, setActiveMarketLoading] = useState(false);
   const [activeMarketError, setActiveMarketError] = useState('');
   const selectableSymbols = [...new Set([...brokerSymbols, ...activeMarketSymbols.map(candidate => candidate.symbol)])];
-
-  useEffect(() => {
-    localStorage.setItem('helloworld-chart-events', JSON.stringify(chartEvents));
-  }, [chartEvents]);
 
   useEffect(() => {
     let interval = 0;
@@ -1905,9 +1915,9 @@ function Workspace() {
     const candles = canvas === 'context' ? overviewCandlesRef.current : candlesRef.current;
     const bars = canvas === 'context' ? overviewBarsRef.current : candleBarsRef.current;
     const height = canvas === 'context' ? overviewSize.height : stageSize.height;
-    if (!chart || !candles || !bars.length || !chartEvents.length) return null;
+    if (!chart || !candles || !bars.length || !chartEventOccurrences.length) return null;
     const visibleBars = renderBars(bars, canvas === 'context' ? MAX_CONTEXT_RENDER_BARS : MAX_ENTRY_RENDER_BARS);
-    const markers = chartEvents.filter(event => event.symbol === symbol).flatMap(event => {
+    const markers = chartEventOccurrences.filter(event => event.symbol === symbol).flatMap(event => {
       const bar = visibleBars.reduce((closest, candidate) => Math.abs(Number(candidate.time) - event.timestamp) < Math.abs(Number(closest.time) - event.timestamp) ? candidate : closest, visibleBars[0]);
       const x = chart.timeScale().timeToCoordinate(bar.time);
       const y = candles.priceToCoordinate(bar.close);
@@ -2746,7 +2756,7 @@ function Workspace() {
   const labButton = <button className="indicator-bar-button" onClick={() => setShowIndicatorSettings(true)} aria-label="Configurar indicadores" title="Indicadores">◌</button>;
   const riskEngineButton = <button className="indicator-bar-button" onClick={() => setShowRiskEngine(true)} aria-label="Abrir Risk Engine" title="Risk Engine">⚖</button>;
   const pnlCalendarButton = <button className="indicator-bar-button" onClick={() => setShowPnlCalendar(true)} aria-label="Abrir calendario PNL" title="Calendario PNL">▦</button>;
-  const eventMarkersButton = <button className={`indicator-bar-button ${chartEvents.some(event => event.symbol === symbol) ? 'indicator-toggle-active' : ''}`} onClick={() => setShowEventMarkers(true)} aria-label="Abrir eventos del gráfico" title="Eventos">✦</button>;
+  const eventMarkersButton = <button className={`indicator-bar-button ${chartEventRules.some(event => event.symbol === symbol) ? 'indicator-toggle-active' : ''}`} onClick={() => setShowEventMarkers(true)} aria-label="Abrir eventos condicionales" title="Eventos condicionales">✦</button>;
   const trainingTodayKey = calendarDayKey(Math.floor(Date.now() / 1000) as UTCTimestamp);
   const trainingOperations = paperPositions.filter(position => calendarDayKey(position.end.time) === trainingTodayKey);
   const trainingPnl = trainingOperations.filter(position => position.closed).reduce((sum, position) => sum + paperPnl(position), 0);
@@ -2801,7 +2811,7 @@ function Workspace() {
     {labButton}{riskEngineButton}{pnlCalendarButton}{eventMarkersButton}<button className={`indicator-bar-button ${showHeikinAshi ? 'indicator-toggle-active' : ''}`} onClick={() => setShowHeikinAshi(value => !value)} aria-pressed={showHeikinAshi} aria-label="Alternar Heikin Ashi" title="Heikin Ashi">HA</button><button className={!tool ? 'tool-active' : ''} onClick={() => setTool(null)} aria-label="Seleccionar y navegar" title="Seleccionar y navegar">↖</button>
     {([['line', '╱', 'Línea'], ['ruler', '▥', 'Regla'], ['long', 'L', 'Long'], ['short', 'S', 'Short'], ['zoom', '⌗', 'Zoom lazo']] as const).map(([key, icon, label]) => <button key={key} className={tool === key ? 'tool-active' : ''} onClick={() => chooseTool(key)} aria-label={label} title={label}>{icon}</button>)}<button onClick={() => { resetChartZoom('entry'); resetChartZoom('context'); }} aria-label="Restablecer zoom" title="Restablecer zoom">↺</button>
     <button onClick={() => setDrawings(current => current.filter(drawing => drawing.paper))} aria-label="Borrar dibujos" title="Borrar dibujos">×</button>
-  </div>{profileButton}{showRiskEngine && <RiskEngineModal onClose={() => setShowRiskEngine(false)} />}{showEventMarkers && <EventMarkersPanel activeSymbol={symbol} apiUrl={apiUrl} accessToken={auth.accessToken} events={chartEvents} onChange={setChartEvents} onClose={() => setShowEventMarkers(false)} />}<button className="logout-button" onClick={() => void auth.logout()} aria-label="Cerrar sesión">Salir</button></div>;
+  </div>{profileButton}{showRiskEngine && <RiskEngineModal onClose={() => setShowRiskEngine(false)} />}{showEventMarkers && <EventMarkersPanel activeSymbol={symbol} apiUrl={apiUrl} accessToken={auth.accessToken} rules={chartEventRules} occurrences={chartEventOccurrences} onChange={setChartEventRules} onDeleteOccurrence={id => setChartEventOccurrences(current => current.filter(event => event.id !== id))} onClose={() => setShowEventMarkers(false)} />}<button className="logout-button" onClick={() => void auth.logout()} aria-label="Cerrar sesión">Salir</button></div>;
 
     const scannerStatus = (candidateSymbol: string) => {
       const operation = trainingOperations.filter(position => position.symbol === candidateSymbol).sort((a, b) => Number(b.start.time) - Number(a.start.time))[0];
