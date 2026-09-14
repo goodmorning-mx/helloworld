@@ -44,6 +44,7 @@ class BinanceAccountMonitor:
             self._ws_base = "wss://stream.binancefuture.com/ws"
         self._lock = threading.RLock()
         self._stop = threading.Event()
+        self._ready = threading.Event()
         self._thread: threading.Thread | None = None
         self._snapshot: dict[str, object] = {
             "enabled": True, "healthy": False, "stream_connected": False,
@@ -71,6 +72,10 @@ class BinanceAccountMonitor:
     def snapshot(self) -> dict[str, object]:
         with self._lock:
             return json.loads(json.dumps(self._snapshot))
+
+    def wait_ready(self, timeout: float = 10.0) -> None:
+        """Wait for the one-time account bootstrap, never for live updates."""
+        self._ready.wait(timeout=max(0.0, timeout))
 
     def max_leverages(self) -> dict[str, int]:
         """Return Binance's first-bracket maximum leverage per symbol."""
@@ -176,12 +181,14 @@ class BinanceAccountMonitor:
     def _run(self) -> None:
         if connect is None:
             self._set(error="La dependencia WebSocket no está disponible")
+            self._ready.set()
             self._publish_snapshot("STREAM_ERROR")
             return
         retry = 1
         while not self._stop.is_set():
             try:
                 self._refresh_account()
+                self._ready.set()
                 # The initial REST bootstrap happens in the backend, but the
                 # browser must receive its result through the same real-time
                 # channel as every later account event.
@@ -205,6 +212,7 @@ class BinanceAccountMonitor:
                 logger.warning("Binance User Data Stream disconnected: %s", exc)
                 self._set_error(exc)
                 self._set(healthy=False, stream_connected=False)
+                self._ready.set()
                 self._publish_snapshot("STREAM_ERROR")
                 self._stop.wait(retry)
                 retry = min(retry * 2, 30)

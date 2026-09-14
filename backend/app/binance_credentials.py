@@ -133,6 +133,10 @@ class BinanceMonitorManager:
                 self._monitors[user_id] = monitor
                 self._fingerprints[user_id] = fingerprint
                 monitor.start()
+        # The WebSocket client must receive a populated initial snapshot. This
+        # waits only for the one-time backend bootstrap, never for periodic
+        # account polling or a live Binance event.
+        monitor.wait_ready()
         payload = monitor.snapshot()
         payload["configured"] = True
         return payload
