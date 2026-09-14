@@ -253,6 +253,18 @@ class BinanceAccountMonitor:
                 events = list(self._snapshot["events"])
                 events.append(item)
                 self._snapshot["events"] = events[-20:]
+                # Binance normally follows a filled close order with an
+                # ACCOUNT_UPDATE, but the order event is the first and most
+                # immediate signal. Project a fully filled close-all/reduce
+                # only order immediately so the UI cannot retain a phantom
+                # position while waiting for the balance event.
+                if order.get("X") == "FILLED" and (order.get("cp") is True or order.get("R") is True):
+                    symbol = str(order.get("s") or "").upper()
+                    current = next((row for row in self._snapshot.get("positions", []) if str(row.get("symbol", "")).upper() == symbol), None)
+                    executed = float(order.get("z") or order.get("l") or 0)
+                    current_quantity = abs(float((current or {}).get("quantity") or 0))
+                    if symbol and (order.get("cp") is True or (current_quantity > 0 and executed >= current_quantity)):
+                        self._snapshot["positions"] = [row for row in self._snapshot["positions"] if str(row.get("symbol", "")).upper() != symbol]
                 self._snapshot["last_event"] = event_type
                 self._snapshot["last_update"] = item["time"]
         if event_type in {"ACCOUNT_UPDATE", "ORDER_TRADE_UPDATE", "MARGIN_CALL", "listenKeyExpired"}:

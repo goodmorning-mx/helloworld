@@ -84,6 +84,19 @@ def test_partial_account_update_does_not_drop_other_open_positions():
     assert symbols == {"BTCUSDT", "MTLUSDT"}
 
 
+def test_filled_close_all_order_removes_position_immediately():
+    instance = monitor()
+    instance._handle_event({
+        "e": "ACCOUNT_UPDATE",
+        "a": {"P": [{"s": "MTLUSDT", "ps": "BOTH", "pa": "-12", "ep": "0.418", "up": "-0.04"}]},
+    })
+    instance._handle_event({
+        "e": "ORDER_TRADE_UPDATE",
+        "o": {"s": "MTLUSDT", "X": "FILLED", "cp": True, "z": "12", "c": "helloworld_sl"},
+    })
+    assert instance.snapshot()["positions"] == []
+
+
 def test_account_events_are_emitted_immediately_for_realtime_consumers():
     emitted = []
     instance = BinanceAccountMonitor(Settings(
