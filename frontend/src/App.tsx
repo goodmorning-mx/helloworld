@@ -57,6 +57,18 @@ type BinanceSizingMode = 'minimum' | 'maximum';
 function renderBars(bars: Array<{ time: UTCTimestamp; open: number; high: number; low: number; close: number }>, max: number) {
   return bars.slice(-max);
 }
+function applyDefaultChartViewport(chart: ReturnType<typeof createChart>, data: Array<{ close: number }>, visibleBars: number) {
+  if (!data.length) return;
+  const lastIndex = data.length - 1;
+  chart.timeScale().setVisibleLogicalRange({
+    from: Math.max(0, lastIndex - Math.min(visibleBars, data.length) + 1),
+    to: lastIndex + 20,
+  });
+  const close = Number(data[lastIndex].close);
+  if (Number.isFinite(close) && close > 0) {
+    chart.priceScale('right').setVisibleRange({ from: close * 0.85, to: close * 1.10 });
+  }
+}
 function mergeTickBar(bars: Array<{ time: UTCTimestamp; open: number; high: number; low: number; close: number }>, time: number, price: number, intervalSeconds: number) {
   const bucket = Math.floor(time / intervalSeconds) * intervalSeconds as UTCTimestamp;
   const current = bars[bars.length - 1];
@@ -68,7 +80,6 @@ function mergeTickBar(bars: Array<{ time: UTCTimestamp; open: number; high: numb
 
 type LiveBar = { time: UTCTimestamp; open: number; high: number; low: number; close: number };
 type BinanceLivePrice = { symbol: string; price: number; time: number; receivedAt: number };
-type SavedChartViewport = { width: number; rightOffset: number; priceAbove: number; priceBelow: number };
 type EventConditionField = 'price.close' | 'price.open' | 'price.high' | 'price.low' | 'ssl.direction' | 'ssl.up' | 'ssl.down' | 'rsi.value' | 'tracker.h2' | 'tracker.h1' | 'tracker.l1' | 'tracker.l2';
 type EventConditionOperator = 'equals' | 'not_equals' | 'less_than' | 'less_or_equal' | 'greater_than' | 'greater_or_equal' | 'crosses_above' | 'crosses_below';
 type EventCondition = { field: EventConditionField; operator: EventConditionOperator; value: number | string };
@@ -742,8 +753,6 @@ function Workspace() {
   const overviewCandlesRef = useRef<ReturnType<ReturnType<typeof createChart>['addSeries']> | null>(null);
   const overviewCandleDataRef = useRef<Array<{ time: UTCTimestamp; close: number }>>([]);
   const overviewBarsRef = useRef<Array<{ time: UTCTimestamp; open: number; high: number; low: number; close: number }>>([]);
-  const entryViewportRef = useRef<SavedChartViewport | null>(null);
-  const overviewViewportRef = useRef<SavedChartViewport | null>(null);
   const overviewLoadingOlderRef = useRef(false);
   const overviewStage = useRef<HTMLDivElement>(null);
   const chartStage = useRef<HTMLDivElement>(null);
@@ -1306,26 +1315,6 @@ function Workspace() {
     candlesRef.current = candles;
     let hasChartData = false;
     let initializingViewport = false;
-    const saveViewport = () => {
-      const xRange = chart.timeScale().getVisibleLogicalRange();
-      const yRange = chart.priceScale('right').getVisibleRange();
-      const lastPrice = candleBarsRef.current[candleBarsRef.current.length - 1]?.close ?? 0;
-      if (!xRange || !yRange || !Number.isFinite(lastPrice) || lastPrice <= 0) return;
-      const width = Number(xRange.to) - Number(xRange.from);
-      const rightOffset = candleBarsRef.current.length - Number(xRange.to);
-      const priceAbove = (Number(yRange.to) - lastPrice) / lastPrice;
-      const priceBelow = (lastPrice - Number(yRange.from)) / lastPrice;
-      if ([width, rightOffset, priceAbove, priceBelow].every(Number.isFinite) && width > 0) {
-        entryViewportRef.current = { width, rightOffset, priceAbove: Math.max(0.001, priceAbove), priceBelow: Math.max(0.001, priceBelow) };
-      }
-    };
-    const applyInitialViewport = (data: Array<{ close: number }>) => {
-      const saved = entryViewportRef.current;
-      if (!saved) { chart.timeScale().fitContent(); return; }
-      chart.timeScale().setVisibleLogicalRange({ from: data.length - saved.rightOffset - saved.width, to: data.length - saved.rightOffset });
-      const lastPrice = data[data.length - 1]?.close ?? 0;
-      if (lastPrice > 0) chart.priceScale('right').setVisibleRange({ from: lastPrice * (1 - saved.priceBelow), to: lastPrice * (1 + saved.priceAbove) });
-    };
     const setDataPreservingRange = (data: Array<{ time: UTCTimestamp; open: number; high: number; low: number; close: number }>) => {
       // A fast stream can arrive before the historical response. Never
       // restore lightweight-charts' provisional empty range on first load.
@@ -1391,7 +1380,7 @@ function Workspace() {
           if (hadBars && !showHeikinAshi) candles.update(candleBarsRef.current[candleBarsRef.current.length - 1]);
           else setDataPreservingRange(showHeikinAshi ? calculateHeikinAshi(visibleBars) : visibleBars);
           if (!polling) {
-            applyInitialViewport(visibleBars);
+            applyDefaultChartViewport(chart, visibleBars, MAX_ENTRY_RENDER_BARS);
             requestAnimationFrame(() => { if (active) initializingViewport = false; });
           }
           polling += 1;
@@ -1438,7 +1427,7 @@ function Workspace() {
         const visibleBars = renderBars(candleBarsRef.current, MAX_ENTRY_RENDER_BARS);
         initializingViewport = true;
         setDataPreservingRange(showHeikinAshi ? calculateHeikinAshi(visibleBars) : visibleBars);
-        applyInitialViewport(visibleBars);
+        applyDefaultChartViewport(chart, visibleBars, MAX_ENTRY_RENDER_BARS);
         requestAnimationFrame(() => { if (active) initializingViewport = false; });
         setTrackerRevision(value => value + 1);
         setViewportRevision(value => value + 1);
@@ -1548,7 +1537,6 @@ function Workspace() {
       stream.close();
       chart.timeScale().unsubscribeVisibleTimeRangeChange(refreshDrawings);
       chart.timeScale().unsubscribeVisibleLogicalRangeChange(refreshDrawings);
-      saveViewport();
       chartRef.current = null;
       candlesRef.current = null;
       candleDataRef.current = [];
@@ -1580,26 +1568,6 @@ function Workspace() {
     overviewCandlesRef.current = candles;
     let hasChartData = false;
     let initializingViewport = false;
-    const saveViewport = () => {
-      const xRange = chart.timeScale().getVisibleLogicalRange();
-      const yRange = chart.priceScale('right').getVisibleRange();
-      const lastPrice = overviewBarsRef.current[overviewBarsRef.current.length - 1]?.close ?? 0;
-      if (!xRange || !yRange || !Number.isFinite(lastPrice) || lastPrice <= 0) return;
-      const width = Number(xRange.to) - Number(xRange.from);
-      const rightOffset = overviewBarsRef.current.length - Number(xRange.to);
-      const priceAbove = (Number(yRange.to) - lastPrice) / lastPrice;
-      const priceBelow = (lastPrice - Number(yRange.from)) / lastPrice;
-      if ([width, rightOffset, priceAbove, priceBelow].every(Number.isFinite) && width > 0) {
-        overviewViewportRef.current = { width, rightOffset, priceAbove: Math.max(0.001, priceAbove), priceBelow: Math.max(0.001, priceBelow) };
-      }
-    };
-    const applyInitialViewport = (data: Array<{ close: number }>) => {
-      const saved = overviewViewportRef.current;
-      if (!saved) { chart.timeScale().fitContent(); return; }
-      chart.timeScale().setVisibleLogicalRange({ from: data.length - saved.rightOffset - saved.width, to: data.length - saved.rightOffset });
-      const lastPrice = data[data.length - 1]?.close ?? 0;
-      if (lastPrice > 0) chart.priceScale('right').setVisibleRange({ from: lastPrice * (1 - saved.priceBelow), to: lastPrice * (1 + saved.priceAbove) });
-    };
     const setDataPreservingRange = (data: Array<{ time: UTCTimestamp; open: number; high: number; low: number; close: number }>) => {
       const visibleRange = hasChartData ? chart.timeScale().getVisibleLogicalRange() : null;
       candles.setData(data);
@@ -1662,7 +1630,7 @@ function Workspace() {
           if (hadBars && !showHeikinAshi) candles.update(overviewBarsRef.current[overviewBarsRef.current.length - 1]);
           else setDataPreservingRange(showHeikinAshi ? calculateHeikinAshi(visibleBars) : visibleBars);
           if (!polling) {
-            applyInitialViewport(visibleBars);
+            applyDefaultChartViewport(chart, visibleBars, MAX_CONTEXT_RENDER_BARS);
             requestAnimationFrame(() => { if (active) initializingViewport = false; });
           }
           polling += 1;
@@ -1690,7 +1658,7 @@ function Workspace() {
       const candleTimer = window.setInterval(() => void loadCTrader(), 30_000);
       const tickTimer = window.setInterval(pollTick, 1_000);
       void pollTick();
-      return () => { active = false; window.clearInterval(candleTimer); window.clearInterval(tickTimer); chart.timeScale().unsubscribeVisibleTimeRangeChange(refreshOverview); chart.timeScale().unsubscribeVisibleLogicalRangeChange(refreshOverview); saveViewport(); overviewChartRef.current = null; overviewCandlesRef.current = null; overviewCandleDataRef.current = []; overviewBarsRef.current = []; overviewLoadingOlderRef.current = false; chart.remove(); };
+      return () => { active = false; window.clearInterval(candleTimer); window.clearInterval(tickTimer); chart.timeScale().unsubscribeVisibleTimeRangeChange(refreshOverview); chart.timeScale().unsubscribeVisibleLogicalRangeChange(refreshOverview); overviewChartRef.current = null; overviewCandlesRef.current = null; overviewCandleDataRef.current = []; overviewBarsRef.current = []; overviewLoadingOlderRef.current = false; chart.remove(); };
     }
     const stream = createBinanceKlineStream(symbol, interval);
     const gatewayInterval = interval === '1s' ? '1m' : interval;
@@ -1707,7 +1675,7 @@ function Workspace() {
         const visibleBars = renderBars(overviewBarsRef.current, MAX_CONTEXT_RENDER_BARS);
         initializingViewport = true;
         setDataPreservingRange(showHeikinAshi ? calculateHeikinAshi(visibleBars) : visibleBars);
-        applyInitialViewport(visibleBars);
+        applyDefaultChartViewport(chart, visibleBars, MAX_CONTEXT_RENDER_BARS);
         requestAnimationFrame(() => { if (active) initializingViewport = false; });
         setTrackerRevision(value => value + 1);
       }).catch(() => undefined);
@@ -1742,7 +1710,7 @@ function Workspace() {
       scheduleOverviewRefresh();
       if (isNewBar) setTrackerRevision(value => value + 1);
     };
-    return () => { active = false; stream.close(); chart.timeScale().unsubscribeVisibleTimeRangeChange(refreshOverview); chart.timeScale().unsubscribeVisibleLogicalRangeChange(refreshOverview); saveViewport(); overviewChartRef.current = null; overviewCandlesRef.current = null; overviewCandleDataRef.current = []; overviewBarsRef.current = []; overviewLoadingOlderRef.current = false; chart.remove(); };
+    return () => { active = false; stream.close(); chart.timeScale().unsubscribeVisibleTimeRangeChange(refreshOverview); chart.timeScale().unsubscribeVisibleLogicalRangeChange(refreshOverview); overviewChartRef.current = null; overviewCandlesRef.current = null; overviewCandleDataRef.current = []; overviewBarsRef.current = []; overviewLoadingOlderRef.current = false; chart.remove(); };
   }, [auth.accessToken, broker, symbol, interval, timezone, mobilePwa, showHeikinAshi]);
 
   useEffect(() => {
@@ -2522,8 +2490,6 @@ function Workspace() {
 
   function resetChartZoom(canvas: ChartCanvas = 'entry') {
     const { chart } = chartContext(canvas);
-    if (canvas === 'entry') entryViewportRef.current = null;
-    else overviewViewportRef.current = null;
     if (chart) chart.timeScale().fitContent();
   }
 
