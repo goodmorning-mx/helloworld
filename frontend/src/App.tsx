@@ -1308,6 +1308,20 @@ function Workspace() {
     const candles = chart.addSeries(CandlestickSeries, { upColor: '#64d39a', downColor: '#f27e7e', borderVisible: false, wickUpColor: '#64d39a', wickDownColor: '#f27e7e', priceFormat: { type: 'price', precision: binanceRules?.price_precision ?? 8, minMove: binanceRules?.tick_size || 0.00000001 } });
     chartRef.current = chart;
     candlesRef.current = candles;
+    const resetInitialViewport = (barCount: number, initialBars: number) => {
+      // Recalculate the first view after a symbol switch.  The chart instance
+      // is recreated, but lightweight-charts can still retain a stale logical
+      // range while its container is resizing.
+      requestAnimationFrame(() => {
+        if (!active) return;
+        chart.timeScale().fitContent();
+        chart.timeScale().setVisibleLogicalRange({
+          from: Math.max(0, barCount - initialBars),
+          to: Math.max(0, barCount - 1),
+        });
+        setViewportRevision(value => value + 1);
+      });
+    };
     const setDataPreservingRange = (data: Array<{ time: UTCTimestamp; open: number; high: number; low: number; close: number }>) => {
       const visibleRange = chart.timeScale().getVisibleLogicalRange();
       candles.setData(data);
@@ -1367,7 +1381,7 @@ function Workspace() {
           const visibleBars = renderBars(candleBarsRef.current, MAX_ENTRY_RENDER_BARS);
           if (hadBars && !showHeikinAshi) candles.update(candleBarsRef.current[candleBarsRef.current.length - 1]);
           else setDataPreservingRange(showHeikinAshi ? calculateHeikinAshi(visibleBars) : visibleBars);
-          if (!polling) chart.timeScale().setVisibleLogicalRange({ from: Math.max(0, visibleBars.length - INITIAL_ENTRY_BARS), to: visibleBars.length - 1 });
+          if (!polling) resetInitialViewport(visibleBars.length, INITIAL_ENTRY_BARS);
           polling += 1;
           setTrackerRevision(value => value + 1);
           if (polling === 1) setViewportRevision(value => value + 1);
@@ -1411,7 +1425,7 @@ function Workspace() {
         candleDataRef.current = candleBarsRef.current.map(({ time, close }) => ({ time, close }));
         const visibleBars = renderBars(candleBarsRef.current, MAX_ENTRY_RENDER_BARS);
         setDataPreservingRange(showHeikinAshi ? calculateHeikinAshi(visibleBars) : visibleBars);
-        chart.timeScale().setVisibleLogicalRange({ from: Math.max(0, candleBarsRef.current.length - INITIAL_ENTRY_BARS), to: candleBarsRef.current.length - 1 });
+        resetInitialViewport(visibleBars.length, INITIAL_ENTRY_BARS);
         setTrackerRevision(value => value + 1);
         setViewportRevision(value => value + 1);
       })
@@ -1544,6 +1558,17 @@ function Workspace() {
     const candles = chart.addSeries(CandlestickSeries, { upColor: '#64d39a', downColor: '#f27e7e', borderVisible: false, wickUpColor: '#64d39a', wickDownColor: '#f27e7e', priceFormat: { type: 'price', precision: binanceRules?.price_precision ?? 8, minMove: binanceRules?.tick_size || 0.00000001 } });
     overviewChartRef.current = chart;
     overviewCandlesRef.current = candles;
+    const resetInitialViewport = (barCount: number, initialBars: number) => {
+      requestAnimationFrame(() => {
+        if (!active) return;
+        chart.timeScale().fitContent();
+        chart.timeScale().setVisibleLogicalRange({
+          from: Math.max(0, barCount - initialBars),
+          to: Math.max(0, barCount - 1),
+        });
+        setOverviewRevision(value => value + 1);
+      });
+    };
     const setDataPreservingRange = (data: Array<{ time: UTCTimestamp; open: number; high: number; low: number; close: number }>) => {
       const visibleRange = chart.timeScale().getVisibleLogicalRange();
       candles.setData(data);
@@ -1602,7 +1627,7 @@ function Workspace() {
           const visibleBars = renderBars(overviewBarsRef.current, MAX_CONTEXT_RENDER_BARS);
           if (hadBars && !showHeikinAshi) candles.update(overviewBarsRef.current[overviewBarsRef.current.length - 1]);
           else setDataPreservingRange(showHeikinAshi ? calculateHeikinAshi(visibleBars) : visibleBars);
-          if (!polling) chart.timeScale().setVisibleLogicalRange({ from: Math.max(0, visibleBars.length - INITIAL_CONTEXT_BARS), to: visibleBars.length - 1 });
+          if (!polling) resetInitialViewport(visibleBars.length, INITIAL_CONTEXT_BARS);
           polling += 1;
           setTrackerRevision(value => value + 1);
           if (polling === 1) setOverviewRevision(value => value + 1);
@@ -1644,7 +1669,7 @@ function Workspace() {
         overviewCandleDataRef.current = overviewBarsRef.current.map(({ time, close }) => ({ time, close }));
         const visibleBars = renderBars(overviewBarsRef.current, MAX_CONTEXT_RENDER_BARS);
         setDataPreservingRange(showHeikinAshi ? calculateHeikinAshi(visibleBars) : visibleBars);
-        chart.timeScale().setVisibleLogicalRange({ from: Math.max(0, overviewBarsRef.current.length - INITIAL_CONTEXT_BARS), to: overviewBarsRef.current.length - 1 });
+        resetInitialViewport(visibleBars.length, INITIAL_CONTEXT_BARS);
         setTrackerRevision(value => value + 1);
       }).catch(() => undefined);
     stream.onmessage = event => {
