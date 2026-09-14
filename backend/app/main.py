@@ -305,6 +305,14 @@ def _binance_public_execution_rules(symbol: str) -> tuple[float, float, float, f
             int(item.get("pricePrecision", 8)), int(item.get("quantityPrecision", 8)))
 
 
+def _binance_public_mark_price(symbol: str) -> float:
+    """Read Binance's current Futures mark price before placing a trigger."""
+    base = settings.binance_base_url.rstrip("/")
+    response = httpx.get(f"{base}/fapi/v1/premiumIndex", params={"symbol": symbol}, timeout=5)
+    response.raise_for_status()
+    return float(response.json().get("markPrice", 0) or 0)
+
+
 def _align_binance_value(value: float, step: float, precision: int, *, ceiling: bool) -> float:
     """Align a quantity/price to Binance's exact decimal grid."""
     if value <= 0 or step <= 0:
@@ -500,6 +508,7 @@ def open_binance_real_operation(payload: BinanceRealOrderInput, identity: AuthId
         "stop_loss": payload.stop_loss, "take_profit": payload.take_profit,
     })
     entry = None
+    stop_order = None
     try:
         entry = binance_manager.place_market_order(identity.user_id, symbol, order_side, quantity, str(intent["client_order_id"]))
         binance_execution_store.update(intent["id"], identity.user_id, status="ENTRY_SUBMITTED", exchange_order_id=str(entry.get("orderId")))
@@ -526,6 +535,19 @@ def open_binance_real_operation(payload: BinanceRealOrderInput, identity: AuthId
         target = _align_binance_value(target, tick_size, price_precision, ceiling=payload.side == "LONG")
         entry_time = int(float(entry.get("transactTime") or entry.get("updateTime") or time.time() * 1000) / 1000)
         binance_execution_store.update(intent["id"], identity.user_id, quantity=quantity, entry_time=entry_time, entry_price=average_open, stop_loss=stop, take_profit=target)
+        # Binance validates conditional orders against the current MARK_PRICE,
+        # not against the entry fill. The market can cross a level while the
+        # entry response is travelling back to us, which would make the next
+        # STOP/TAKE_PROFIT request fail with -2021.
+        mark_price = _binance_public_mark_price(symbol)
+        if mark_price > 0:
+            stop_valid = stop < mark_price if close_side == "SELL" else stop > mark_price
+            target_valid = target > mark_price if close_side == "SELL" else target < mark_price
+            if not stop_valid or not target_valid:
+                raise RuntimeError(
+                    f"El mark price {mark_price:g} ya cruzó una protección "
+                    f"(SL {stop:g}, TP {target:g}); se solicitará cierre de seguridad."
+                )
         stop_order = binance_manager.place_close_protection(identity.user_id, symbol, close_side, stop, f"{intent['client_order_id']}_sl", "STOP_MARKET")
         if not isinstance(stop_order, dict) or not (stop_order.get("algoId") or stop_order.get("clientAlgoId")):
             raise RuntimeError("Binance no confirmó la orden STOP_MARKET de protección.")
@@ -540,9 +562,23 @@ def open_binance_real_operation(payload: BinanceRealOrderInput, identity: AuthId
         return {"broker": "binance", "mode": "real", "operation": saved, "entry": entry, "stop": stop, "target": target, "take_profit_mode": "native", "backend_latency_ms": latency_ms}
     except Exception as exc:
         emergency_error = None
+        if stop_order and stop_order.get("algoId"):
+            try:
+                binance_manager.cancel_close_protection(identity.user_id, symbol, str(stop_order["algoId"]))
+            except Exception:
+                pass
         if entry is not None:
             try:
-                binance_manager.place_market_order(identity.user_id, symbol, close_side, quantity, f"{intent['client_order_id']}_emergency", reduce_only=True)
+                # Re-read the actual filled position. A partial fill, exchange
+                # rounding, or a fast trigger can make the original quantity
+                # stale by the time the emergency close is submitted.
+                emergency_position = binance_manager.position_risk(identity.user_id, symbol)
+                emergency_quantity = abs(float(emergency_position.get("positionAmt") or 0))
+                emergency_quantity = _align_binance_value(emergency_quantity, step_size, quantity_precision, ceiling=False)
+                if emergency_quantity > 0:
+                    binance_manager.place_market_order(identity.user_id, symbol, close_side, emergency_quantity, f"{intent['client_order_id']}_emergency", reduce_only=True)
+                else:
+                    emergency_error = "Binance ya no reporta una posición abierta; se reconcilió el intento."
             except Exception as close_exc:  # surface this prominently for manual intervention
                 emergency_error = str(close_exc)
         message = _binance_error_message(exc) if emergency_error is None else f"{_binance_error_message(exc)}; cierre de emergencia falló: {emergency_error}"
