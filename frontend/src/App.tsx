@@ -54,6 +54,7 @@ const FIXED_BINANCE_TARGET_PERCENT = 1;
 const BINANCE_MIN_OPERATION_LEVERAGE = 1;
 const BINANCE_MARGIN_RESERVE_USDT = 1;
 type BinanceSizingMode = 'minimum' | 'maximum';
+type ViewportSnapshot = { bars: number; futureBars: number; yBelow: number; yAbove: number };
 function renderBars(bars: Array<{ time: UTCTimestamp; open: number; high: number; low: number; close: number }>, max: number) {
   return bars.slice(-max);
 }
@@ -802,27 +803,12 @@ function Workspace() {
   const [viewportFutureBars, setViewportFutureBars] = useState(12);
   const [viewportYBelow, setViewportYBelow] = useState(22);
   const [viewportYAbove, setViewportYAbove] = useState(3);
-  const syncViewportSnapshot = (chart: ReturnType<typeof createChart>, data: Array<{ close: number }>) => {
+  const [entryViewportSnapshot, setEntryViewportSnapshot] = useState<ViewportSnapshot>({ bars: 37, futureBars: 12, yBelow: 22, yAbove: 3 });
+  const [overviewViewportSnapshot, setOverviewViewportSnapshot] = useState<ViewportSnapshot>({ bars: 37, futureBars: 12, yBelow: 22, yAbove: 3 });
+  const syncViewportSnapshot = (chart: ReturnType<typeof createChart>, data: Array<{ close: number }>, setSnapshot: React.Dispatch<React.SetStateAction<ViewportSnapshot>>) => {
     const snapshot = getChartViewportSnapshot(chart, data);
     if (!snapshot) return;
-    setViewportBars(current => current === snapshot.bars ? current : snapshot.bars);
-    setViewportFutureBars(current => current === snapshot.futureBars ? current : snapshot.futureBars);
-    setViewportYBelow(current => current === snapshot.yBelow ? current : snapshot.yBelow);
-    setViewportYAbove(current => current === snapshot.yAbove ? current : snapshot.yAbove);
-  };
-  const updateViewportFromControl = (key: 'bars' | 'futureBars' | 'yBelow' | 'yAbove', value: number) => {
-    const next = {
-      bars: key === 'bars' ? value : viewportBars,
-      futureBars: key === 'futureBars' ? value : viewportFutureBars,
-      yBelow: key === 'yBelow' ? value : viewportYBelow,
-      yAbove: key === 'yAbove' ? value : viewportYAbove,
-    };
-    setViewportBars(next.bars);
-    setViewportFutureBars(next.futureBars);
-    setViewportYBelow(next.yBelow);
-    setViewportYAbove(next.yAbove);
-    if (chartRef.current && candleBarsRef.current.length > 0) applyDefaultChartViewport(chartRef.current, candleBarsRef.current, next.bars, next.futureBars, next.yBelow, next.yAbove);
-    if (overviewChartRef.current && overviewBarsRef.current.length > 0) applyDefaultChartViewport(overviewChartRef.current, overviewBarsRef.current, next.bars, next.futureBars, next.yBelow, next.yAbove);
+    setSnapshot(current => current.bars === snapshot.bars && current.futureBars === snapshot.futureBars && current.yBelow === snapshot.yBelow && current.yAbove === snapshot.yAbove ? current : snapshot);
   };
   const entryInterval = '1m' as const;
   const brokerSymbols = broker === 'ctrader' ? ['AUDUSD', 'XAUUSD', 'XAGUSD'] : ['BTCUSDT', 'ETHUSDT', 'BNBUSDT', 'SOLUSDT', 'XRPUSDT', 'DOGEUSDT'];
@@ -1366,7 +1352,7 @@ function Workspace() {
     let active = true;
     const refreshDrawings = () => {
       if (initializingViewport) return;
-      syncViewportSnapshot(chart, candleBarsRef.current);
+      syncViewportSnapshot(chart, candleBarsRef.current, setEntryViewportSnapshot);
       const logicalRange = chart.timeScale().getVisibleLogicalRange();
       if (logicalRange && logicalRange.from < 80 && !loadingOlderRef.current && candleBarsRef.current.length > 0) {
         const oldest = Number(candleBarsRef.current[0].time);
@@ -1422,7 +1408,7 @@ function Workspace() {
           else setDataPreservingRange(showHeikinAshi ? calculateHeikinAshi(visibleBars) : visibleBars);
           if (!polling) {
             applyDefaultChartViewport(chart, visibleBars, viewportBars, viewportFutureBars, viewportYBelow, viewportYAbove);
-            syncViewportSnapshot(chart, visibleBars);
+            syncViewportSnapshot(chart, visibleBars, setEntryViewportSnapshot);
             requestAnimationFrame(() => { if (active) initializingViewport = false; });
           }
           polling += 1;
@@ -1470,7 +1456,7 @@ function Workspace() {
         initializingViewport = true;
         setDataPreservingRange(showHeikinAshi ? calculateHeikinAshi(visibleBars) : visibleBars);
         applyDefaultChartViewport(chart, visibleBars, viewportBars, viewportFutureBars, viewportYBelow, viewportYAbove);
-        syncViewportSnapshot(chart, visibleBars);
+        syncViewportSnapshot(chart, visibleBars, setEntryViewportSnapshot);
         requestAnimationFrame(() => { if (active) initializingViewport = false; });
         setTrackerRevision(value => value + 1);
         setViewportRevision(value => value + 1);
@@ -1633,7 +1619,7 @@ function Workspace() {
     };
     const refreshOverview = () => {
       if (initializingViewport) return;
-      syncViewportSnapshot(chart, overviewBarsRef.current);
+      syncViewportSnapshot(chart, overviewBarsRef.current, setOverviewViewportSnapshot);
       setOverviewRevision(value => value + 1);
       const logicalRange = chart.timeScale().getVisibleLogicalRange();
       if (!logicalRange || logicalRange.from >= 50 || overviewLoadingOlderRef.current || overviewBarsRef.current.length === 0) return;
@@ -1689,7 +1675,7 @@ function Workspace() {
           else setDataPreservingRange(showHeikinAshi ? calculateHeikinAshi(visibleBars) : visibleBars);
           if (!polling) {
             applyDefaultChartViewport(chart, visibleBars, viewportBars, viewportFutureBars, viewportYBelow, viewportYAbove);
-            syncViewportSnapshot(chart, visibleBars);
+            syncViewportSnapshot(chart, visibleBars, setOverviewViewportSnapshot);
             requestAnimationFrame(() => { if (active) initializingViewport = false; });
           }
           polling += 1;
@@ -1735,7 +1721,7 @@ function Workspace() {
         initializingViewport = true;
         setDataPreservingRange(showHeikinAshi ? calculateHeikinAshi(visibleBars) : visibleBars);
         applyDefaultChartViewport(chart, visibleBars, viewportBars, viewportFutureBars, viewportYBelow, viewportYAbove);
-        syncViewportSnapshot(chart, visibleBars);
+        syncViewportSnapshot(chart, visibleBars, setOverviewViewportSnapshot);
         requestAnimationFrame(() => { if (active) initializingViewport = false; });
         setTrackerRevision(value => value + 1);
       }).catch(() => undefined);
@@ -2581,7 +2567,7 @@ function Workspace() {
   function captureChartViewport(canvas: ChartCanvas) {
     const { chart } = chartContext(canvas);
     const data = canvas === 'entry' ? candleBarsRef.current : overviewBarsRef.current;
-    if (chart && data.length > 0) syncViewportSnapshot(chart, data);
+    if (chart && data.length > 0) syncViewportSnapshot(chart, data, canvas === 'entry' ? setEntryViewportSnapshot : setOverviewViewportSnapshot);
   }
 
   function finishDrawingAndCapture(event: PointerEvent<HTMLElement>, canvas: ChartCanvas) {
@@ -2871,7 +2857,7 @@ function Workspace() {
     const tpAmount = quantity * Math.abs(target - entry);
     return { side, entry, stop, target, targetPercent, quantity, notional, fees, leverage, marginMultiplier, slAmount, tpAmount, margin: leverage > 0 ? notional / leverage : 0 };
   }) : [];
-  const chartStageView = <div ref={chartStage} className={`chart-stage ${tool ? 'drawing-mode' : ''}`} onWheelCapture={event => handleChartWheel(event, 'entry')} onPointerDownCapture={startDrawing} onPointerMoveCapture={updateDrawing} onPointerUpCapture={event => finishDrawingAndCapture(event, 'entry')} onPointerCancelCapture={() => { setDrawingStart(null); setDrawingEnd(null); setMoveStart(null); panStartRef.current = null; setResizeStart(null); setLassoStart(null); setLassoEnd(null); }}>
+  const chartStageView = <div ref={chartStage} className={`chart-stage ${tool ? 'drawing-mode' : ''}`} onWheelCapture={event => handleChartWheel(event, 'entry')} onPointerDownCapture={startDrawing} onPointerMoveCapture={updateDrawing} onPointerUpCapture={event => finishDrawingAndCapture(event, 'entry')} onPointerCancelCapture={() => { setDrawingStart(null); setDrawingEnd(null); setMoveStart(null); panStartRef.current = null; setResizeStart(null); setLassoStart(null); setLassoEnd(null); }}><div className="chart-viewport-snapshot" aria-label="Snapshot del viewport de entrada">X {entryViewportSnapshot.bars} · Futuro {entryViewportSnapshot.futureBars} · Y− {entryViewportSnapshot.yBelow}% · Y+ {entryViewportSnapshot.yAbove}%</div>
     {pendingBinanceTp && <div className="binance-tp-confirm" role="status"><span>Nuevo TP {pendingBinanceTp.symbol}: {formatPaperPrice(pendingBinanceTp.price)}</span><button type="button" onClick={() => void confirmBinanceTakeProfit()}>Confirmar TP</button><button type="button" onClick={() => { pendingBinanceTpRef.current = null; setPendingBinanceTp(null); }} aria-label="Cancelar cambio de TP">Cancelar</button></div>}
     <div ref={chartContainer} className="candlestick-chart" /><svg className="drawing-overlay" viewBox={`0 0 ${stageSize.width} ${stageSize.height}`} preserveAspectRatio="none" aria-hidden="true">{renderSessionIndicator()}{renderInterestMarkers()}{renderPriceLineHitAreas('entry')}{[...drawings, ...productionDrawings].map((drawing, index) => (!drawing.paper || !drawing.closed || drawing.id === visibleClosedId) && (!drawing.paper || !drawing.symbol || drawing.symbol === symbol) && (drawing.chart !== 'context' || drawing.paper) ? renderDrawing(drawing, index, 'entry') : null)}{tool && drawingStart && drawingEnd && drawingCanvas === 'entry' && renderDrawing({ type: tool, chart: 'entry', start: drawingStart, end: drawingEnd }, 'preview', 'entry')}{lassoStart && lassoEnd && drawingCanvas === 'entry' && <rect x={Math.min(lassoStart.x, lassoEnd.x)} y={Math.min(lassoStart.y, lassoEnd.y)} width={Math.abs(lassoStart.x - lassoEnd.x)} height={Math.abs(lassoStart.y - lassoEnd.y)} className="selection-lasso" />}</svg><div className="chart-bottom-controls"><span className="timezone-icon" aria-hidden="true">◷</span><select className="timezone-select" value={timezone} onChange={event => setTimezone(event.target.value)} aria-label="Zona horaria">{TIMEZONES.map(([label, value]) => <option key={value} value={value}>{label}</option>)}</select></div>
     <div className="floating-order-buttons" aria-label="Abrir operación simulada"><button className="open-long-button" disabled={!paperReady} onClick={() => void openSimulatedPosition('long')}>▲ <span>Abrir Long</span><small>{binancePreview.find(preview => preview.side === 'LONG') ? `SL -${binanceStopPercent.toFixed(2)}% · TP +${binancePreview.find(preview => preview.side === 'LONG')!.targetPercent.toFixed(2)}% · N ${binancePreview.find(preview => preview.side === 'LONG')!.notional.toFixed(2)} · M ${binancePreview.find(preview => preview.side === 'LONG')!.margin.toFixed(4)} · ${binancePreview.find(preview => preview.side === 'LONG')!.leverage}x` : labRecommendations ? `${labRecommendations.long.label} · R:R ${labRecommendations.long.rr.toFixed(2)}:1` : 'Calculando recomendación…'}</small></button><button className="open-short-button" disabled={!paperReady} onClick={() => void openSimulatedPosition('short')}>▼ <span>Abrir Short</span><small>{binancePreview.find(preview => preview.side === 'SHORT') ? `SL -${binanceStopPercent.toFixed(2)}% · TP +${binancePreview.find(preview => preview.side === 'SHORT')!.targetPercent.toFixed(2)}% · N ${binancePreview.find(preview => preview.side === 'SHORT')!.notional.toFixed(2)} · M ${binancePreview.find(preview => preview.side === 'SHORT')!.margin.toFixed(4)} · ${binancePreview.find(preview => preview.side === 'SHORT')!.leverage}x` : labRecommendations ? `${labRecommendations.short.label} · R:R ${labRecommendations.short.rr.toFixed(2)}:1` : 'Calculando recomendación…'}</small></button></div>
@@ -2933,7 +2919,7 @@ function Workspace() {
     : 'broker-not-ready';
   const desktopHeader = <div className="symbol-bar"><select className={`broker-select ${broker === 'binance' ? binanceStatusClass : ''}`} value={broker} onChange={event => { const next = event.target.value as 'binance' | 'ctrader'; setBroker(next); setSymbol(next === 'ctrader' ? 'AUDUSD' : 'BTCUSDT'); }} aria-label="Broker"><option value="binance">Binance</option><option value="ctrader">cTrader</option></select><select className="symbol-select" value={symbol} onChange={event => setSymbol(event.target.value)} aria-label="Símbolo">
     {selectableSymbols.map(option => <option key={option}>{option}</option>)}
-  </select><select className="interval-select" value={interval} onChange={event => setInterval(event.target.value as typeof interval)} aria-label="Intervalo de contexto">{(['1s', '1m', '3m', '5m', '15m'] as const).map(value => <option key={value} value={value}>{value}</option>)}</select>{scannerStatusBar}{broker === 'binance' && <>{productionPositionLabel && <span className={`production-position-summary ${productionPositions.some(position => Number(position.unrealized_pnl ?? 0) >= 0) ? 'production-profit' : 'production-loss'}`}>{productionPositionLabel}</span>}</>}{statusBarMessage && <span className="header-status-error" role="status" title={statusBarMessage}>⚠ {statusBarMessage}</span>}<div className="chart-viewport-controls" aria-label="Ajuste temporal del viewport"><label>X<input type="number" min="20" max="300" step="10" value={viewportBars} onChange={event => { const value = event.currentTarget.valueAsNumber; if (Number.isFinite(value)) updateViewportFromControl('bars', value); }} aria-label="Velas visibles" /></label><label>Futuro<input type="number" min="0" max="80" step="5" value={viewportFutureBars} onChange={event => { const value = event.currentTarget.valueAsNumber; if (Number.isFinite(value)) updateViewportFromControl('futureBars', value); }} aria-label="Velas futuras" /></label><label>Y−<input type="number" min="0" max="50" step="1" value={viewportYBelow} onChange={event => { const value = event.currentTarget.valueAsNumber; if (Number.isFinite(value)) updateViewportFromControl('yBelow', value); }} aria-label="Porcentaje inferior" /></label><label>Y+<input type="number" min="0" max="50" step="1" value={viewportYAbove} onChange={event => { const value = event.currentTarget.valueAsNumber; if (Number.isFinite(value)) updateViewportFromControl('yAbove', value); }} aria-label="Porcentaje superior" /></label></div><div className="chart-tools" aria-label="Herramientas del gráfico">
+  </select><select className="interval-select" value={interval} onChange={event => setInterval(event.target.value as typeof interval)} aria-label="Intervalo de contexto">{(['1s', '1m', '3m', '5m', '15m'] as const).map(value => <option key={value} value={value}>{value}</option>)}</select>{scannerStatusBar}{broker === 'binance' && <>{productionPositionLabel && <span className={`production-position-summary ${productionPositions.some(position => Number(position.unrealized_pnl ?? 0) >= 0) ? 'production-profit' : 'production-loss'}`}>{productionPositionLabel}</span>}</>}{statusBarMessage && <span className="header-status-error" role="status" title={statusBarMessage}>⚠ {statusBarMessage}</span>}<div className="chart-tools" aria-label="Herramientas del gráfico">
     {labButton}{riskEngineButton}{pnlCalendarButton}{eventMarkersButton}<button className={`indicator-bar-button ${showHeikinAshi ? 'indicator-toggle-active' : ''}`} onClick={() => setShowHeikinAshi(value => !value)} aria-pressed={showHeikinAshi} aria-label="Alternar Heikin Ashi" title="Heikin Ashi">HA</button><button className={!tool ? 'tool-active' : ''} onClick={() => setTool(null)} aria-label="Seleccionar y navegar" title="Seleccionar y navegar">↖</button>
     {([['line', '╱', 'Línea'], ['ruler', '▥', 'Regla'], ['long', 'L', 'Long'], ['short', 'S', 'Short'], ['zoom', '⌗', 'Zoom lazo']] as const).map(([key, icon, label]) => <button key={key} className={tool === key ? 'tool-active' : ''} onClick={() => chooseTool(key)} aria-label={label} title={label}>{icon}</button>)}<button onClick={() => { resetChartZoom('entry'); resetChartZoom('context'); }} aria-label="Restablecer zoom" title="Restablecer zoom">↺</button>
     <button onClick={() => setDrawings(current => current.filter(drawing => drawing.paper))} aria-label="Borrar dibujos" title="Borrar dibujos">×</button>
@@ -2949,7 +2935,7 @@ function Workspace() {
   const tradingAgent = <TradingAgentChat activeSymbol={symbol} interval={interval} apiUrl={apiUrl} accessToken={auth.accessToken} />;
 
   const toolOptions = [['line', '╱', 'Línea'], ['ruler', '▥', 'Medir'], ['long', 'L', 'Long'], ['short', 'S', 'Short'], ['zoom', '⌗', 'Zoom lazo']] as const;
-  const chartsRow = <div className="charts-row"><section ref={overviewStage} className={`secondary-chart ${tool ? 'drawing-mode' : ''}`} onWheelCapture={event => handleChartWheel(event, 'context')} onPointerDownCapture={event => startDrawing(event, 'context')} onPointerMoveCapture={updateDrawing} onPointerUpCapture={event => finishDrawingAndCapture(event, 'context')} onPointerCancelCapture={() => { setDrawingStart(null); setDrawingEnd(null); setMoveStart(null); panStartRef.current = null; setResizeStart(null); setLassoStart(null); setLassoEnd(null); }}><div className="chart-panel-label">{interval.toUpperCase()} · CONTEXTO · {symbol}</div><div ref={overviewChartContainer} className="overview-chart" /><svg className="overview-overlay" viewBox={`0 0 ${overviewSize.width} ${overviewSize.height}`} preserveAspectRatio="none" aria-hidden="true">{renderOverviewSessions()}{renderOverviewInterestMarkers()}{renderPriceLineHitAreas('context')}{[...drawings, ...productionDrawings].map((drawing, index) => (!drawing.paper || !drawing.closed || drawing.id === visibleClosedId) && (!drawing.paper || !drawing.symbol || drawing.symbol === symbol) && (drawing.chart === 'context' || drawing.paper) ? renderDrawing(drawing, index, 'context') : null)}{tool && drawingStart && drawingEnd && drawingCanvas === 'context' && renderDrawing({ type: tool, chart: 'context', start: drawingStart, end: drawingEnd }, 'preview', 'context')}{lassoStart && lassoEnd && drawingCanvas === 'context' && <rect x={Math.min(lassoStart.x, lassoEnd.x)} y={Math.min(lassoStart.y, lassoEnd.y)} width={Math.abs(lassoStart.x - lassoEnd.x)} height={Math.abs(lassoStart.y - lassoEnd.y)} className="selection-lasso" />}</svg></section><section className="primary-chart"><div className="chart-panel-label">{entryInterval.toUpperCase()} · AJUSTE DE ENTRADA</div>{chartStageView}</section></div>;
+  const chartsRow = <div className="charts-row"><section ref={overviewStage} className={`secondary-chart ${tool ? 'drawing-mode' : ''}`} onWheelCapture={event => handleChartWheel(event, 'context')} onPointerDownCapture={event => startDrawing(event, 'context')} onPointerMoveCapture={updateDrawing} onPointerUpCapture={event => finishDrawingAndCapture(event, 'context')} onPointerCancelCapture={() => { setDrawingStart(null); setDrawingEnd(null); setMoveStart(null); panStartRef.current = null; setResizeStart(null); setLassoStart(null); setLassoEnd(null); }}><div className="chart-panel-label">{interval.toUpperCase()} · CONTEXTO · {symbol}</div><div className="chart-viewport-snapshot" aria-label="Snapshot del viewport de contexto">X {overviewViewportSnapshot.bars} · Futuro {overviewViewportSnapshot.futureBars} · Y− {overviewViewportSnapshot.yBelow}% · Y+ {overviewViewportSnapshot.yAbove}%</div><div ref={overviewChartContainer} className="overview-chart" /><svg className="overview-overlay" viewBox={`0 0 ${overviewSize.width} ${overviewSize.height}`} preserveAspectRatio="none" aria-hidden="true">{renderOverviewSessions()}{renderOverviewInterestMarkers()}{renderPriceLineHitAreas('context')}{[...drawings, ...productionDrawings].map((drawing, index) => (!drawing.paper || !drawing.closed || drawing.id === visibleClosedId) && (!drawing.paper || !drawing.symbol || drawing.symbol === symbol) && (drawing.chart === 'context' || drawing.paper) ? renderDrawing(drawing, index, 'context') : null)}{tool && drawingStart && drawingEnd && drawingCanvas === 'context' && renderDrawing({ type: tool, chart: 'context', start: drawingStart, end: drawingEnd }, 'preview', 'context')}{lassoStart && lassoEnd && drawingCanvas === 'context' && <rect x={Math.min(lassoStart.x, lassoEnd.x)} y={Math.min(lassoStart.y, lassoEnd.y)} width={Math.abs(lassoStart.x - lassoEnd.x)} height={Math.abs(lassoStart.y - lassoEnd.y)} className="selection-lasso" />}</svg></section><section className="primary-chart"><div className="chart-panel-label">{entryInterval.toUpperCase()} · AJUSTE DE ENTRADA</div>{chartStageView}</section></div>;
 
   return mobilePwa ? <main className="trading-shell pwa-shell">
     <header className="pwa-mobile-header"><div><span className="pwa-brand">helloworld</span><span className="pwa-market">{broker.toUpperCase()} · {entryInterval.toUpperCase()} ENTRADA · {interval.toUpperCase()} CONTEXTO</span></div><select className="pwa-symbol-select" value={broker} onChange={event => { const next = event.target.value as 'binance' | 'ctrader'; setBroker(next); setSymbol(next === 'ctrader' ? 'AUDUSD' : 'BTCUSDT'); }} aria-label="Broker"><option value="binance">Binance</option><option value="ctrader">cTrader</option></select><select className="pwa-symbol-select" value={symbol} onChange={event => setSymbol(event.target.value)} aria-label="Símbolo">{selectableSymbols.map(option => <option key={option}>{option}</option>)}</select>{profileButton}</header>
