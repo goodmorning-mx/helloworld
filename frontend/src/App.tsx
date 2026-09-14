@@ -55,6 +55,7 @@ const BINANCE_MIN_OPERATION_LEVERAGE = 1;
 const BINANCE_MARGIN_RESERVE_USDT = 1;
 type BinanceSizingMode = 'minimum' | 'maximum';
 type ViewportSnapshot = { bars: number; futureBars: number; yBelow: number; yAbove: number };
+const ENTRY_VIEWPORT_DEFAULTS: ViewportSnapshot = { bars: 100, futureBars: 0, yBelow: 14, yAbove: 11 };
 function renderBars(bars: Array<{ time: UTCTimestamp; open: number; high: number; low: number; close: number }>, max: number) {
   return bars.slice(-max);
 }
@@ -803,7 +804,7 @@ function Workspace() {
   const [viewportFutureBars, setViewportFutureBars] = useState(12);
   const [viewportYBelow, setViewportYBelow] = useState(22);
   const [viewportYAbove, setViewportYAbove] = useState(3);
-  const [entryViewportSnapshot, setEntryViewportSnapshot] = useState<ViewportSnapshot>({ bars: 37, futureBars: 12, yBelow: 22, yAbove: 3 });
+  const [entryViewportSnapshot, setEntryViewportSnapshot] = useState<ViewportSnapshot>(ENTRY_VIEWPORT_DEFAULTS);
   const [overviewViewportSnapshot, setOverviewViewportSnapshot] = useState<ViewportSnapshot>({ bars: 37, futureBars: 12, yBelow: 22, yAbove: 3 });
   const syncViewportSnapshot = (chart: ReturnType<typeof createChart>, data: Array<{ close: number }>, setSnapshot: React.Dispatch<React.SetStateAction<ViewportSnapshot>>) => {
     const snapshot = getChartViewportSnapshot(chart, data);
@@ -1407,7 +1408,7 @@ function Workspace() {
           if (hadBars && !showHeikinAshi) candles.update(candleBarsRef.current[candleBarsRef.current.length - 1]);
           else setDataPreservingRange(showHeikinAshi ? calculateHeikinAshi(visibleBars) : visibleBars);
           if (!polling) {
-            applyDefaultChartViewport(chart, visibleBars, viewportBars, viewportFutureBars, viewportYBelow, viewportYAbove);
+            applyDefaultChartViewport(chart, visibleBars, ENTRY_VIEWPORT_DEFAULTS.bars, ENTRY_VIEWPORT_DEFAULTS.futureBars, ENTRY_VIEWPORT_DEFAULTS.yBelow, ENTRY_VIEWPORT_DEFAULTS.yAbove);
             syncViewportSnapshot(chart, visibleBars, setEntryViewportSnapshot);
             requestAnimationFrame(() => { if (active) initializingViewport = false; });
           }
@@ -1455,7 +1456,7 @@ function Workspace() {
         const visibleBars = renderBars(candleBarsRef.current, MAX_ENTRY_RENDER_BARS);
         initializingViewport = true;
         setDataPreservingRange(showHeikinAshi ? calculateHeikinAshi(visibleBars) : visibleBars);
-        applyDefaultChartViewport(chart, visibleBars, viewportBars, viewportFutureBars, viewportYBelow, viewportYAbove);
+        if (!hadLiveBars || !chart.timeScale().getVisibleLogicalRange()) applyDefaultChartViewport(chart, visibleBars, ENTRY_VIEWPORT_DEFAULTS.bars, ENTRY_VIEWPORT_DEFAULTS.futureBars, ENTRY_VIEWPORT_DEFAULTS.yBelow, ENTRY_VIEWPORT_DEFAULTS.yAbove);
         syncViewportSnapshot(chart, visibleBars, setEntryViewportSnapshot);
         requestAnimationFrame(() => { if (active) initializingViewport = false; });
         setTrackerRevision(value => value + 1);
@@ -1589,7 +1590,6 @@ function Workspace() {
     setViewportYBelow(defaults.yBelow);
     setViewportYAbove(defaults.yAbove);
     requestAnimationFrame(() => {
-      if (chartRef.current && candleBarsRef.current.length > 0) applyDefaultChartViewport(chartRef.current, candleBarsRef.current, defaults.bars, defaults.futureBars, defaults.yBelow, defaults.yAbove);
       if (overviewChartRef.current && overviewBarsRef.current.length > 0) applyDefaultChartViewport(overviewChartRef.current, overviewBarsRef.current, defaults.bars, defaults.futureBars, defaults.yBelow, defaults.yAbove);
     });
   }, [interval]);
