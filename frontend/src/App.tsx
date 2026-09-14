@@ -57,16 +57,16 @@ type BinanceSizingMode = 'minimum' | 'maximum';
 function renderBars(bars: Array<{ time: UTCTimestamp; open: number; high: number; low: number; close: number }>, max: number) {
   return bars.slice(-max);
 }
-function applyDefaultChartViewport(chart: ReturnType<typeof createChart>, data: Array<{ close: number }>, visibleBars: number) {
+function applyDefaultChartViewport(chart: ReturnType<typeof createChart>, data: Array<{ close: number }>, visibleBars: number, futureBars = 20, yBelow = 15, yAbove = 10) {
   if (!data.length) return;
   const lastIndex = data.length - 1;
   chart.timeScale().setVisibleLogicalRange({
     from: Math.max(0, lastIndex - Math.min(visibleBars, data.length) + 1),
-    to: lastIndex + 20,
+    to: lastIndex + futureBars,
   });
   const close = Number(data[lastIndex].close);
   if (Number.isFinite(close) && close > 0) {
-    chart.priceScale('right').setVisibleRange({ from: close * 0.85, to: close * 1.10 });
+    chart.priceScale('right').setVisibleRange({ from: close * (1 - yBelow / 100), to: close * (1 + yAbove / 100) });
   }
 }
 function mergeTickBar(bars: Array<{ time: UTCTimestamp; open: number; high: number; low: number; close: number }>, time: number, price: number, intervalSeconds: number) {
@@ -784,6 +784,10 @@ function Workspace() {
   const [binanceExecutionIntents, setBinanceExecutionIntents] = useState<BinanceExecutionIntent[]>([]);
   const [broker, setBroker] = useState<'binance' | 'ctrader'>('binance');
   const [interval, setInterval] = useState<'1s' | '1m' | '3m' | '5m' | '15m'>('5m');
+  const [viewportBars, setViewportBars] = useState(120);
+  const [viewportFutureBars, setViewportFutureBars] = useState(20);
+  const [viewportYBelow, setViewportYBelow] = useState(15);
+  const [viewportYAbove, setViewportYAbove] = useState(10);
   const entryInterval = '1m' as const;
   const brokerSymbols = broker === 'ctrader' ? ['AUDUSD', 'XAUUSD', 'XAGUSD'] : ['BTCUSDT', 'ETHUSDT', 'BNBUSDT', 'SOLUSDT', 'XRPUSDT', 'DOGEUSDT'];
   const [timezone, setTimezone] = useState('America/Mexico_City');
@@ -1380,7 +1384,7 @@ function Workspace() {
           if (hadBars && !showHeikinAshi) candles.update(candleBarsRef.current[candleBarsRef.current.length - 1]);
           else setDataPreservingRange(showHeikinAshi ? calculateHeikinAshi(visibleBars) : visibleBars);
           if (!polling) {
-            applyDefaultChartViewport(chart, visibleBars, MAX_ENTRY_RENDER_BARS);
+            applyDefaultChartViewport(chart, visibleBars, viewportBars, viewportFutureBars, viewportYBelow, viewportYAbove);
             requestAnimationFrame(() => { if (active) initializingViewport = false; });
           }
           polling += 1;
@@ -1427,7 +1431,7 @@ function Workspace() {
         const visibleBars = renderBars(candleBarsRef.current, MAX_ENTRY_RENDER_BARS);
         initializingViewport = true;
         setDataPreservingRange(showHeikinAshi ? calculateHeikinAshi(visibleBars) : visibleBars);
-        applyDefaultChartViewport(chart, visibleBars, MAX_ENTRY_RENDER_BARS);
+        applyDefaultChartViewport(chart, visibleBars, viewportBars, viewportFutureBars, viewportYBelow, viewportYAbove);
         requestAnimationFrame(() => { if (active) initializingViewport = false; });
         setTrackerRevision(value => value + 1);
         setViewportRevision(value => value + 1);
@@ -1630,7 +1634,7 @@ function Workspace() {
           if (hadBars && !showHeikinAshi) candles.update(overviewBarsRef.current[overviewBarsRef.current.length - 1]);
           else setDataPreservingRange(showHeikinAshi ? calculateHeikinAshi(visibleBars) : visibleBars);
           if (!polling) {
-            applyDefaultChartViewport(chart, visibleBars, MAX_CONTEXT_RENDER_BARS);
+            applyDefaultChartViewport(chart, visibleBars, viewportBars, viewportFutureBars, viewportYBelow, viewportYAbove);
             requestAnimationFrame(() => { if (active) initializingViewport = false; });
           }
           polling += 1;
@@ -1675,7 +1679,7 @@ function Workspace() {
         const visibleBars = renderBars(overviewBarsRef.current, MAX_CONTEXT_RENDER_BARS);
         initializingViewport = true;
         setDataPreservingRange(showHeikinAshi ? calculateHeikinAshi(visibleBars) : visibleBars);
-        applyDefaultChartViewport(chart, visibleBars, MAX_CONTEXT_RENDER_BARS);
+        applyDefaultChartViewport(chart, visibleBars, viewportBars, viewportFutureBars, viewportYBelow, viewportYAbove);
         requestAnimationFrame(() => { if (active) initializingViewport = false; });
         setTrackerRevision(value => value + 1);
       }).catch(() => undefined);
@@ -1717,6 +1721,11 @@ function Workspace() {
     if (!binanceRules || mobilePwa) return;
     overviewCandlesRef.current?.applyOptions({ priceFormat: { type: 'price', precision: binanceRules.price_precision, minMove: binanceRules.tick_size || 0.00000001 } });
   }, [binanceRules, mobilePwa]);
+
+  useEffect(() => {
+    if (chartRef.current && candleBarsRef.current.length > 0) applyDefaultChartViewport(chartRef.current, candleBarsRef.current, viewportBars, viewportFutureBars, viewportYBelow, viewportYAbove);
+    if (overviewChartRef.current && overviewBarsRef.current.length > 0) applyDefaultChartViewport(overviewChartRef.current, overviewBarsRef.current, viewportBars, viewportFutureBars, viewportYBelow, viewportYAbove);
+  }, [viewportBars, viewportFutureBars, viewportYBelow, viewportYAbove]);
 
   useEffect(() => {
     const chart = chartRef.current;
@@ -2858,7 +2867,7 @@ function Workspace() {
     : 'broker-not-ready';
   const desktopHeader = <div className="symbol-bar"><select className={`broker-select ${broker === 'binance' ? binanceStatusClass : ''}`} value={broker} onChange={event => { const next = event.target.value as 'binance' | 'ctrader'; setBroker(next); setSymbol(next === 'ctrader' ? 'AUDUSD' : 'BTCUSDT'); }} aria-label="Broker"><option value="binance">Binance</option><option value="ctrader">cTrader</option></select><select className="symbol-select" value={symbol} onChange={event => setSymbol(event.target.value)} aria-label="Símbolo">
     {selectableSymbols.map(option => <option key={option}>{option}</option>)}
-  </select><select className="interval-select" value={interval} onChange={event => setInterval(event.target.value as typeof interval)} aria-label="Intervalo de contexto">{(['1s', '1m', '3m', '5m', '15m'] as const).map(value => <option key={value} value={value}>{value}</option>)}</select>{scannerStatusBar}{broker === 'binance' && <>{productionPositionLabel && <span className={`production-position-summary ${productionPositions.some(position => Number(position.unrealized_pnl ?? 0) >= 0) ? 'production-profit' : 'production-loss'}`}>{productionPositionLabel}</span>}</>}{statusBarMessage && <span className="header-status-error" role="status" title={statusBarMessage}>⚠ {statusBarMessage}</span>}<div className="chart-tools" aria-label="Herramientas del gráfico">
+  </select><select className="interval-select" value={interval} onChange={event => setInterval(event.target.value as typeof interval)} aria-label="Intervalo de contexto">{(['1s', '1m', '3m', '5m', '15m'] as const).map(value => <option key={value} value={value}>{value}</option>)}</select>{scannerStatusBar}{broker === 'binance' && <>{productionPositionLabel && <span className={`production-position-summary ${productionPositions.some(position => Number(position.unrealized_pnl ?? 0) >= 0) ? 'production-profit' : 'production-loss'}`}>{productionPositionLabel}</span>}</>}{statusBarMessage && <span className="header-status-error" role="status" title={statusBarMessage}>⚠ {statusBarMessage}</span>}<div className="chart-viewport-controls" aria-label="Ajuste temporal del viewport"><label>X<select value={viewportBars} onChange={event => setViewportBars(Number(event.target.value))}>{[60, 80, 100, 120, 160, 240].map(value => <option key={value} value={value}>{value} velas</option>)}</select></label><label>Futuro<select value={viewportFutureBars} onChange={event => setViewportFutureBars(Number(event.target.value))}>{[0, 10, 20, 30, 40].map(value => <option key={value} value={value}>{value}</option>)}</select></label><label>Y−<select value={viewportYBelow} onChange={event => setViewportYBelow(Number(event.target.value))}>{[5, 10, 15, 20, 25, 30].map(value => <option key={value} value={value}>−{value}%</option>)}</select></label><label>Y+<select value={viewportYAbove} onChange={event => setViewportYAbove(Number(event.target.value))}>{[5, 10, 15, 20, 25, 30].map(value => <option key={value} value={value}>+{value}%</option>)}</select></label></div><div className="chart-tools" aria-label="Herramientas del gráfico">
     {labButton}{riskEngineButton}{pnlCalendarButton}{eventMarkersButton}<button className={`indicator-bar-button ${showHeikinAshi ? 'indicator-toggle-active' : ''}`} onClick={() => setShowHeikinAshi(value => !value)} aria-pressed={showHeikinAshi} aria-label="Alternar Heikin Ashi" title="Heikin Ashi">HA</button><button className={!tool ? 'tool-active' : ''} onClick={() => setTool(null)} aria-label="Seleccionar y navegar" title="Seleccionar y navegar">↖</button>
     {([['line', '╱', 'Línea'], ['ruler', '▥', 'Regla'], ['long', 'L', 'Long'], ['short', 'S', 'Short'], ['zoom', '⌗', 'Zoom lazo']] as const).map(([key, icon, label]) => <button key={key} className={tool === key ? 'tool-active' : ''} onClick={() => chooseTool(key)} aria-label={label} title={label}>{icon}</button>)}<button onClick={() => { resetChartZoom('entry'); resetChartZoom('context'); }} aria-label="Restablecer zoom" title="Restablecer zoom">↺</button>
     <button onClick={() => setDrawings(current => current.filter(drawing => drawing.paper))} aria-label="Borrar dibujos" title="Borrar dibujos">×</button>
