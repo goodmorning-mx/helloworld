@@ -914,7 +914,7 @@ function Workspace() {
   const [lassoEnd, setLassoEnd] = useState<{ x: number; y: number } | null>(null);
   const [drawingCanvas, setDrawingCanvas] = useState<ChartCanvas>('entry');
   const [moveStart, setMoveStart] = useState<{ index: number; point: ChartPoint; drawing: Drawing } | null>(null);
-  const panStartRef = useRef<{ canvas: ChartCanvas; x: number; y: number; xLogicalPerPixel: number; yPricePerPixel: number; xRange: { from: number; to: number }; priceRange: { from: number; to: number } } | null>(null);
+  const panStartRef = useRef<{ canvas: ChartCanvas; x: number; y: number; xLogicalPerPixel: number; startPrice: number; xRange: { from: number; to: number }; priceRange: { from: number; to: number } } | null>(null);
   const [mobileSheet, setMobileSheet] = useState<'indicators' | 'tools' | null>(null);
   const [, setActivePositionIndex] = useState<number | null>(null);
   const activePositionIndexRef = useRef<number | null>(null);
@@ -2133,12 +2133,11 @@ function Workspace() {
         const xLogical = chart?.timeScale().coordinateToLogical(point.x);
         const xLogicalNext = chart?.timeScale().coordinateToLogical(point.x + 1);
         const yPrice = candles?.coordinateToPrice(point.y);
-        const yPriceNext = candles?.coordinateToPrice(point.y + 1);
-        if (chart && candles && xLogical !== null && xLogical !== undefined && xLogicalNext !== null && xLogicalNext !== undefined && yPrice !== null && yPrice !== undefined && yPriceNext !== null && yPriceNext !== undefined && xRange && priceRange) {
+        if (chart && candles && xLogical !== null && xLogical !== undefined && xLogicalNext !== null && xLogicalNext !== undefined && yPrice !== null && yPrice !== undefined && xRange && priceRange) {
           event.preventDefault();
           event.stopPropagation();
           event.currentTarget.setPointerCapture(event.pointerId);
-          panStartRef.current = { canvas, x: point.x, y: point.y, xLogicalPerPixel: Number(xLogicalNext) - Number(xLogical), yPricePerPixel: yPriceNext - yPrice, xRange, priceRange };
+          panStartRef.current = { canvas, x: point.x, y: point.y, xLogicalPerPixel: Number(xLogicalNext) - Number(xLogical), startPrice: yPrice, xRange, priceRange };
         }
       }
       return;
@@ -2161,10 +2160,11 @@ function Workspace() {
     if (panStartRef.current) {
       const point = pointFromEvent(event);
       const pan = panStartRef.current;
-      const { chart } = chartContext(pan.canvas);
-      if (chart) {
+      const { chart, candles } = chartContext(pan.canvas);
+      const currentPrice = candles?.coordinateToPrice(point.y);
+      if (chart && currentPrice !== null && currentPrice !== undefined) {
         const xDelta = -(point.x - pan.x) * pan.xLogicalPerPixel;
-        const yDelta = -(point.y - pan.y) * pan.yPricePerPixel;
+        const yDelta = Number(currentPrice) - pan.startPrice;
         // Apply both axes from the original range in one pass. Reading the
         // already-shifted range here causes diagonal drags to oscillate.
         chart.timeScale().setVisibleLogicalRange({ from: pan.xRange.from + xDelta, to: pan.xRange.to + xDelta });
