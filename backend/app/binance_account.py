@@ -176,14 +176,20 @@ class BinanceAccountMonitor:
     def _run(self) -> None:
         if connect is None:
             self._set(error="La dependencia WebSocket no está disponible")
+            self._publish_snapshot("STREAM_ERROR")
             return
         retry = 1
         while not self._stop.is_set():
             try:
                 self._refresh_account()
+                # The initial REST bootstrap happens in the backend, but the
+                # browser must receive its result through the same real-time
+                # channel as every later account event.
+                self._publish_snapshot("ACCOUNT_SNAPSHOT")
                 listen_key = self._create_listen_key()
                 with connect(f"{self._ws_base}/{listen_key}", open_timeout=10, ping_interval=20, ping_timeout=20) as socket:
                     self._set(healthy=True, stream_connected=True, error=None)
+                    self._publish_snapshot("STREAM_CONNECTED")
                     retry = 1
                     last_keepalive = time.monotonic()
                     while not self._stop.is_set():
@@ -199,6 +205,7 @@ class BinanceAccountMonitor:
                 logger.warning("Binance User Data Stream disconnected: %s", exc)
                 self._set_error(exc)
                 self._set(healthy=False, stream_connected=False)
+                self._publish_snapshot("STREAM_ERROR")
                 self._stop.wait(retry)
                 retry = min(retry * 2, 30)
 
@@ -291,6 +298,13 @@ class BinanceAccountMonitor:
             self._on_event(payload)
         except Exception:
             logger.exception("Binance account event callback failed")
+
+    def _publish_snapshot(self, event_type: str) -> None:
+        self._emit_event({
+            "type": event_type,
+            "snapshot": self.snapshot(),
+            "backend_received_at_ms": int(time.time() * 1000),
+        })
 
     @staticmethod
     def _position(row: dict) -> dict[str, object]:
