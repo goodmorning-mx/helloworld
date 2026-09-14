@@ -1628,6 +1628,7 @@ function Workspace() {
         if (oldest <= historyCutoff) return;
       overviewLoadingOlderRef.current = true;
       const previousRange = { from: logicalRange.from, to: logicalRange.to };
+      const previousBarCount = overviewBarsRef.current.length;
       const secondsPerBar = interval === '1s' ? 1 : interval === '1m' ? 60 : interval === '3m' ? 180 : interval === '5m' ? 300 : 900;
         const dayStart = Math.max(historyCutoff, oldest - 86400);
       const expected = Math.ceil((oldest - dayStart) / secondsPerBar);
@@ -1651,7 +1652,10 @@ function Workspace() {
         overviewCandleDataRef.current = overviewBarsRef.current.map(({ time, close }) => ({ time, close }));
         const visibleBars = renderBars(overviewBarsRef.current, MAX_CONTEXT_RENDER_BARS);
         candles.setData(showHeikinAshi ? calculateHeikinAshi(visibleBars) : visibleBars);
-        chart.timeScale().setVisibleLogicalRange({ from: previousRange.from + older.length, to: previousRange.to + older.length });
+        const previousRenderStart = Math.max(0, previousBarCount - MAX_CONTEXT_RENDER_BARS);
+        const nextRenderStart = Math.max(0, overviewBarsRef.current.length - MAX_CONTEXT_RENDER_BARS);
+        const renderOffset = previousRenderStart - nextRenderStart;
+        chart.timeScale().setVisibleLogicalRange({ from: previousRange.from + renderOffset, to: previousRange.to + renderOffset });
         setOverviewRevision(value => value + 1);
       }).catch(() => undefined).finally(() => { overviewLoadingOlderRef.current = false; });
     };
@@ -2121,6 +2125,20 @@ function Workspace() {
           event.stopPropagation();
           event.currentTarget.setPointerCapture(event.pointerId);
           setMoveStart({ index: hit, point: chartPoint, drawing: drawings[hit] });
+        }
+      } else {
+        const { chart, candles } = chartContext(canvas);
+        const xRange = chart?.timeScale().getVisibleLogicalRange();
+        const priceRange = chart?.priceScale('right').getVisibleRange();
+        const xLogical = chart?.timeScale().coordinateToLogical(point.x);
+        const xLogicalNext = chart?.timeScale().coordinateToLogical(point.x + 1);
+        const yPrice = candles?.coordinateToPrice(point.y);
+        const yPriceNext = candles?.coordinateToPrice(point.y + 1);
+        if (chart && candles && xLogical !== null && xLogical !== undefined && xLogicalNext !== null && xLogicalNext !== undefined && yPrice !== null && yPrice !== undefined && yPriceNext !== null && yPriceNext !== undefined && xRange && priceRange) {
+          event.preventDefault();
+          event.stopPropagation();
+          event.currentTarget.setPointerCapture(event.pointerId);
+          panStartRef.current = { canvas, x: point.x, y: point.y, xLogicalPerPixel: Number(xLogicalNext) - Number(xLogical), yPricePerPixel: yPriceNext - yPrice, xRange, priceRange };
         }
       }
       return;
