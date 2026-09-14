@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type FormEvent, type PointerEvent, type ReactNode, type WheelEvent as ReactWheelEvent } from 'react';
+import { useEffect, useMemo, useRef, useState, type FormEvent, type PointerEvent, type ReactNode } from 'react';
 import { AuthGuard, AuthProvider, createAuthClient, useAuth, type AuthClient } from '@goodmorning/gm-auth';
 import { PwaRuntime } from '@goodmorning/gm-pwa';
 import { CandlestickSeries, createChart, type IPriceLine, type Time, type UTCTimestamp } from 'lightweight-charts';
@@ -830,7 +830,7 @@ function Workspace() {
   const [indicatorHover, setIndicatorHover] = useState<{ canvas: ChartCanvas; x: number; y: number; label: string } | null>(null);
   const [stageSize, setStageSize] = useState({ width: 1, height: 1 });
   const [overviewSize, setOverviewSize] = useState({ width: 1, height: 1 });
-  const [tool, setTool] = useState<'line' | 'ruler' | 'long' | 'short' | 'zoom' | 'pan' | null>(null);
+  const [tool, setTool] = useState<'line' | 'ruler' | 'long' | 'short' | 'pan' | null>(null);
   const [viewportRevision, setViewportRevision] = useState(0);
   const [overviewRevision, setOverviewRevision] = useState(0);
   const [trackerRevision, setTrackerRevision] = useState(0);
@@ -878,7 +878,7 @@ function Workspace() {
   };
   type ChartPoint = { time: UTCTimestamp; price: number };
   type ChartCanvas = 'entry' | 'context';
-  type Drawing = { id?: string; symbol?: string; type: 'line' | 'ruler' | 'long' | 'short' | 'zoom'; start: ChartPoint; end: ChartPoint; stop?: ChartPoint; target?: ChartPoint; chart?: ChartCanvas; paper?: boolean; real?: boolean; closed?: boolean; closeReason?: 'TP' | 'SL' | 'MANUAL'; status?: 'OPEN' | 'CLOSED - WIN' | 'CLOSED - FAILED'; riskPercent?: number; quantity?: number; notional?: number; margin?: number; pnl?: number };
+  type Drawing = { id?: string; symbol?: string; type: 'line' | 'ruler' | 'long' | 'short'; start: ChartPoint; end: ChartPoint; stop?: ChartPoint; target?: ChartPoint; chart?: ChartCanvas; paper?: boolean; real?: boolean; closed?: boolean; closeReason?: 'TP' | 'SL' | 'MANUAL'; status?: 'OPEN' | 'CLOSED - WIN' | 'CLOSED - FAILED'; riskPercent?: number; quantity?: number; notional?: number; margin?: number; pnl?: number };
   const [drawings, setDrawings] = useState<Drawing[]>([]);
   const [chartEventRules, setChartEventRules] = useState<ChartEventRule[]>(() => {
     try {
@@ -1334,7 +1334,7 @@ function Workspace() {
       rightPriceScale: { borderColor: '#252a31' },
       localization: { locale: 'es-MX', timeFormatter: (time: Time) => chartTimeLabel(time, timezone, true), priceFormatter: formatPaperPrice },
       handleScroll: { mouseWheel: true, pressedMouseMove: true, horzTouchDrag: true, vertTouchDrag: true },
-      handleScale: { axisPressedMouseMove: true, mouseWheel: true, pinch: true },
+      handleScale: { axisPressedMouseMove: false, mouseWheel: true, pinch: true },
       timeScale: { borderColor: '#252a31', timeVisible: true, secondsVisible: false, tickMarkFormatter: (time: Time) => chartTimeLabel(time, timezone, false) },
     });
     const candles = chart.addSeries(CandlestickSeries, { upColor: '#64d39a', downColor: '#f27e7e', borderVisible: false, wickUpColor: '#64d39a', wickDownColor: '#f27e7e', priceFormat: { type: 'price', precision: binanceRules?.price_precision ?? 8, minMove: binanceRules?.tick_size || 0.00000001 } });
@@ -1603,7 +1603,7 @@ function Workspace() {
       rightPriceScale: { borderColor: '#252a31' },
       localization: { locale: 'es-MX', timeFormatter: (time: Time) => chartTimeLabel(time, timezone, true), priceFormatter: formatPaperPrice },
       handleScroll: { mouseWheel: true, pressedMouseMove: true, horzTouchDrag: true, vertTouchDrag: true },
-      handleScale: { axisPressedMouseMove: true, mouseWheel: true, pinch: true },
+      handleScale: { axisPressedMouseMove: false, mouseWheel: true, pinch: true },
       timeScale: { borderColor: '#252a31', timeVisible: true, secondsVisible: false, tickMarkFormatter: (time: Time) => chartTimeLabel(time, timezone, false) },
     });
     const candles = chart.addSeries(CandlestickSeries, { upColor: '#64d39a', downColor: '#f27e7e', borderVisible: false, wickUpColor: '#64d39a', wickDownColor: '#f27e7e', priceFormat: { type: 'price', precision: binanceRules?.price_precision ?? 8, minMove: binanceRules?.tick_size || 0.00000001 } });
@@ -2104,14 +2104,6 @@ function Workspace() {
       }
       return;
     }
-    if (tool === 'zoom') {
-      event.preventDefault();
-      event.stopPropagation();
-      event.currentTarget.setPointerCapture(event.pointerId);
-      setLassoStart(point);
-      setLassoEnd(point);
-      return;
-    }
     const handle = handleAt(point, canvas);
     if (handle) {
       event.preventDefault();
@@ -2140,19 +2132,6 @@ function Workspace() {
           event.stopPropagation();
           event.currentTarget.setPointerCapture(event.pointerId);
           setMoveStart({ index: hit, point: chartPoint, drawing: drawings[hit] });
-        }
-      } else {
-        const { chart, candles } = chartContext(canvas);
-        const xRange = chart?.timeScale().getVisibleLogicalRange();
-        const priceRange = chart?.priceScale('right').getVisibleRange();
-        const xLogical = chart?.timeScale().coordinateToLogical(point.x);
-        const xLogicalNext = chart?.timeScale().coordinateToLogical(point.x + 1);
-        const yPrice = candles?.coordinateToPrice(point.y);
-        if (chart && candles && xLogical !== null && xLogical !== undefined && xLogicalNext !== null && xLogicalNext !== undefined && yPrice !== null && yPrice !== undefined && xRange && priceRange) {
-          event.preventDefault();
-          event.stopPropagation();
-          event.currentTarget.setPointerCapture(event.pointerId);
-          panStartRef.current = { canvas, x: point.x, y: point.y, xLogicalPerPixel: Number(xLogicalNext) - Number(xLogical), startPrice: yPrice, xRange, priceRange };
         }
       }
       return;
@@ -2236,24 +2215,6 @@ function Workspace() {
       const end = pointFromEvent(event);
       const left = Math.min(lassoStart.x, end.x);
       const right = Math.max(lassoStart.x, end.x);
-      if (tool === 'zoom') {
-        const { chart } = chartContext(drawingCanvas);
-        const from = chart?.timeScale().coordinateToLogical(left);
-        const to = chart?.timeScale().coordinateToLogical(right);
-        const barCount = drawingCanvas === 'context' ? overviewBarsRef.current.length : candleBarsRef.current.length;
-        if (chart && from !== null && from !== undefined && to !== null && to !== undefined && Number.isFinite(from) && Number.isFinite(to) && barCount > 1) {
-          const selectedFrom = Math.max(0, Math.min(Number(from), Number(to)));
-          const selectedTo = Math.min(barCount - 1, Math.max(Number(from), Number(to)));
-          if (selectedTo - selectedFrom >= 1) {
-            chart.timeScale().setVisibleLogicalRange({ from: selectedFrom, to: selectedTo });
-          }
-        }
-        setLassoStart(null);
-        setLassoEnd(null);
-        setTool(null);
-        if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
-        return;
-      }
       const top = Math.min(lassoStart.y, end.y);
       const bottom = Math.max(lassoStart.y, end.y);
       const matches = drawings.map((drawing, index) => ({ drawing, index })).filter(({ drawing }) => {
@@ -2285,7 +2246,7 @@ function Workspace() {
       if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
       return;
     }
-    if (!tool || tool === 'zoom' || tool === 'pan' || !drawingStart) return;
+    if (!tool || tool === 'pan' || !drawingStart) return;
     event.preventDefault();
     event.stopPropagation();
     const end = chartPointFromEvent(event, drawingCanvas);
@@ -2549,46 +2510,8 @@ function Workspace() {
     if (visibleClosedId === position.id) setVisibleClosedId(null);
   }
 
-  function chooseTool(key: 'line' | 'ruler' | 'long' | 'short' | 'zoom' | 'pan') {
+  function chooseTool(key: 'line' | 'ruler' | 'long' | 'short' | 'pan') {
     setTool(tool === key ? null : key);
-  }
-
-  function resetChartZoom(canvas: ChartCanvas = 'entry') {
-    const { chart } = chartContext(canvas);
-    if (chart) chart.timeScale().fitContent();
-  }
-
-  function handleChartWheel(event: ReactWheelEvent<HTMLElement>, canvas: ChartCanvas) {
-    // Chromium reports a trackpad pinch as ctrl/meta + wheel. Convert that
-    // gesture into a smooth two-axis zoom so it does not become a vertical
-    // price stretch. Regular wheel input remains native to Lightweight Charts.
-    if (event.ctrlKey || event.metaKey) {
-      const { chart, candles } = chartContext(canvas);
-      if (chart && candles) {
-        const bounds = event.currentTarget.getBoundingClientRect();
-        const x = event.clientX - bounds.left;
-        const y = event.clientY - bounds.top;
-        const xCenter = chart.timeScale().coordinateToLogical(x);
-        const xRange = chart.timeScale().getVisibleLogicalRange();
-        const yRange = chart.priceScale('right').getVisibleRange();
-        const yCenter = candles.coordinateToPrice(y);
-        if (xCenter !== null && xCenter !== undefined && xRange && yRange) {
-          const factor = Math.exp(Math.max(-80, Math.min(80, event.deltaY)) * 0.0025);
-          chart.timeScale().setVisibleLogicalRange({
-            from: Number(xCenter) + (xRange.from - Number(xCenter)) * factor,
-            to: Number(xCenter) + (xRange.to - Number(xCenter)) * factor,
-          });
-          const priceCenter = yCenter ?? (Number(yRange.from) + Number(yRange.to)) / 2;
-          chart.priceScale('right').setVisibleRange({
-            from: priceCenter + (Number(yRange.from) - priceCenter) * factor,
-            to: priceCenter + (Number(yRange.to) - priceCenter) * factor,
-          });
-          event.preventDefault();
-          event.stopPropagation();
-        }
-      }
-    }
-    requestAnimationFrame(() => captureChartViewport(canvas));
   }
 
   function captureChartViewport(canvas: ChartCanvas) {
@@ -2884,7 +2807,7 @@ function Workspace() {
     const tpAmount = quantity * Math.abs(target - entry);
     return { side, entry, stop, target, targetPercent, quantity, notional, fees, leverage, marginMultiplier, slAmount, tpAmount, margin: leverage > 0 ? notional / leverage : 0 };
   }) : [];
-  const chartStageView = <div ref={chartStage} className={`chart-stage ${tool ? 'drawing-mode' : ''}`} onWheelCapture={event => handleChartWheel(event, 'entry')} onPointerDownCapture={startDrawing} onPointerMoveCapture={updateDrawing} onPointerUpCapture={event => finishDrawingAndCapture(event, 'entry')} onPointerCancelCapture={() => { setDrawingStart(null); setDrawingEnd(null); setMoveStart(null); panStartRef.current = null; setResizeStart(null); setLassoStart(null); setLassoEnd(null); }}><div className="chart-viewport-snapshot" aria-label="Snapshot del viewport de entrada">X {entryViewportSnapshot.bars} · Futuro {entryViewportSnapshot.futureBars} · Y− {entryViewportSnapshot.yBelow}% · Y+ {entryViewportSnapshot.yAbove}%</div>
+  const chartStageView = <div ref={chartStage} className={`chart-stage ${tool ? 'drawing-mode' : ''}`} onPointerDownCapture={startDrawing} onPointerMoveCapture={updateDrawing} onPointerUpCapture={event => finishDrawingAndCapture(event, 'entry')} onPointerCancelCapture={() => { setDrawingStart(null); setDrawingEnd(null); setMoveStart(null); panStartRef.current = null; setResizeStart(null); setLassoStart(null); setLassoEnd(null); }}><div className="chart-viewport-snapshot" aria-label="Snapshot del viewport de entrada">X {entryViewportSnapshot.bars} · Futuro {entryViewportSnapshot.futureBars} · Y− {entryViewportSnapshot.yBelow}% · Y+ {entryViewportSnapshot.yAbove}%</div>
     {pendingBinanceTp && <div className="binance-tp-confirm" role="status"><span>Nuevo TP {pendingBinanceTp.symbol}: {formatPaperPrice(pendingBinanceTp.price)}</span><button type="button" onClick={() => void confirmBinanceTakeProfit()}>Confirmar TP</button><button type="button" onClick={() => { pendingBinanceTpRef.current = null; setPendingBinanceTp(null); }} aria-label="Cancelar cambio de TP">Cancelar</button></div>}
     <div ref={chartContainer} className="candlestick-chart" /><svg className="drawing-overlay" viewBox={`0 0 ${stageSize.width} ${stageSize.height}`} preserveAspectRatio="none" aria-hidden="true">{renderSessionIndicator()}{renderInterestMarkers()}{renderPriceLineHitAreas('entry')}{[...drawings, ...productionDrawings].map((drawing, index) => (!drawing.paper || !drawing.closed || drawing.id === visibleClosedId) && (!drawing.paper || !drawing.symbol || drawing.symbol === symbol) && (drawing.chart !== 'context' || drawing.paper) ? renderDrawing(drawing, index, 'entry') : null)}{tool && tool !== 'pan' && drawingStart && drawingEnd && drawingCanvas === 'entry' && renderDrawing({ type: tool, chart: 'entry', start: drawingStart, end: drawingEnd }, 'preview', 'entry')}{lassoStart && lassoEnd && drawingCanvas === 'entry' && <rect x={Math.min(lassoStart.x, lassoEnd.x)} y={Math.min(lassoStart.y, lassoEnd.y)} width={Math.abs(lassoStart.x - lassoEnd.x)} height={Math.abs(lassoStart.y - lassoEnd.y)} className="selection-lasso" />}</svg><div className="chart-bottom-controls"><span className="timezone-icon" aria-hidden="true">◷</span><select className="timezone-select" value={timezone} onChange={event => setTimezone(event.target.value)} aria-label="Zona horaria">{TIMEZONES.map(([label, value]) => <option key={value} value={value}>{value}</option>)}</select></div>
     <div className="floating-order-buttons" aria-label="Abrir operación simulada"><button className="open-long-button" disabled={!paperReady} onClick={() => void openSimulatedPosition('long')}>▲ <span>Abrir Long</span><small>{binancePreview.find(preview => preview.side === 'LONG') ? `SL -${binanceStopPercent.toFixed(2)}% · TP +${binancePreview.find(preview => preview.side === 'LONG')!.targetPercent.toFixed(2)}% · N ${binancePreview.find(preview => preview.side === 'LONG')!.notional.toFixed(2)} · M ${binancePreview.find(preview => preview.side === 'LONG')!.margin.toFixed(4)} · ${binancePreview.find(preview => preview.side === 'LONG')!.leverage}x` : labRecommendations ? `${labRecommendations.long.label} · R:R ${labRecommendations.long.rr.toFixed(2)}:1` : 'Calculando recomendación…'}</small></button><button className="open-short-button" disabled={!paperReady} onClick={() => void openSimulatedPosition('short')}>▼ <span>Abrir Short</span><small>{binancePreview.find(preview => preview.side === 'SHORT') ? `SL -${binanceStopPercent.toFixed(2)}% · TP +${binancePreview.find(preview => preview.side === 'SHORT')!.targetPercent.toFixed(2)}% · N ${binancePreview.find(preview => preview.side === 'SHORT')!.notional.toFixed(2)} · M ${binancePreview.find(preview => preview.side === 'SHORT')!.margin.toFixed(4)} · ${binancePreview.find(preview => preview.side === 'SHORT')!.leverage}x` : labRecommendations ? `${labRecommendations.short.label} · R:R ${labRecommendations.short.rr.toFixed(2)}:1` : 'Calculando recomendación…'}</small></button></div>
@@ -2948,7 +2871,7 @@ function Workspace() {
     {selectableSymbols.map(option => <option key={option}>{option}</option>)}
   </select><select className="interval-select" value={interval} onChange={event => setInterval(event.target.value as typeof interval)} aria-label="Intervalo de contexto">{(['1s', '1m', '3m', '5m', '15m'] as const).map(value => <option key={value} value={value}>{value}</option>)}</select>{scannerStatusBar}{broker === 'binance' && <>{productionPositionLabel && <span className={`production-position-summary ${productionPositions.some(position => Number(position.unrealized_pnl ?? 0) >= 0) ? 'production-profit' : 'production-loss'}`}>{productionPositionLabel}</span>}</>}{statusBarMessage && <span className="header-status-error" role="status" title={statusBarMessage}>⚠ {statusBarMessage}</span>}<div className="chart-tools" aria-label="Herramientas del gráfico">
     {labButton}{riskEngineButton}{pnlCalendarButton}{eventMarkersButton}<button className={`indicator-bar-button ${showHeikinAshi ? 'indicator-toggle-active' : ''}`} onClick={() => setShowHeikinAshi(value => !value)} aria-pressed={showHeikinAshi} aria-label="Alternar Heikin Ashi" title="Heikin Ashi">HA</button><button className={!tool ? 'tool-active' : ''} onClick={() => setTool(null)} aria-label="Seleccionar y navegar" title="Seleccionar y navegar">↖</button>
-    {([['line', '╱', 'Línea'], ['ruler', '▥', 'Regla'], ['long', 'L', 'Long'], ['short', 'S', 'Short'], ['zoom', '⌗', 'Zoom lazo'], ['pan', '✋', 'Pan']] as const).map(([key, icon, label]) => <button key={key} className={tool === key ? 'tool-active' : ''} onClick={() => chooseTool(key)} aria-label={label} title={label}>{icon}</button>)}<button onClick={() => { resetChartZoom('entry'); resetChartZoom('context'); }} aria-label="Restablecer zoom" title="Restablecer zoom">↺</button>
+    {([['line', '╱', 'Línea'], ['ruler', '▥', 'Regla'], ['long', 'L', 'Long'], ['short', 'S', 'Short'], ['pan', '✋', 'Pan']] as const).map(([key, icon, label]) => <button key={key} className={tool === key ? 'tool-active' : ''} onClick={() => chooseTool(key)} aria-label={label} title={label}>{icon}</button>)}
     <button onClick={() => setDrawings(current => current.filter(drawing => drawing.paper))} aria-label="Borrar dibujos" title="Borrar dibujos">×</button>
   </div>{profileButton}{showRiskEngine && <RiskEngineModal onClose={() => setShowRiskEngine(false)} />}{showEventMarkers && <EventMarkersPanel activeSymbol={symbol} apiUrl={apiUrl} accessToken={auth.accessToken} rules={chartEventRules} occurrences={chartEventOccurrences} onChange={setChartEventRules} onDeleteOccurrence={id => setChartEventOccurrences(current => current.filter(event => event.id !== id))} onClose={() => setShowEventMarkers(false)} />}<button className="logout-button" onClick={() => void auth.logout()} aria-label="Cerrar sesión">Salir</button></div>;
 
@@ -2961,8 +2884,8 @@ function Workspace() {
   const marketScanner = broker === 'binance' ? <section className="market-overview" aria-label="Resumen de operación Binance"><div className="market-scanner-training"><div className="training-card-content"><span className="positions-kicker">TRAINING OPERATOR · PNL NETO DIARIO</span><strong>${trainingPnl.toFixed(2)} / $40.00</strong><div className="training-progress-track"><span style={{ width: `${trainingProgress * 100}%` }} /></div><small>{trainingPnl >= 40 ? 'Meta diaria completada' : `Faltan $${Math.max(0, 40 - trainingPnl).toFixed(2)}`}</small></div><div className="binance-balance-card"><span className="positions-kicker">BINANCE · BALANCE</span><strong>{binanceLiveAccount?.futures_balance != null ? `${Number(binanceLiveAccount.futures_balance).toFixed(2)} USDT` : '—'}</strong><small>Disponible {binanceLiveAccount?.available_balance != null ? `${Number(binanceLiveAccount.available_balance).toFixed(2)} USDT` : '—'}</small><small>PNL abierto {binanceLiveAccount?.total_unrealized_pnl != null ? `${Number(binanceLiveAccount.total_unrealized_pnl) >= 0 ? '+' : ''}${Number(binanceLiveAccount.total_unrealized_pnl).toFixed(4)} USDT` : '—'}</small></div></div><div className="market-preview-slot"><div className="market-preview-card">{previewControls}{productionOrderPreview}</div></div></section> : null;
   const tradingAgent = <TradingAgentChat activeSymbol={symbol} interval={interval} apiUrl={apiUrl} accessToken={auth.accessToken} />;
 
-  const toolOptions = [['line', '╱', 'Línea'], ['ruler', '▥', 'Medir'], ['long', 'L', 'Long'], ['short', 'S', 'Short'], ['zoom', '⌗', 'Zoom lazo'], ['pan', '✋', 'Pan']] as const;
-  const chartsRow = <div className="charts-row"><section ref={overviewStage} className={`secondary-chart ${tool ? 'drawing-mode' : ''}`} onWheelCapture={event => handleChartWheel(event, 'context')} onPointerDownCapture={event => startDrawing(event, 'context')} onPointerMoveCapture={updateDrawing} onPointerUpCapture={event => finishDrawingAndCapture(event, 'context')} onPointerCancelCapture={() => { setDrawingStart(null); setDrawingEnd(null); setMoveStart(null); panStartRef.current = null; setResizeStart(null); setLassoStart(null); setLassoEnd(null); }}><div className="chart-panel-label">{interval.toUpperCase()} · CONTEXTO · {symbol}</div><div className="chart-viewport-snapshot" aria-label="Snapshot del viewport de contexto">X {overviewViewportSnapshot.bars} · Futuro {overviewViewportSnapshot.futureBars} · Y− {overviewViewportSnapshot.yBelow}% · Y+ {overviewViewportSnapshot.yAbove}%</div><div ref={overviewChartContainer} className="overview-chart" /><svg className="overview-overlay" viewBox={`0 0 ${overviewSize.width} ${overviewSize.height}`} preserveAspectRatio="none" aria-hidden="true">{renderOverviewSessions()}{renderOverviewInterestMarkers()}{renderPriceLineHitAreas('context')}{[...drawings, ...productionDrawings].map((drawing, index) => (!drawing.paper || !drawing.closed || drawing.id === visibleClosedId) && (!drawing.paper || !drawing.symbol || drawing.symbol === symbol) && (drawing.chart === 'context' || drawing.paper) ? renderDrawing(drawing, index, 'context') : null)}{tool && tool !== 'pan' && drawingStart && drawingEnd && drawingCanvas === 'context' && renderDrawing({ type: tool, chart: 'context', start: drawingStart, end: drawingEnd }, 'preview', 'context')}{lassoStart && lassoEnd && drawingCanvas === 'context' && <rect x={Math.min(lassoStart.x, lassoEnd.x)} y={Math.min(lassoStart.y, lassoEnd.y)} width={Math.abs(lassoStart.x - lassoEnd.x)} height={Math.abs(lassoStart.y - lassoEnd.y)} className="selection-lasso" />}</svg></section><section className="primary-chart"><div className="chart-panel-label">{entryInterval.toUpperCase()} · AJUSTE DE ENTRADA</div>{chartStageView}</section></div>;
+  const toolOptions = [['line', '╱', 'Línea'], ['ruler', '▥', 'Medir'], ['long', 'L', 'Long'], ['short', 'S', 'Short'], ['pan', '✋', 'Pan']] as const;
+  const chartsRow = <div className="charts-row"><section ref={overviewStage} className={`secondary-chart ${tool ? 'drawing-mode' : ''}`} onPointerDownCapture={event => startDrawing(event, 'context')} onPointerMoveCapture={updateDrawing} onPointerUpCapture={event => finishDrawingAndCapture(event, 'context')} onPointerCancelCapture={() => { setDrawingStart(null); setDrawingEnd(null); setMoveStart(null); panStartRef.current = null; setResizeStart(null); setLassoStart(null); setLassoEnd(null); }}><div className="chart-panel-label">{interval.toUpperCase()} · CONTEXTO · {symbol}</div><div className="chart-viewport-snapshot" aria-label="Snapshot del viewport de contexto">X {overviewViewportSnapshot.bars} · Futuro {overviewViewportSnapshot.futureBars} · Y− {overviewViewportSnapshot.yBelow}% · Y+ {overviewViewportSnapshot.yAbove}%</div><div ref={overviewChartContainer} className="overview-chart" /><svg className="overview-overlay" viewBox={`0 0 ${overviewSize.width} ${overviewSize.height}`} preserveAspectRatio="none" aria-hidden="true">{renderOverviewSessions()}{renderOverviewInterestMarkers()}{renderPriceLineHitAreas('context')}{[...drawings, ...productionDrawings].map((drawing, index) => (!drawing.paper || !drawing.closed || drawing.id === visibleClosedId) && (!drawing.paper || !drawing.symbol || drawing.symbol === symbol) && (drawing.chart === 'context' || drawing.paper) ? renderDrawing(drawing, index, 'context') : null)}{tool && tool !== 'pan' && drawingStart && drawingEnd && drawingCanvas === 'context' && renderDrawing({ type: tool, chart: 'context', start: drawingStart, end: drawingEnd }, 'preview', 'context')}{lassoStart && lassoEnd && drawingCanvas === 'context' && <rect x={Math.min(lassoStart.x, lassoEnd.x)} y={Math.min(lassoStart.y, lassoEnd.y)} width={Math.abs(lassoStart.x - lassoEnd.x)} height={Math.abs(lassoStart.y - lassoEnd.y)} className="selection-lasso" />}</svg></section><section className="primary-chart"><div className="chart-panel-label">{entryInterval.toUpperCase()} · AJUSTE DE ENTRADA</div>{chartStageView}</section></div>;
 
   return mobilePwa ? <main className="trading-shell pwa-shell">
     <header className="pwa-mobile-header"><div><span className="pwa-brand">helloworld</span><span className="pwa-market">{broker.toUpperCase()} · {entryInterval.toUpperCase()} ENTRADA · {interval.toUpperCase()} CONTEXTO</span></div><select className="pwa-symbol-select" value={broker} onChange={event => { const next = event.target.value as 'binance' | 'ctrader'; setBroker(next); setSymbol(next === 'ctrader' ? 'AUDUSD' : 'BTCUSDT'); }} aria-label="Broker"><option value="binance">Binance</option><option value="ctrader">cTrader</option></select><select className="pwa-symbol-select" value={symbol} onChange={event => setSymbol(event.target.value)} aria-label="Símbolo">{selectableSymbols.map(option => <option key={option}>{option}</option>)}</select>{profileButton}</header>
