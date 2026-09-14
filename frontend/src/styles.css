@@ -41,8 +41,8 @@
 .chart-tools button:hover, .chart-tools .tool-active { border-color: #f5b84b; color: #f5b84b; }
 .chart-viewport-controls { display: flex; align-items: center; gap: .25rem; margin-left: auto; padding: .15rem .3rem; border: 1px solid #273746; border-radius: 6px; background: #0b1219; color: #8fa2b5; font: 500 .52rem 'DM Mono', monospace; }
 .chart-viewport-controls label { display: flex; align-items: center; gap: .18rem; white-space: nowrap; }
-.chart-viewport-controls select { min-width: 2.7rem; padding: .18rem .22rem; border: 1px solid #33495c; border-radius: 4px; background: #111a23; color: #f5c45e; font: 600 .55rem 'DM Mono', monospace; color-scheme: dark; }
-.chart-viewport-controls select:focus { outline: 1px solid #f5b84b; }
+.chart-viewport-controls input { width: 3.35rem; padding: .18rem .2rem; border: 1px solid #33495c; border-radius: 4px; background: #111a23; color: #f5c45e; font: 600 .55rem 'DM Mono', monospace; color-scheme: dark; }
+.chart-viewport-controls input:focus { outline: 1px solid #f5b84b; }
 .lab-open-button { padding: .45rem .65rem; border: 1px solid #8b6b2d; border-radius: 7px; background: #2a2416; color: #f5b84b; font: 700 .7rem 'DM Mono', monospace; }
 .logout-button { padding: .45rem .7rem; border: 1px solid #303640; border-radius: 7px; background: #11151a; color: #9ca2ae; font-size: .75rem; }
 .logout-button:hover { border-color: #f27e7e; color: #f27e7e; }
