@@ -67,6 +67,23 @@ def test_account_update_exposes_balance_position_and_order_event():
     assert snapshot["events"][0]["status"] == "FILLED"
 
 
+def test_partial_account_update_does_not_drop_other_open_positions():
+    instance = monitor()
+    instance._handle_event({
+        "e": "ACCOUNT_UPDATE",
+        "a": {"P": [
+            {"s": "BTCUSDT", "ps": "BOTH", "pa": "0.01", "ep": "60000", "up": "1"},
+            {"s": "MTLUSDT", "ps": "BOTH", "pa": "-12", "ep": "0.418", "up": "-0.04"},
+        ]},
+    })
+    instance._handle_event({
+        "e": "ACCOUNT_UPDATE",
+        "a": {"P": [{"s": "BTCUSDT", "ps": "BOTH", "pa": "0.02", "ep": "60100", "up": "2"}]},
+    })
+    symbols = {row["symbol"] for row in instance.snapshot()["positions"]}
+    assert symbols == {"BTCUSDT", "MTLUSDT"}
+
+
 def test_account_events_are_emitted_immediately_for_realtime_consumers():
     emitted = []
     instance = BinanceAccountMonitor(Settings(

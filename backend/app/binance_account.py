@@ -220,9 +220,13 @@ class BinanceAccountMonitor:
             usdt = next((row for row in account.get("B", []) if row.get("a") == "USDT"), {})
             with self._lock:
                 previous = {str(row.get("symbol", "")).upper(): row for row in self._snapshot.get("positions", [])}
-            positions = []
+            positions = dict(previous)
             for row in account.get("P", []):
-                if float(row.get("pa", 0)) == 0:
+                symbol = str(row.get("s") or row.get("symbol") or "").upper()
+                if not symbol:
+                    continue
+                if float(row.get("pa") or row.get("positionAmt") or 0) == 0:
+                    positions.pop(symbol, None)
                     continue
                 position = self._position(row)
                 # ACCOUNT_UPDATE intentionally omits some risk fields. Keep
@@ -231,13 +235,13 @@ class BinanceAccountMonitor:
                 for key in ("notional", "isolated_margin", "leverage", "margin_type"):
                     if position.get(key) in (None, "") and old.get(key) not in (None, ""):
                         position[key] = old[key]
-                positions.append(position)
+                positions[symbol] = position
             self._set(
                 wallet_balance=usdt.get("wb"),
                 futures_balance=float(usdt.get("wb", 0)) + sum(float(row.get("up", 0)) for row in account.get("P", [])),
                 available_balance=usdt.get("cw"),
                 total_unrealized_pnl=sum(float(row.get("up", 0)) for row in account.get("P", [])),
-                positions=positions, last_update=self._now(), last_event=event_type,
+                positions=list(positions.values()), last_update=self._now(), last_event=event_type,
             )
         elif event_type == "ORDER_TRADE_UPDATE":
             order = event.get("o", {})
