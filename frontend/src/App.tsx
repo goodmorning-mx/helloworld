@@ -1530,7 +1530,12 @@ function Workspace() {
       loadingOlderRef.current = false;
       chart.remove();
     };
-  }, [auth.accessToken, binanceRules, broker, symbol, showHeikinAshi]);
+  }, [auth.accessToken, broker, symbol, showHeikinAshi]);
+
+  useEffect(() => {
+    if (!binanceRules) return;
+    candlesRef.current?.applyOptions({ priceFormat: { type: 'price', precision: binanceRules.price_precision, minMove: binanceRules.tick_size || 0.00000001 } });
+  }, [binanceRules]);
 
   useEffect(() => {
     if (mobilePwa || !overviewChartContainer.current) return;
@@ -1689,7 +1694,12 @@ function Workspace() {
       if (isNewBar) setTrackerRevision(value => value + 1);
     };
     return () => { active = false; stream.close(); chart.timeScale().unsubscribeVisibleTimeRangeChange(refreshOverview); chart.timeScale().unsubscribeVisibleLogicalRangeChange(refreshOverview); overviewChartRef.current = null; overviewCandlesRef.current = null; overviewCandleDataRef.current = []; overviewBarsRef.current = []; overviewLoadingOlderRef.current = false; chart.remove(); };
-  }, [auth.accessToken, binanceRules, broker, symbol, interval, timezone, mobilePwa, showHeikinAshi]);
+  }, [auth.accessToken, broker, symbol, interval, timezone, mobilePwa, showHeikinAshi]);
+
+  useEffect(() => {
+    if (!binanceRules || mobilePwa) return;
+    overviewCandlesRef.current?.applyOptions({ priceFormat: { type: 'price', precision: binanceRules.price_precision, minMove: binanceRules.tick_size || 0.00000001 } });
+  }, [binanceRules, mobilePwa]);
 
   useEffect(() => {
     const chart = chartRef.current;
