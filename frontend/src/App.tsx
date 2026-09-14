@@ -2122,20 +2122,6 @@ function Workspace() {
           event.currentTarget.setPointerCapture(event.pointerId);
           setMoveStart({ index: hit, point: chartPoint, drawing: drawings[hit] });
         }
-      } else {
-        const { chart, candles } = chartContext(canvas);
-        const xRange = chart?.timeScale().getVisibleLogicalRange();
-        const priceRange = chart?.priceScale('right').getVisibleRange();
-        const xLogical = chart?.timeScale().coordinateToLogical(point.x);
-        const xLogicalNext = chart?.timeScale().coordinateToLogical(point.x + 1);
-        const yPrice = candles?.coordinateToPrice(point.y);
-        const yPriceNext = candles?.coordinateToPrice(point.y + 1);
-        if (chart && candles && xLogical !== null && xLogical !== undefined && xLogicalNext !== null && xLogicalNext !== undefined && yPrice !== null && yPrice !== undefined && yPriceNext !== null && yPriceNext !== undefined && xRange && priceRange) {
-          event.preventDefault();
-          event.stopPropagation();
-          event.currentTarget.setPointerCapture(event.pointerId);
-          panStartRef.current = { canvas, x: point.x, y: point.y, xLogicalPerPixel: Number(xLogicalNext) - Number(xLogical), yPricePerPixel: yPriceNext - yPrice, xRange, priceRange };
-        }
       }
       return;
     }
@@ -2540,27 +2526,8 @@ function Workspace() {
   }
 
   function handleChartWheel(event: ReactWheelEvent<HTMLElement>, canvas: ChartCanvas) {
-    // Trackpad pinch gestures arrive as ctrl+wheel in Chromium. Keep regular
-    // wheel scrolling available for the chart, but use pinch to zoom both
-    // the time scale around the pointer just like Plotly's scrollZoom.
-    if (!event.ctrlKey && !event.metaKey) {
-      requestAnimationFrame(() => captureChartViewport(canvas));
-      return;
-    }
-    const { chart, candles } = chartContext(canvas);
-    if (!chart || !candles) return;
-    const bounds = event.currentTarget.getBoundingClientRect();
-    const x = event.clientX - bounds.left;
-    const xCenter = chart.timeScale().coordinateToLogical(x);
-    const xRange = chart.timeScale().getVisibleLogicalRange();
-    if (xCenter === null || xCenter === undefined || !xRange) return;
-    const factor = event.deltaY > 0 ? 1.15 : 0.87;
-    chart.timeScale().setVisibleLogicalRange({
-      from: Number(xCenter) + (xRange.from - Number(xCenter)) * factor,
-      to: Number(xCenter) + (xRange.to - Number(xCenter)) * factor,
-    });
-    event.preventDefault();
-    event.stopPropagation();
+    // Let Lightweight Charts handle wheel and trackpad scaling natively.
+    // We only read the resulting range on the next frame for the snapshot.
     requestAnimationFrame(() => captureChartViewport(canvas));
   }
 
