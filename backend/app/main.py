@@ -561,7 +561,16 @@ def close_binance_real_operation(symbol: str, payload: BinanceCloseOrderInput, i
     position = binance_manager.position_risk(identity.user_id, requested)
     quantity = abs(float(position.get("positionAmt") or 0))
     if quantity <= 0:
-        raise HTTPException(status_code=409, detail=f"No hay una posición abierta de {requested} para cerrar.")
+        # The account stream can briefly retain a stale row after Binance has
+        # already closed the position (for example after a triggered SL or an
+        # emergency exit). Reconcile the durable intent instead of returning
+        # an error that leaves a phantom position in the UI.
+        stale_intent = next((item for item in binance_execution_store.list(identity.user_id)
+                             if str(item.get("symbol", "")).upper() == requested
+                             and str(item.get("status", "")) not in {"CLOSED", "ERROR"}), None)
+        if stale_intent:
+            binance_execution_store.update(str(stale_intent["id"]), identity.user_id, status="CLOSED", last_error="RECONCILED_NO_POSITION")
+        return {"broker": "binance", "mode": "real", "symbol": requested, "closed": True, "already_closed": True}
     side = "SELL" if float(position.get("positionAmt") or 0) > 0 else "BUY"
     intent = next((item for item in binance_execution_store.list(identity.user_id)
                    if str(item.get("symbol", "")).upper() == requested

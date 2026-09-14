@@ -2367,6 +2367,7 @@ function Workspace() {
       });
       const payload = await response.json() as { detail?: string };
       if (!response.ok) throw new Error(payload.detail ?? 'Binance no pudo cerrar la posición.');
+      setBinanceLiveAccount(current => current ? { ...current, positions: (current.positions ?? []).filter(item => item.symbol !== position.symbol) } : current);
       setPaperSyncError('');
     } catch (reason) {
       setPaperSyncError(reason instanceof Error ? reason.message : 'No se pudo cerrar la posición real.');
