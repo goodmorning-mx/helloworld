@@ -2526,8 +2526,35 @@ function Workspace() {
   }
 
   function handleChartWheel(event: ReactWheelEvent<HTMLElement>, canvas: ChartCanvas) {
-    // Let Lightweight Charts handle wheel and trackpad scaling natively.
-    // We only read the resulting range on the next frame for the snapshot.
+    // Chromium reports a trackpad pinch as ctrl/meta + wheel. Convert that
+    // gesture into a smooth two-axis zoom so it does not become a vertical
+    // price stretch. Regular wheel input remains native to Lightweight Charts.
+    if (event.ctrlKey || event.metaKey) {
+      const { chart, candles } = chartContext(canvas);
+      if (chart && candles) {
+        const bounds = event.currentTarget.getBoundingClientRect();
+        const x = event.clientX - bounds.left;
+        const y = event.clientY - bounds.top;
+        const xCenter = chart.timeScale().coordinateToLogical(x);
+        const xRange = chart.timeScale().getVisibleLogicalRange();
+        const yRange = chart.priceScale('right').getVisibleRange();
+        const yCenter = candles.coordinateToPrice(y);
+        if (xCenter !== null && xCenter !== undefined && xRange && yRange) {
+          const factor = Math.exp(Math.max(-80, Math.min(80, event.deltaY)) * 0.0025);
+          chart.timeScale().setVisibleLogicalRange({
+            from: Number(xCenter) + (xRange.from - Number(xCenter)) * factor,
+            to: Number(xCenter) + (xRange.to - Number(xCenter)) * factor,
+          });
+          const priceCenter = yCenter ?? (Number(yRange.from) + Number(yRange.to)) / 2;
+          chart.priceScale('right').setVisibleRange({
+            from: priceCenter + (Number(yRange.from) - priceCenter) * factor,
+            to: priceCenter + (Number(yRange.to) - priceCenter) * factor,
+          });
+          event.preventDefault();
+          event.stopPropagation();
+        }
+      }
+    }
     requestAnimationFrame(() => captureChartViewport(canvas));
   }
 
