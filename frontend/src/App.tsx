@@ -797,10 +797,11 @@ function Workspace() {
   const [binanceExecutionIntents, setBinanceExecutionIntents] = useState<BinanceExecutionIntent[]>([]);
   const [broker, setBroker] = useState<'binance' | 'ctrader'>('binance');
   const [interval, setInterval] = useState<'1s' | '1m' | '3m' | '5m' | '15m'>('5m');
-  const [viewportBars, setViewportBars] = useState(120);
-  const [viewportFutureBars, setViewportFutureBars] = useState(20);
-  const [viewportYBelow, setViewportYBelow] = useState(15);
-  const [viewportYAbove, setViewportYAbove] = useState(10);
+  // Default snapshot for the 5m workspace viewport.
+  const [viewportBars, setViewportBars] = useState(37);
+  const [viewportFutureBars, setViewportFutureBars] = useState(12);
+  const [viewportYBelow, setViewportYBelow] = useState(22);
+  const [viewportYAbove, setViewportYAbove] = useState(3);
   const syncViewportSnapshot = (chart: ReturnType<typeof createChart>, data: Array<{ close: number }>) => {
     const snapshot = getChartViewportSnapshot(chart, data);
     if (!snapshot) return;
