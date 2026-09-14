@@ -176,15 +176,19 @@ function createBinanceAccountStream(accessToken: string, onAccount: (account: Bi
     const subscribers = new Set<BinanceAccountStreamSubscriber>();
     let socket: WebSocket | null = null;
     let reconnectTimer: number | null = null;
+    let watchdogTimer: number | null = null;
+    let lastMessageAt = Date.now();
     let stopped = false;
     let delay = 1000;
     const connect = () => {
       if (stopped) return;
       socket = new WebSocket(`${marketWsUrl}/trading/binance/stream?access_token=${encodeURIComponent(accessToken)}`);
+      lastMessageAt = Date.now();
       socket.onopen = () => { delay = 1000; };
       socket.onmessage = event => {
+        lastMessageAt = Date.now();
         try {
-          const payload = JSON.parse(event.data) as { snapshot?: BinanceAccount; execution_intents?: unknown };
+          const payload = JSON.parse(event.data) as { type?: string; snapshot?: BinanceAccount; execution_intents?: unknown };
           subscribers.forEach(subscriber => {
             if (payload.snapshot) subscriber.onAccount(payload.snapshot);
             if (payload.execution_intents) subscriber.onIntents?.(payload.execution_intents);
@@ -198,10 +202,15 @@ function createBinanceAccountStream(accessToken: string, onAccount: (account: Bi
         reconnectTimer = window.setTimeout(connect, delay);
         delay = Math.min(delay * 2, 30_000);
       };
+      if (watchdogTimer === null) {
+        watchdogTimer = window.setInterval(() => {
+          if (socket && Date.now() - lastMessageAt > 35_000) socket.close();
+        }, 5_000);
+      }
     };
     entry = {
       subscribers,
-      close: () => { stopped = true; if (reconnectTimer !== null) window.clearTimeout(reconnectTimer); socket?.close(); socket = null; binanceAccountStreams.delete(accessToken); },
+      close: () => { stopped = true; if (reconnectTimer !== null) window.clearTimeout(reconnectTimer); if (watchdogTimer !== null) window.clearInterval(watchdogTimer); socket?.close(); socket = null; binanceAccountStreams.delete(accessToken); },
     };
     binanceAccountStreams.set(accessToken, entry);
     connect();
@@ -390,12 +399,18 @@ type BinancePosition = {
 };
 type BinanceAccount = {
   enabled?: boolean; healthy?: boolean; stream_connected?: boolean;
+  state_seq?: number;
   last_update?: string; last_event?: string; error?: string | null;
   error_kind?: string | null; error_title?: string | null; error_message?: string | null; error_action?: string | null;
   wallet_balance?: string | null; futures_balance?: string | number | null; available_balance?: string | null;
   total_unrealized_pnl?: string | null; positions?: BinancePosition[];
   events?: Array<{ time?: string; type?: string; symbol?: string; status?: string }>;
 };
+function acceptBinanceAccount(current: BinanceAccount | null, next: BinanceAccount): BinanceAccount {
+  const currentSeq = Number(current?.state_seq ?? -1);
+  const nextSeq = Number(next.state_seq ?? currentSeq + 1);
+  return nextSeq >= currentSeq ? { ...next, state_seq: nextSeq } : current ?? next;
+}
 type BinanceExecutionIntent = { id?: string; symbol?: string; side?: string; quantity?: number | string; entry_time?: number | string; entry_price?: number; stop_loss?: number; take_profit?: number; status?: string; created_at?: string };
 type BinanceSymbolConfig = { configured?: boolean; symbol?: string; margin_type?: string | null; leverage?: number | null; isolated_balance?: number | null; futures_balance?: number | string | null; error?: string | null };
 type CTraderAccount = {
@@ -415,17 +430,13 @@ function BalanceSummary({ paperBalance, revision = 0 }: { paperBalance: number; 
     let active = true;
     const load = async () => {
       const headers: Record<string, string> = auth.accessToken ? { Authorization: `Bearer ${auth.accessToken}` } : {};
-      const [binanceResponse, ctraderResponse] = await Promise.allSettled([
-        fetch(`${apiUrl}/trading/binance`, { headers, credentials: 'include' }),
-        fetch(`${apiUrl}/trading/ctrader`, { headers, credentials: 'include' }),
-      ]);
+      const ctraderResponse = await fetch(`${apiUrl}/trading/ctrader`, { headers, credentials: 'include' });
       if (!active) return;
-      if (binanceResponse.status === 'fulfilled' && binanceResponse.value.ok) setBinance(await binanceResponse.value.json() as BinanceAccount);
-      if (ctraderResponse.status === 'fulfilled' && ctraderResponse.value.ok) setCtrader(await ctraderResponse.value.json() as CTraderAccount);
+      if (ctraderResponse.ok) setCtrader(await ctraderResponse.json() as CTraderAccount);
     };
     void load();
     const closeStream = auth.accessToken ? createBinanceAccountStream(auth.accessToken, account => {
-      if (active) setBinance(account);
+      if (active) setBinance(current => acceptBinanceAccount(current, account));
     }) : () => undefined;
     return () => { active = false; closeStream(); };
   }, [auth.accessToken, revision]);
@@ -536,21 +547,8 @@ function BinanceAccountPanel({ revision = 0 }: { revision?: number }) {
   const [loading, setLoading] = useState(true);
   useEffect(() => {
     let active = true;
-    const load = async () => {
-      try {
-        const response = await fetch(`${apiUrl}/trading/binance`, { headers: auth.accessToken ? { Authorization: `Bearer ${auth.accessToken}` } : {}, credentials: 'include' });
-        if (!response.ok) throw new Error(`Binance ${response.status}`);
-        const payload = await response.json() as BinanceAccount;
-        if (active) setAccount(payload);
-      } catch {
-        if (active) setAccount({ enabled: true, healthy: false, error: 'No fue posible consultar el monitor Binance.' });
-      } finally {
-        if (active) setLoading(false);
-      }
-    };
-    void load();
     const closeStream = auth.accessToken ? createBinanceAccountStream(auth.accessToken, payload => {
-      if (active) setAccount(payload);
+      if (active) { setAccount(current => acceptBinanceAccount(current, payload)); setLoading(false); }
     }) : () => undefined;
     return () => { active = false; closeStream(); };
   }, [auth.accessToken, revision]);
@@ -980,13 +978,8 @@ function Workspace() {
   useEffect(() => {
     if (broker !== 'binance' || !auth.accessToken) { setBinanceLiveAccount(null); return; }
     let active = true;
-    const loadInitial = () => fetch(`${apiUrl}/trading/binance`, { headers: { Authorization: `Bearer ${auth.accessToken}` }, credentials: 'include' })
-      .then(response => response.ok ? response.json() as Promise<BinanceAccount> : Promise.reject(new Error('account unavailable')))
-      .then(account => { if (active) setBinanceLiveAccount(account); })
-      .catch(() => { if (active) setBinanceLiveAccount(null); });
-    void loadInitial();
     const closeStream = createBinanceAccountStream(auth.accessToken, account => {
-      if (active) setBinanceLiveAccount(account);
+      if (active) setBinanceLiveAccount(current => acceptBinanceAccount(current, account));
     }, intents => {
       if (active && Array.isArray(intents)) setBinanceExecutionIntents(intents as BinanceExecutionIntent[]);
     });

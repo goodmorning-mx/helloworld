@@ -51,7 +51,9 @@ class BinanceAccountMonitor:
             "error_kind": None, "error_title": None, "error_message": None, "error_action": None,
             "wallet_balance": None, "futures_balance": None, "available_balance": None,
             "total_unrealized_pnl": None, "positions": [], "events": [],
+            "last_order": None, "state_seq": 0,
         }
+        self._state_seq = 0
 
     def start(self) -> "BinanceAccountMonitor":
         if self._thread is None:
@@ -219,36 +221,46 @@ class BinanceAccountMonitor:
             account = event.get("a", {})
             usdt = next((row for row in account.get("B", []) if row.get("a") == "USDT"), {})
             with self._lock:
-                previous = {str(row.get("symbol", "")).upper(): row for row in self._snapshot.get("positions", [])}
+                previous = {
+                    f"{str(row.get('symbol', '')).upper()}:{str(row.get('side', 'BOTH')).upper()}": row
+                    for row in self._snapshot.get("positions", [])
+                }
             positions = dict(previous)
             for row in account.get("P", []):
                 symbol = str(row.get("s") or row.get("symbol") or "").upper()
                 if not symbol:
                     continue
+                position_side = str(row.get("ps") or row.get("positionSide") or "BOTH").upper()
+                position_key = f"{symbol}:{position_side}"
                 if float(row.get("pa") or row.get("positionAmt") or 0) == 0:
-                    positions.pop(symbol, None)
+                    positions.pop(position_key, None)
                     continue
                 position = self._position(row)
                 # ACCOUNT_UPDATE intentionally omits some risk fields. Keep
                 # the latest positionRisk values until the next REST refresh.
-                old = previous.get(str(position.get("symbol", "")).upper(), {})
+                old = previous.get(position_key, {})
                 for key in ("notional", "isolated_margin", "leverage", "margin_type"):
                     if position.get(key) in (None, "") and old.get(key) not in (None, ""):
                         position[key] = old[key]
-                positions[symbol] = position
+                positions[position_key] = position
+            wallet_balance = usdt.get("wb") or self._snapshot.get("wallet_balance")
+            available_balance = usdt.get("cw") or self._snapshot.get("available_balance")
+            position_rows = list(positions.values())
+            total_unrealized = sum(float(row.get("unrealized_pnl") or 0) for row in position_rows)
             self._set(
-                wallet_balance=usdt.get("wb"),
-                futures_balance=float(usdt.get("wb", 0)) + sum(float(row.get("up", 0)) for row in account.get("P", [])),
-                available_balance=usdt.get("cw"),
-                total_unrealized_pnl=sum(float(row.get("up", 0)) for row in account.get("P", [])),
-                positions=list(positions.values()), last_update=self._now(), last_event=event_type,
+                wallet_balance=wallet_balance,
+                futures_balance=float(wallet_balance or 0) + total_unrealized,
+                available_balance=available_balance,
+                total_unrealized_pnl=total_unrealized,
+                positions=position_rows, last_update=self._now(), last_event=event_type,
             )
         elif event_type == "ORDER_TRADE_UPDATE":
             order = event.get("o", {})
             item = {"time": self._now(), "type": event_type, "symbol": order.get("s"),
                     "side": order.get("S"), "status": order.get("X"), "order_type": order.get("o"),
                     "price": order.get("ap") or order.get("p"), "quantity": order.get("z") or order.get("q"),
-                    "client_order_id": order.get("c"), "exchange_order_id": order.get("i")}
+                    "average_price": order.get("ap"), "realized_pnl": order.get("rp"),
+                    "commission": order.get("n"), "client_order_id": order.get("c"), "exchange_order_id": order.get("i")}
             with self._lock:
                 events = list(self._snapshot["events"])
                 events.append(item)
@@ -265,8 +277,7 @@ class BinanceAccountMonitor:
                     current_quantity = abs(float((current or {}).get("quantity") or 0))
                     if symbol and (order.get("cp") is True or (current_quantity > 0 and executed >= current_quantity)):
                         self._snapshot["positions"] = [row for row in self._snapshot["positions"] if str(row.get("symbol", "")).upper() != symbol]
-                self._snapshot["last_event"] = event_type
-                self._snapshot["last_update"] = item["time"]
+            self._set(last_order=item, last_event=event_type, last_update=item["time"])
         if event_type in {"ACCOUNT_UPDATE", "ORDER_TRADE_UPDATE", "MARGIN_CALL", "listenKeyExpired"}:
             self._emit_event({
                 "type": str(event_type), "event": event, "snapshot": self.snapshot(),
@@ -367,7 +378,9 @@ class BinanceAccountMonitor:
 
     def _set(self, **values: object) -> None:
         with self._lock:
+            self._state_seq += 1
             self._snapshot.update(values)
+            self._snapshot["state_seq"] = self._state_seq
 
     @staticmethod
     def _now() -> str:

@@ -894,9 +894,23 @@ async def binance_account_stream(websocket: WebSocket) -> None:
     binance_manager.subscribe_events(identity.user_id, on_event)
     try:
         snapshot = binance_manager.snapshot(identity.user_id)
+        latest_snapshot = snapshot
         await websocket.send_json({"type": "snapshot", "snapshot": snapshot, "execution_intents": binance_execution_store.list(identity.user_id), "server_time": int(time.time() * 1000)})
         while True:
-            event = await queue.get()
+            try:
+                event = await asyncio.wait_for(queue.get(), timeout=15)
+            except asyncio.TimeoutError:
+                # Keep the browser-side channel observable without polling
+                # Binance account data. Account state still changes only from
+                # Binance User Data Stream events.
+                await websocket.send_json({
+                    "type": "heartbeat",
+                    "state_seq": latest_snapshot.get("state_seq", 0),
+                    "server_time": int(time.time() * 1000),
+                })
+                continue
+            if isinstance(event.get("snapshot"), dict):
+                latest_snapshot = event["snapshot"]
             event["execution_intents"] = binance_execution_store.list(identity.user_id)
             await websocket.send_json(event)
     except Exception:
