@@ -1301,10 +1301,14 @@ function Workspace() {
     const candles = chart.addSeries(CandlestickSeries, { upColor: '#64d39a', downColor: '#f27e7e', borderVisible: false, wickUpColor: '#64d39a', wickDownColor: '#f27e7e', priceFormat: { type: 'price', precision: binanceRules?.price_precision ?? 8, minMove: binanceRules?.tick_size || 0.00000001 } });
     chartRef.current = chart;
     candlesRef.current = candles;
+    let hasChartData = false;
     const setDataPreservingRange = (data: Array<{ time: UTCTimestamp; open: number; high: number; low: number; close: number }>) => {
-      const visibleRange = chart.timeScale().getVisibleLogicalRange();
+      // A fast stream can arrive before the historical response. Never
+      // restore lightweight-charts' provisional empty range on first load.
+      const visibleRange = hasChartData ? chart.timeScale().getVisibleLogicalRange() : null;
       candles.setData(data);
       if (visibleRange) chart.timeScale().setVisibleLogicalRange(visibleRange);
+      hasChartData = true;
     };
     let active = true;
     const refreshDrawings = () => {
@@ -1540,10 +1544,12 @@ function Workspace() {
     const candles = chart.addSeries(CandlestickSeries, { upColor: '#64d39a', downColor: '#f27e7e', borderVisible: false, wickUpColor: '#64d39a', wickDownColor: '#f27e7e', priceFormat: { type: 'price', precision: binanceRules?.price_precision ?? 8, minMove: binanceRules?.tick_size || 0.00000001 } });
     overviewChartRef.current = chart;
     overviewCandlesRef.current = candles;
+    let hasChartData = false;
     const setDataPreservingRange = (data: Array<{ time: UTCTimestamp; open: number; high: number; low: number; close: number }>) => {
-      const visibleRange = chart.timeScale().getVisibleLogicalRange();
+      const visibleRange = hasChartData ? chart.timeScale().getVisibleLogicalRange() : null;
       candles.setData(data);
       if (visibleRange) chart.timeScale().setVisibleLogicalRange(visibleRange);
+      hasChartData = true;
     };
     const refreshOverview = () => {
       setOverviewRevision(value => value + 1);
