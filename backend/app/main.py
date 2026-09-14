@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import asyncio
+import logging
 import math
 import json
 import time
@@ -11,6 +12,7 @@ from urllib.parse import urlencode
 from zoneinfo import ZoneInfoNotFoundError
 
 from fastapi import Depends, FastAPI, HTTPException, WebSocket
+from fastapi.encoders import jsonable_encoder
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 from typing import Literal
@@ -38,6 +40,7 @@ from app.binance_tp_worker import BinanceTakeProfitWorker
 from app.backtest_engine import MAX_BACKTEST_DAYS, fetch_binance_history, run_storycard_backtest, _bar_context
 
 settings = get_settings()
+logger = logging.getLogger(__name__)
 engine = create_database_engine()
 auth_service = AuthService(
     engine,
@@ -899,7 +902,7 @@ async def binance_account_stream(websocket: WebSocket) -> None:
         # leaves the UI stuck at "Sin conexión".
         snapshot = await asyncio.to_thread(binance_manager.snapshot, identity.user_id)
         latest_snapshot = snapshot
-        execution_intents = await asyncio.to_thread(binance_execution_store.list, identity.user_id)
+        execution_intents = jsonable_encoder(await asyncio.to_thread(binance_execution_store.list, identity.user_id))
         await websocket.send_json({"type": "snapshot", "snapshot": snapshot, "execution_intents": execution_intents, "server_time": int(time.time() * 1000)})
         while True:
             try:
@@ -916,7 +919,7 @@ async def binance_account_stream(websocket: WebSocket) -> None:
                 continue
             if isinstance(event.get("snapshot"), dict):
                 latest_snapshot = event["snapshot"]
-            event["execution_intents"] = await asyncio.to_thread(binance_execution_store.list, identity.user_id)
+            event["execution_intents"] = jsonable_encoder(await asyncio.to_thread(binance_execution_store.list, identity.user_id))
             await websocket.send_json(event)
     except Exception:
         logger.exception("binance_account_websocket_failed user=%s", identity.user_id)
