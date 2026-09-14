@@ -61,7 +61,7 @@ function applyDefaultChartViewport(chart: ReturnType<typeof createChart>, data: 
   if (!data.length) return;
   const lastIndex = data.length - 1;
   chart.timeScale().setVisibleLogicalRange({
-    from: Math.max(0, lastIndex - Math.min(visibleBars, data.length) + 1),
+    from: Math.max(0, lastIndex - Math.max(0, Math.min(visibleBars - futureBars, data.length)) + 1),
     to: lastIndex + futureBars,
   });
   const close = Number(data[lastIndex].close);
@@ -76,7 +76,7 @@ function getChartViewportSnapshot(chart: ReturnType<typeof createChart>, data: A
   const close = Number(data[lastIndex]?.close);
   if (!logicalRange || !priceRange || lastIndex < 0 || !Number.isFinite(close) || close <= 0) return null;
   return {
-    bars: Math.max(20, Math.round(lastIndex - Number(logicalRange.from) + 1)),
+    bars: Math.max(1, Math.round(Number(logicalRange.to) - Number(logicalRange.from))),
     futureBars: Math.max(0, Math.round(Number(logicalRange.to) - lastIndex)),
     yBelow: Math.max(0, Math.round((close - Number(priceRange.from)) / close * 100)),
     yAbove: Math.max(0, Math.round((Number(priceRange.to) - close) / close * 100)),
