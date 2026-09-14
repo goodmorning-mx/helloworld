@@ -2164,7 +2164,7 @@ function Workspace() {
       const currentPrice = candles?.coordinateToPrice(point.y);
       if (chart && currentPrice !== null && currentPrice !== undefined) {
         const xDelta = -(point.x - pan.x) * pan.xLogicalPerPixel;
-        const yDelta = Number(currentPrice) - pan.startPrice;
+        const yDelta = pan.startPrice - Number(currentPrice);
         // Apply both axes from the original range in one pass. Reading the
         // already-shifted range here causes diagonal drags to oscillate.
         chart.timeScale().setVisibleLogicalRange({ from: pan.xRange.from + xDelta, to: pan.xRange.to + xDelta });
