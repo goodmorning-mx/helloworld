@@ -1595,6 +1595,20 @@ function Workspace() {
   }, [binanceRules]);
 
   useEffect(() => {
+    const defaults = interval === '1m'
+      ? { bars: 100, futureBars: 0, yBelow: 14, yAbove: 11 }
+      : { bars: 37, futureBars: 12, yBelow: 22, yAbove: 3 };
+    setViewportBars(defaults.bars);
+    setViewportFutureBars(defaults.futureBars);
+    setViewportYBelow(defaults.yBelow);
+    setViewportYAbove(defaults.yAbove);
+    requestAnimationFrame(() => {
+      if (chartRef.current && candleBarsRef.current.length > 0) applyDefaultChartViewport(chartRef.current, candleBarsRef.current, defaults.bars, defaults.futureBars, defaults.yBelow, defaults.yAbove);
+      if (overviewChartRef.current && overviewBarsRef.current.length > 0) applyDefaultChartViewport(overviewChartRef.current, overviewBarsRef.current, defaults.bars, defaults.futureBars, defaults.yBelow, defaults.yAbove);
+    });
+  }, [interval]);
+
+  useEffect(() => {
     if (mobilePwa || !overviewChartContainer.current) return;
     const chart = createChart(overviewChartContainer.current, {
       autoSize: true,
