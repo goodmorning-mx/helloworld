@@ -1302,6 +1302,7 @@ function Workspace() {
     chartRef.current = chart;
     candlesRef.current = candles;
     let hasChartData = false;
+    let initializingViewport = false;
     const setDataPreservingRange = (data: Array<{ time: UTCTimestamp; open: number; high: number; low: number; close: number }>) => {
       // A fast stream can arrive before the historical response. Never
       // restore lightweight-charts' provisional empty range on first load.
@@ -1312,6 +1313,7 @@ function Workspace() {
     };
     let active = true;
     const refreshDrawings = () => {
+      if (initializingViewport) return;
       const logicalRange = chart.timeScale().getVisibleLogicalRange();
       if (logicalRange && logicalRange.from < 80 && !loadingOlderRef.current && candleBarsRef.current.length > 0) {
         const oldest = Number(candleBarsRef.current[0].time);
@@ -1362,8 +1364,13 @@ function Workspace() {
           candleBarsRef.current = hadBars ? mergeBars(candleBarsRef.current, parsed) : parsed;
           candleDataRef.current = candleBarsRef.current.map(({ time, close }) => ({ time, close }));
           const visibleBars = renderBars(candleBarsRef.current, MAX_ENTRY_RENDER_BARS);
+          if (!polling) initializingViewport = true;
           if (hadBars && !showHeikinAshi) candles.update(candleBarsRef.current[candleBarsRef.current.length - 1]);
           else setDataPreservingRange(showHeikinAshi ? calculateHeikinAshi(visibleBars) : visibleBars);
+          if (!polling) {
+            chart.timeScale().fitContent();
+            requestAnimationFrame(() => { if (active) initializingViewport = false; });
+          }
           polling += 1;
           setTrackerRevision(value => value + 1);
           if (polling === 1) setViewportRevision(value => value + 1);
@@ -1406,7 +1413,10 @@ function Workspace() {
         void cacheBars(symbol, entryInterval, parsed);
         candleDataRef.current = candleBarsRef.current.map(({ time, close }) => ({ time, close }));
         const visibleBars = renderBars(candleBarsRef.current, MAX_ENTRY_RENDER_BARS);
+        initializingViewport = true;
         setDataPreservingRange(showHeikinAshi ? calculateHeikinAshi(visibleBars) : visibleBars);
+        chart.timeScale().fitContent();
+        requestAnimationFrame(() => { if (active) initializingViewport = false; });
         setTrackerRevision(value => value + 1);
         setViewportRevision(value => value + 1);
       })
@@ -1545,6 +1555,7 @@ function Workspace() {
     overviewChartRef.current = chart;
     overviewCandlesRef.current = candles;
     let hasChartData = false;
+    let initializingViewport = false;
     const setDataPreservingRange = (data: Array<{ time: UTCTimestamp; open: number; high: number; low: number; close: number }>) => {
       const visibleRange = hasChartData ? chart.timeScale().getVisibleLogicalRange() : null;
       candles.setData(data);
@@ -1552,6 +1563,7 @@ function Workspace() {
       hasChartData = true;
     };
     const refreshOverview = () => {
+      if (initializingViewport) return;
       setOverviewRevision(value => value + 1);
       const logicalRange = chart.timeScale().getVisibleLogicalRange();
       if (!logicalRange || logicalRange.from >= 50 || overviewLoadingOlderRef.current || overviewBarsRef.current.length === 0) return;
@@ -1602,8 +1614,13 @@ function Workspace() {
           overviewBarsRef.current = hadBars ? mergeBars(overviewBarsRef.current, parsed) : parsed;
           overviewCandleDataRef.current = overviewBarsRef.current.map(({ time, close }) => ({ time, close }));
           const visibleBars = renderBars(overviewBarsRef.current, MAX_CONTEXT_RENDER_BARS);
+          if (!polling) initializingViewport = true;
           if (hadBars && !showHeikinAshi) candles.update(overviewBarsRef.current[overviewBarsRef.current.length - 1]);
           else setDataPreservingRange(showHeikinAshi ? calculateHeikinAshi(visibleBars) : visibleBars);
+          if (!polling) {
+            chart.timeScale().fitContent();
+            requestAnimationFrame(() => { if (active) initializingViewport = false; });
+          }
           polling += 1;
           setTrackerRevision(value => value + 1);
           if (polling === 1) setOverviewRevision(value => value + 1);
@@ -1644,7 +1661,10 @@ function Workspace() {
         void cacheBars(symbol, interval, parsed);
         overviewCandleDataRef.current = overviewBarsRef.current.map(({ time, close }) => ({ time, close }));
         const visibleBars = renderBars(overviewBarsRef.current, MAX_CONTEXT_RENDER_BARS);
+        initializingViewport = true;
         setDataPreservingRange(showHeikinAshi ? calculateHeikinAshi(visibleBars) : visibleBars);
+        chart.timeScale().fitContent();
+        requestAnimationFrame(() => { if (active) initializingViewport = false; });
         setTrackerRevision(value => value + 1);
       }).catch(() => undefined);
     stream.onmessage = event => {
@@ -2842,7 +2862,7 @@ function Workspace() {
   const tradingAgent = <TradingAgentChat activeSymbol={symbol} interval={interval} apiUrl={apiUrl} accessToken={auth.accessToken} />;
 
   const toolOptions = [['line', '╱', 'Línea'], ['ruler', '▥', 'Medir'], ['long', 'L', 'Long'], ['short', 'S', 'Short'], ['zoom', '⌗', 'Zoom lazo']] as const;
-  const chartsRow = <div className="charts-row"><section ref={overviewStage} className={`secondary-chart ${tool ? 'drawing-mode' : ''}`} onWheelCapture={event => handleChartWheel(event, 'context')} onPointerDownCapture={event => startDrawing(event, 'context')} onPointerMoveCapture={updateDrawing} onPointerUpCapture={finishDrawing} onPointerCancelCapture={() => { setDrawingStart(null); setDrawingEnd(null); setMoveStart(null); panStartRef.current = null; setResizeStart(null); setLassoStart(null); setLassoEnd(null); }}><div className="chart-panel-label">5M · CONTEXTO · BTCUSDT</div><div ref={overviewChartContainer} className="overview-chart" /><svg className="overview-overlay" viewBox={`0 0 ${overviewSize.width} ${overviewSize.height}`} preserveAspectRatio="none" aria-hidden="true">{renderOverviewSessions()}{renderOverviewInterestMarkers()}{renderPriceLineHitAreas('context')}{[...drawings, ...productionDrawings].map((drawing, index) => (!drawing.paper || !drawing.closed || drawing.id === visibleClosedId) && (!drawing.paper || !drawing.symbol || drawing.symbol === symbol) && (drawing.chart === 'context' || drawing.paper) ? renderDrawing(drawing, index, 'context') : null)}{tool && drawingStart && drawingEnd && drawingCanvas === 'context' && renderDrawing({ type: tool, chart: 'context', start: drawingStart, end: drawingEnd }, 'preview', 'context')}{lassoStart && lassoEnd && drawingCanvas === 'context' && <rect x={Math.min(lassoStart.x, lassoEnd.x)} y={Math.min(lassoStart.y, lassoEnd.y)} width={Math.abs(lassoStart.x - lassoEnd.x)} height={Math.abs(lassoStart.y - lassoEnd.y)} className="selection-lasso" />}</svg></section><section className="primary-chart"><div className="chart-panel-label">1M · AJUSTE DE ENTRADA</div>{chartStageView}</section></div>;
+  const chartsRow = <div className="charts-row"><section ref={overviewStage} className={`secondary-chart ${tool ? 'drawing-mode' : ''}`} onWheelCapture={event => handleChartWheel(event, 'context')} onPointerDownCapture={event => startDrawing(event, 'context')} onPointerMoveCapture={updateDrawing} onPointerUpCapture={finishDrawing} onPointerCancelCapture={() => { setDrawingStart(null); setDrawingEnd(null); setMoveStart(null); panStartRef.current = null; setResizeStart(null); setLassoStart(null); setLassoEnd(null); }}><div className="chart-panel-label">{interval.toUpperCase()} · CONTEXTO · {symbol}</div><div ref={overviewChartContainer} className="overview-chart" /><svg className="overview-overlay" viewBox={`0 0 ${overviewSize.width} ${overviewSize.height}`} preserveAspectRatio="none" aria-hidden="true">{renderOverviewSessions()}{renderOverviewInterestMarkers()}{renderPriceLineHitAreas('context')}{[...drawings, ...productionDrawings].map((drawing, index) => (!drawing.paper || !drawing.closed || drawing.id === visibleClosedId) && (!drawing.paper || !drawing.symbol || drawing.symbol === symbol) && (drawing.chart === 'context' || drawing.paper) ? renderDrawing(drawing, index, 'context') : null)}{tool && drawingStart && drawingEnd && drawingCanvas === 'context' && renderDrawing({ type: tool, chart: 'context', start: drawingStart, end: drawingEnd }, 'preview', 'context')}{lassoStart && lassoEnd && drawingCanvas === 'context' && <rect x={Math.min(lassoStart.x, lassoEnd.x)} y={Math.min(lassoStart.y, lassoEnd.y)} width={Math.abs(lassoStart.x - lassoEnd.x)} height={Math.abs(lassoStart.y - lassoEnd.y)} className="selection-lasso" />}</svg></section><section className="primary-chart"><div className="chart-panel-label">{entryInterval.toUpperCase()} · AJUSTE DE ENTRADA</div>{chartStageView}</section></div>;
 
   return mobilePwa ? <main className="trading-shell pwa-shell">
     <header className="pwa-mobile-header"><div><span className="pwa-brand">helloworld</span><span className="pwa-market">{broker.toUpperCase()} · {entryInterval.toUpperCase()} ENTRADA · {interval.toUpperCase()} CONTEXTO</span></div><select className="pwa-symbol-select" value={broker} onChange={event => { const next = event.target.value as 'binance' | 'ctrader'; setBroker(next); setSymbol(next === 'ctrader' ? 'AUDUSD' : 'BTCUSDT'); }} aria-label="Broker"><option value="binance">Binance</option><option value="ctrader">cTrader</option></select><select className="pwa-symbol-select" value={symbol} onChange={event => setSymbol(event.target.value)} aria-label="Símbolo">{selectableSymbols.map(option => <option key={option}>{option}</option>)}</select>{profileButton}</header>
