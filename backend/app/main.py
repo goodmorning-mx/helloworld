@@ -893,9 +893,14 @@ async def binance_account_stream(websocket: WebSocket) -> None:
 
     binance_manager.subscribe_events(identity.user_id, on_event)
     try:
-        snapshot = binance_manager.snapshot(identity.user_id)
+        # Credential decryption plus the first account/position bootstrap are
+        # synchronous HTTP work. Never run them on FastAPI's event loop: one
+        # slow Binance response otherwise blocks every private WebSocket and
+        # leaves the UI stuck at "Sin conexión".
+        snapshot = await asyncio.to_thread(binance_manager.snapshot, identity.user_id)
         latest_snapshot = snapshot
-        await websocket.send_json({"type": "snapshot", "snapshot": snapshot, "execution_intents": binance_execution_store.list(identity.user_id), "server_time": int(time.time() * 1000)})
+        execution_intents = await asyncio.to_thread(binance_execution_store.list, identity.user_id)
+        await websocket.send_json({"type": "snapshot", "snapshot": snapshot, "execution_intents": execution_intents, "server_time": int(time.time() * 1000)})
         while True:
             try:
                 event = await asyncio.wait_for(queue.get(), timeout=15)
@@ -911,10 +916,10 @@ async def binance_account_stream(websocket: WebSocket) -> None:
                 continue
             if isinstance(event.get("snapshot"), dict):
                 latest_snapshot = event["snapshot"]
-            event["execution_intents"] = binance_execution_store.list(identity.user_id)
+            event["execution_intents"] = await asyncio.to_thread(binance_execution_store.list, identity.user_id)
             await websocket.send_json(event)
     except Exception:
-        pass
+        logger.exception("binance_account_websocket_failed user=%s", identity.user_id)
     finally:
         binance_manager.unsubscribe_events(identity.user_id, on_event)
 
