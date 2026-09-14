@@ -318,6 +318,14 @@ def _align_binance_value(value: float, step: float, precision: int, *, ceiling: 
 
 
 def _binance_error_message(exc: Exception) -> str:
+    if isinstance(exc, httpx.HTTPStatusError):
+        try:
+            payload = exc.response.json()
+            if isinstance(payload, dict):
+                return f"Binance HTTP {exc.response.status_code} ({payload.get('code', 'sin código')}): {payload.get('msg', str(exc))}"
+        except (ValueError, json.JSONDecodeError):
+            pass
+        return f"Binance HTTP {exc.response.status_code}: {exc.response.text or str(exc)}"
     if isinstance(exc, HTTPError):
         try:
             payload = json.loads(exc.read().decode("utf-8"))
