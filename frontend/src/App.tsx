@@ -69,6 +69,19 @@ function applyDefaultChartViewport(chart: ReturnType<typeof createChart>, data: 
     chart.priceScale('right').setVisibleRange({ from: close * (1 - yBelow / 100), to: close * (1 + yAbove / 100) });
   }
 }
+function getChartViewportSnapshot(chart: ReturnType<typeof createChart>, data: Array<{ close: number }>) {
+  const logicalRange = chart.timeScale().getVisibleLogicalRange();
+  const priceRange = chart.priceScale('right').getVisibleRange();
+  const lastIndex = data.length - 1;
+  const close = Number(data[lastIndex]?.close);
+  if (!logicalRange || !priceRange || lastIndex < 0 || !Number.isFinite(close) || close <= 0) return null;
+  return {
+    bars: Math.max(20, Math.round(lastIndex - Number(logicalRange.from) + 1)),
+    futureBars: Math.max(0, Math.round(Number(logicalRange.to) - lastIndex)),
+    yBelow: Math.max(0, Math.round((close - Number(priceRange.from)) / close * 100)),
+    yAbove: Math.max(0, Math.round((Number(priceRange.to) - close) / close * 100)),
+  };
+}
 function mergeTickBar(bars: Array<{ time: UTCTimestamp; open: number; high: number; low: number; close: number }>, time: number, price: number, intervalSeconds: number) {
   const bucket = Math.floor(time / intervalSeconds) * intervalSeconds as UTCTimestamp;
   const current = bars[bars.length - 1];
@@ -788,6 +801,14 @@ function Workspace() {
   const [viewportFutureBars, setViewportFutureBars] = useState(20);
   const [viewportYBelow, setViewportYBelow] = useState(15);
   const [viewportYAbove, setViewportYAbove] = useState(10);
+  const syncViewportSnapshot = (chart: ReturnType<typeof createChart>, data: Array<{ close: number }>) => {
+    const snapshot = getChartViewportSnapshot(chart, data);
+    if (!snapshot) return;
+    setViewportBars(current => current === snapshot.bars ? current : snapshot.bars);
+    setViewportFutureBars(current => current === snapshot.futureBars ? current : snapshot.futureBars);
+    setViewportYBelow(current => current === snapshot.yBelow ? current : snapshot.yBelow);
+    setViewportYAbove(current => current === snapshot.yAbove ? current : snapshot.yAbove);
+  };
   const entryInterval = '1m' as const;
   const brokerSymbols = broker === 'ctrader' ? ['AUDUSD', 'XAUUSD', 'XAGUSD'] : ['BTCUSDT', 'ETHUSDT', 'BNBUSDT', 'SOLUSDT', 'XRPUSDT', 'DOGEUSDT'];
   const [timezone, setTimezone] = useState('America/Mexico_City');
@@ -1330,6 +1351,7 @@ function Workspace() {
     let active = true;
     const refreshDrawings = () => {
       if (initializingViewport) return;
+      syncViewportSnapshot(chart, candleBarsRef.current);
       const logicalRange = chart.timeScale().getVisibleLogicalRange();
       if (logicalRange && logicalRange.from < 80 && !loadingOlderRef.current && candleBarsRef.current.length > 0) {
         const oldest = Number(candleBarsRef.current[0].time);
@@ -1385,6 +1407,7 @@ function Workspace() {
           else setDataPreservingRange(showHeikinAshi ? calculateHeikinAshi(visibleBars) : visibleBars);
           if (!polling) {
             applyDefaultChartViewport(chart, visibleBars, viewportBars, viewportFutureBars, viewportYBelow, viewportYAbove);
+            syncViewportSnapshot(chart, visibleBars);
             requestAnimationFrame(() => { if (active) initializingViewport = false; });
           }
           polling += 1;
@@ -1432,6 +1455,7 @@ function Workspace() {
         initializingViewport = true;
         setDataPreservingRange(showHeikinAshi ? calculateHeikinAshi(visibleBars) : visibleBars);
         applyDefaultChartViewport(chart, visibleBars, viewportBars, viewportFutureBars, viewportYBelow, viewportYAbove);
+        syncViewportSnapshot(chart, visibleBars);
         requestAnimationFrame(() => { if (active) initializingViewport = false; });
         setTrackerRevision(value => value + 1);
         setViewportRevision(value => value + 1);
@@ -1580,6 +1604,7 @@ function Workspace() {
     };
     const refreshOverview = () => {
       if (initializingViewport) return;
+      syncViewportSnapshot(chart, overviewBarsRef.current);
       setOverviewRevision(value => value + 1);
       const logicalRange = chart.timeScale().getVisibleLogicalRange();
       if (!logicalRange || logicalRange.from >= 50 || overviewLoadingOlderRef.current || overviewBarsRef.current.length === 0) return;
@@ -1635,6 +1660,7 @@ function Workspace() {
           else setDataPreservingRange(showHeikinAshi ? calculateHeikinAshi(visibleBars) : visibleBars);
           if (!polling) {
             applyDefaultChartViewport(chart, visibleBars, viewportBars, viewportFutureBars, viewportYBelow, viewportYAbove);
+            syncViewportSnapshot(chart, visibleBars);
             requestAnimationFrame(() => { if (active) initializingViewport = false; });
           }
           polling += 1;
@@ -1680,6 +1706,7 @@ function Workspace() {
         initializingViewport = true;
         setDataPreservingRange(showHeikinAshi ? calculateHeikinAshi(visibleBars) : visibleBars);
         applyDefaultChartViewport(chart, visibleBars, viewportBars, viewportFutureBars, viewportYBelow, viewportYAbove);
+        syncViewportSnapshot(chart, visibleBars);
         requestAnimationFrame(() => { if (active) initializingViewport = false; });
         setTrackerRevision(value => value + 1);
       }).catch(() => undefined);
