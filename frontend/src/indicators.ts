@@ -66,7 +66,8 @@ export function calculateSslChannel(bars: IndicatorBar[], period = 9) {
 /**
  * Projects favorable entry extensions from the opposite wick of recent candles.
  * A long uses lower wicks (price probing down and recovering); a short uses
- * upper wicks (price probing up and rejecting). Values are percentages.
+ * upper wicks (price probing up and rejecting). The reference is the current
+ * candle's open, so the projected level stays fixed while that candle forms.
  */
 export function calculateWickExtensions(bars: OhlcBar[], lookback = 10, multiplier = 1.5) {
   const length = Math.max(2, Math.round(lookback));
@@ -78,7 +79,10 @@ export function calculateWickExtensions(bars: OhlcBar[], lookback = 10, multipli
     const window = bars.slice(index - length, index);
     const lowerAverage = window.reduce((sum, bar) => sum + Math.max(0, Math.min(bar.open, bar.close) - bar.low), 0) / length;
     const upperAverage = window.reduce((sum, bar) => sum + Math.max(0, bar.high - Math.max(bar.open, bar.close)), 0) / length;
-    const reference = bars[index].close;
+    // Do not use the live close here: it changes on every tick and would make
+    // the marker chase price. A new level is created only when a new candle
+    // opens, using the completed candles in the lookback window.
+    const reference = bars[index].open;
     if (reference <= 0) continue;
     long[index] = reference * (1 - (lowerAverage / reference) * factor);
     short[index] = reference * (1 + (upperAverage / reference) * factor);
