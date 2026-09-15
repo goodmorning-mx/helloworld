@@ -195,10 +195,17 @@ function createBinanceKlineStream(symbol: string, interval: string) {
 }
 
 type BinanceAccountStreamSubscriber = { onAccount: (account: BinanceAccount) => void; onIntents?: (intents: unknown) => void };
-const binanceAccountStreams = new Map<string, { subscribers: Set<BinanceAccountStreamSubscriber>; close: () => void }>();
+type BinanceAccountStreamEntry = {
+  subscribers: Set<BinanceAccountStreamSubscriber>;
+  latestAccount?: BinanceAccount;
+  latestIntents?: unknown;
+  close: () => void;
+};
+const binanceAccountStreams = new Map<string, BinanceAccountStreamEntry>();
 
 function createBinanceAccountStream(accessToken: string, onAccount: (account: BinanceAccount) => void, onIntents?: (intents: unknown) => void) {
   let entry = binanceAccountStreams.get(accessToken);
+  let startStream: (() => void) | null = null;
   if (!entry) {
     const subscribers = new Set<BinanceAccountStreamSubscriber>();
     let socket: WebSocket | null = null;
@@ -216,6 +223,8 @@ function createBinanceAccountStream(accessToken: string, onAccount: (account: Bi
         lastMessageAt = Date.now();
         try {
           const payload = JSON.parse(event.data) as { type?: string; snapshot?: BinanceAccount; execution_intents?: unknown };
+          if (payload.snapshot) entry!.latestAccount = payload.snapshot;
+          if (payload.execution_intents) entry!.latestIntents = payload.execution_intents;
           subscribers.forEach(subscriber => {
             if (payload.snapshot) subscriber.onAccount(payload.snapshot);
             if (payload.execution_intents) subscriber.onIntents?.(payload.execution_intents);
@@ -240,10 +249,18 @@ function createBinanceAccountStream(accessToken: string, onAccount: (account: Bi
       close: () => { stopped = true; if (reconnectTimer !== null) window.clearTimeout(reconnectTimer); if (watchdogTimer !== null) window.clearInterval(watchdogTimer); socket?.close(); socket = null; binanceAccountStreams.delete(accessToken); },
     };
     binanceAccountStreams.set(accessToken, entry);
-    connect();
+    startStream = connect;
   }
   const subscriber = { onAccount, onIntents };
   entry.subscribers.add(subscriber);
+  // The shared socket may already have received the initial snapshot before
+  // this component mounted. Replay it synchronously so tables/cards never
+  // disagree about the same live Binance account.
+  if (entry.latestAccount) onAccount(entry.latestAccount);
+  if (entry.latestIntents) onIntents?.(entry.latestIntents);
+  // Start only after the first subscriber is registered, avoiding a race
+  // where a very fast snapshot arrives before there is a listener.
+  startStream?.();
   return () => {
     entry?.subscribers.delete(subscriber);
     if (entry && entry.subscribers.size === 0) entry.close();
