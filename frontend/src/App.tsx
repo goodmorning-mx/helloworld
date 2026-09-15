@@ -434,9 +434,10 @@ type BinanceAccount = {
   events?: Array<{ time?: string; type?: string; symbol?: string; status?: string }>;
 };
 function acceptBinanceAccount(current: BinanceAccount | null, next: BinanceAccount): BinanceAccount {
-  const currentSeq = Number(current?.state_seq ?? -1);
-  const nextSeq = Number(next.state_seq ?? currentSeq + 1);
-  return nextSeq >= currentSeq ? { ...next, state_seq: nextSeq } : current ?? next;
+  // Frames on one WebSocket arrive in order. A backend redeploy resets the
+  // process-local state_seq, so rejecting a lower sequence here can preserve
+  // an old balance forever after reconnecting to the new monitor instance.
+  return { ...next, state_seq: next.state_seq ?? current?.state_seq };
 }
 type BinanceExecutionIntent = { id?: string; symbol?: string; side?: string; quantity?: number | string; entry_time?: number | string; entry_price?: number; stop_loss?: number; take_profit?: number; status?: string; created_at?: string };
 type BinanceSymbolConfig = { configured?: boolean; symbol?: string; margin_type?: string | null; leverage?: number | null; isolated_balance?: number | null; futures_balance?: number | string | null; error?: string | null };
