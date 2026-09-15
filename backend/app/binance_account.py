@@ -285,12 +285,15 @@ class BinanceAccountMonitor:
                 # immediate signal. Project a fully filled close-all/reduce
                 # only order immediately so the UI cannot retain a phantom
                 # position while waiting for the balance event.
-                if order.get("X") == "FILLED" and (order.get("cp") is True or order.get("R") is True):
+                order_status = str(order.get("X") or "").upper()
+                algo_triggered = event_type == "ALGO_UPDATE" and order_status == "TRIGGERED"
+                close_flag = order.get("cp") is True or str(order.get("cp") or "").lower() == "true" or order.get("R") is True or str(order.get("R") or "").lower() == "true"
+                if (order_status == "FILLED" or algo_triggered) and (close_flag or algo_triggered):
                     symbol = str(order.get("s") or "").upper()
                     current = next((row for row in self._snapshot.get("positions", []) if str(row.get("symbol", "")).upper() == symbol), None)
                     executed = float(order.get("z") or order.get("l") or 0)
                     current_quantity = abs(float((current or {}).get("quantity") or 0))
-                    if symbol and (order.get("cp") is True or (current_quantity > 0 and executed >= current_quantity)):
+                    if symbol and (algo_triggered or order.get("cp") is True or (current_quantity > 0 and executed >= current_quantity)):
                         self._snapshot["positions"] = [row for row in self._snapshot["positions"] if str(row.get("symbol", "")).upper() != symbol]
             self._set(last_order=item, last_event=event_type, last_update=item["time"])
             # Binance normally follows a filled entry with ACCOUNT_UPDATE,
@@ -304,7 +307,25 @@ class BinanceAccountMonitor:
                     self._refresh_account()
                 except Exception:
                     logger.warning("Binance entry fill reconciliation failed", exc_info=True)
-        if event_type in {"ACCOUNT_UPDATE", "ORDER_TRADE_UPDATE", "MARGIN_CALL", "listenKeyExpired"}:
+        elif event_type == "ALGO_UPDATE":
+            # Conditional/algo orders are delivered with the order fields at
+            # the event root (not under `o`, unlike ORDER_TRADE_UPDATE).
+            order = event
+            item = {"time": self._now(), "type": event_type, "symbol": order.get("s"),
+                    "side": order.get("S"), "status": order.get("X"), "order_type": order.get("at") or order.get("o"),
+                    "price": order.get("ap") or order.get("p"), "quantity": order.get("z") or order.get("q"),
+                    "average_price": order.get("ap"), "realized_pnl": order.get("rp"),
+                    "commission": order.get("n"), "client_order_id": order.get("c") or order.get("ca"),
+                    "exchange_order_id": order.get("i") or order.get("aid")}
+            with self._lock:
+                events = list(self._snapshot["events"])
+                events.append(item)
+                self._snapshot["events"] = events[-20:]
+                if str(order.get("X") or "").upper() == "TRIGGERED":
+                    symbol = str(order.get("s") or "").upper()
+                    self._snapshot["positions"] = [row for row in self._snapshot["positions"] if str(row.get("symbol", "")).upper() != symbol]
+            self._set(last_order=item, last_event=event_type, last_update=item["time"])
+        if event_type in {"ACCOUNT_UPDATE", "ORDER_TRADE_UPDATE", "ALGO_UPDATE", "MARGIN_CALL", "listenKeyExpired"}:
             self._emit_event({
                 "type": str(event_type), "event": event, "snapshot": self.snapshot(),
                 "backend_received_at_ms": int(time.time() * 1000),

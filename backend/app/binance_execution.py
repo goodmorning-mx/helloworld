@@ -76,13 +76,36 @@ class BinanceExecutionStore:
             root = str(intent.get("client_order_id") or "")
             for event in events:
                 client_id = str(event.get("client_order_id") or "")
-                if not client_id.startswith(root):
-                    continue
+                symbol = str(event.get("symbol") or "").upper()
                 status = str(event.get("status") or "")
-                if client_id == root and status == "FILLED":
+                is_close = status in {"TRIGGERED", "FILLED"} and bool(event.get("is_close"))
+                client_matches = bool(root and client_id and client_id.startswith(root))
+                symbol_matches = symbol and symbol == str(intent.get("symbol") or "").upper()
+                if client_matches and client_id == root and status == "FILLED":
                     self.update(intent["id"], user_id, status="ENTRY_FILLED", exchange_order_id=str(event.get("exchange_order_id") or intent.get("exchange_order_id")))
-                elif client_id != root and status == "FILLED":
+                elif is_close and (client_matches and client_id != root or (not client_matches and symbol_matches and intent.get("status") not in {"CLOSED", "ERROR"})):
                     self.update(intent["id"], user_id, status="CLOSED", last_error=None)
+
+    def reconcile_account_event(self, user_id: str, event: dict[str, object]) -> None:
+        """Normalize one raw Binance account event before broadcasting it."""
+        event_type = str(event.get("type") or event.get("e") or "")
+        payload = event.get("event") if isinstance(event.get("event"), dict) else event
+        order = payload.get("o") if isinstance(payload, dict) and isinstance(payload.get("o"), dict) else payload
+        if not isinstance(order, dict):
+            return
+        status = str(order.get("X") or order.get("status") or "").upper()
+        close_flag = order.get("cp") is True or str(order.get("cp") or "").lower() == "true" or order.get("R") is True or str(order.get("R") or "").lower() == "true"
+        if event_type == "ALGO_UPDATE" and status == "TRIGGERED":
+            close_flag = True
+        if event_type not in {"ORDER_TRADE_UPDATE", "ALGO_UPDATE"} or not close_flag:
+            return
+        self.reconcile_events(user_id, [{
+            "client_order_id": order.get("c") or order.get("ca") or order.get("clientOrderId"),
+            "exchange_order_id": order.get("i") or order.get("aid") or order.get("algoId"),
+            "symbol": order.get("s") or order.get("symbol"),
+            "status": status,
+            "is_close": True,
+        }])
 
 
 class BinanceExecutionSupervisor:
@@ -141,16 +164,6 @@ class BinanceExecutionSupervisor:
             self._stop.wait(delay)
 
     def _on_account_event(self, user_id: str, event: dict[str, object]) -> None:
-        if event.get("type") != "ORDER_TRADE_UPDATE":
+        if event.get("type") not in {"ORDER_TRADE_UPDATE", "ALGO_UPDATE"}:
             return
-        order = event.get("event")
-        if not isinstance(order, dict):
-            return
-        payload = order.get("o")
-        if not isinstance(payload, dict):
-            return
-        self._store.reconcile_events(user_id, [{
-            "client_order_id": payload.get("c"),
-            "status": payload.get("X"),
-            "exchange_order_id": payload.get("i"),
-        }])
+        self._store.reconcile_account_event(user_id, event)

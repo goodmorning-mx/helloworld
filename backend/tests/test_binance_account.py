@@ -97,6 +97,24 @@ def test_filled_close_all_order_removes_position_immediately():
     assert instance.snapshot()["positions"] == []
 
 
+def test_triggered_algo_close_is_emitted_and_removes_position():
+    emitted = []
+    instance = BinanceAccountMonitor(Settings(
+        APIKEY="key", APISECRET="secret", BINANCE_BASE_URL="https://fapi.example.test",
+    ), on_event=emitted.append)
+    instance._handle_event({
+        "e": "ACCOUNT_UPDATE",
+        "a": {"P": [{"s": "MTLUSDT", "ps": "BOTH", "pa": "12", "ep": "0.418"}]},
+    })
+    instance._handle_event({
+        "e": "ALGO_UPDATE", "s": "MTLUSDT", "S": "SELL", "X": "TRIGGERED",
+        "aid": 456, "ca": "helloworld_sl",
+    })
+    assert instance.snapshot()["positions"] == []
+    assert emitted[-1]["type"] == "ALGO_UPDATE"
+    assert instance.snapshot()["events"][-1]["status"] == "TRIGGERED"
+
+
 def test_account_events_are_emitted_immediately_for_realtime_consumers():
     emitted = []
     instance = BinanceAccountMonitor(Settings(

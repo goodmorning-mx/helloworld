@@ -919,6 +919,11 @@ async def binance_account_stream(websocket: WebSocket) -> None:
                 continue
             if isinstance(event.get("snapshot"), dict):
                 latest_snapshot = event["snapshot"]
+            # Persist the exchange close before reading intents for this
+            # frame. Listener callbacks run in an unordered set, so relying
+            # on the background supervisor alone can send the UI one stale
+            # intent snapshot after an SL/TP fill.
+            await asyncio.to_thread(binance_execution_store.reconcile_account_event, identity.user_id, event)
             event["execution_intents"] = jsonable_encoder(await asyncio.to_thread(binance_execution_store.list, identity.user_id))
             await websocket.send_json(event)
     except Exception:
