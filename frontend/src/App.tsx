@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type FormEvent, type PointerEvent, type ReactNode, type WheelEvent as ReactWheelEvent } from 'react';
+import { useEffect, useMemo, useRef, useState, type FormEvent, type PointerEvent, type ReactNode } from 'react';
 import { AuthGuard, AuthProvider, createAuthClient, useAuth, type AuthClient } from '@goodmorning/gm-auth';
 import { PwaRuntime } from '@goodmorning/gm-pwa';
 import { CandlestickSeries, createChart, type IPriceLine, type Time, type UTCTimestamp } from 'lightweight-charts';
@@ -1333,8 +1333,8 @@ function Workspace() {
       grid: { vertLines: { color: '#151a20' }, horzLines: { color: '#151a20' } },
       rightPriceScale: { borderColor: '#252a31' },
       localization: { locale: 'es-MX', timeFormatter: (time: Time) => chartTimeLabel(time, timezone, true), priceFormatter: formatPaperPrice },
-      handleScroll: { mouseWheel: false, pressedMouseMove: true, horzTouchDrag: true, vertTouchDrag: true },
-      handleScale: { axisPressedMouseMove: false, mouseWheel: false, pinch: false },
+      handleScroll: { mouseWheel: true, pressedMouseMove: true, horzTouchDrag: true, vertTouchDrag: true },
+      handleScale: { axisPressedMouseMove: false, mouseWheel: true, pinch: true },
       timeScale: { borderColor: '#252a31', timeVisible: true, secondsVisible: false, tickMarkFormatter: (time: Time) => chartTimeLabel(time, timezone, false) },
     });
     const candles = chart.addSeries(CandlestickSeries, { upColor: '#64d39a', downColor: '#f27e7e', borderVisible: false, wickUpColor: '#64d39a', wickDownColor: '#f27e7e', priceFormat: { type: 'price', precision: binanceRules?.price_precision ?? 8, minMove: binanceRules?.tick_size || 0.00000001 } });
@@ -1602,8 +1602,8 @@ function Workspace() {
       grid: { vertLines: { color: '#151a20' }, horzLines: { color: '#151a20' } },
       rightPriceScale: { borderColor: '#252a31' },
       localization: { locale: 'es-MX', timeFormatter: (time: Time) => chartTimeLabel(time, timezone, true), priceFormatter: formatPaperPrice },
-      handleScroll: { mouseWheel: false, pressedMouseMove: true, horzTouchDrag: true, vertTouchDrag: true },
-      handleScale: { axisPressedMouseMove: false, mouseWheel: false, pinch: false },
+      handleScroll: { mouseWheel: true, pressedMouseMove: true, horzTouchDrag: true, vertTouchDrag: true },
+      handleScale: { axisPressedMouseMove: false, mouseWheel: true, pinch: true },
       timeScale: { borderColor: '#252a31', timeVisible: true, secondsVisible: false, tickMarkFormatter: (time: Time) => chartTimeLabel(time, timezone, false) },
     });
     const candles = chart.addSeries(CandlestickSeries, { upColor: '#64d39a', downColor: '#f27e7e', borderVisible: false, wickUpColor: '#64d39a', wickDownColor: '#f27e7e', priceFormat: { type: 'price', precision: binanceRules?.price_precision ?? 8, minMove: binanceRules?.tick_size || 0.00000001 } });
@@ -2520,46 +2520,6 @@ function Workspace() {
     if (chart && data.length > 0) syncViewportSnapshot(chart, data, canvas === 'entry' ? setEntryViewportSnapshot : setOverviewViewportSnapshot);
   }
 
-  function handleChartWheel(event: ReactWheelEvent<HTMLElement>, canvas: ChartCanvas) {
-    const { chart, candles } = chartContext(canvas);
-    event.preventDefault();
-    event.stopPropagation();
-    if (!chart || !candles) return;
-
-    const bounds = event.currentTarget.getBoundingClientRect();
-    const xRange = chart.timeScale().getVisibleLogicalRange();
-    const yRange = chart.priceScale('right').getVisibleRange();
-    if (!xRange || !yRange || bounds.width <= 0 || bounds.height <= 0) return;
-
-    const x = Math.max(0, Math.min(bounds.width, event.clientX - bounds.left));
-    const y = Math.max(0, Math.min(bounds.height, event.clientY - bounds.top));
-    const xCenter = chart.timeScale().coordinateToLogical(x);
-    const yCenter = candles.coordinateToPrice(y);
-    if (xCenter === null || xCenter === undefined || yCenter === null || yCenter === undefined) return;
-
-    const dx = Math.max(-240, Math.min(240, Number(event.deltaX) || 0));
-    const dy = Math.max(-240, Math.min(240, Number(event.deltaY) || 0));
-    if (Math.abs(dy) >= Math.abs(dx)) {
-      // Scroll vertical: zoom both axes around the cursor. The visible ranges
-      // retain their proportions; no range is derived from the latest close.
-      const factor = Math.exp(dy * 0.0025);
-      chart.timeScale().setVisibleLogicalRange({
-        from: Number(xCenter) + (Number(xRange.from) - Number(xCenter)) * factor,
-        to: Number(xCenter) + (Number(xRange.to) - Number(xCenter)) * factor,
-      });
-      chart.priceScale('right').setVisibleRange({
-        from: Number(yCenter) + (Number(yRange.from) - Number(yCenter)) * factor,
-        to: Number(yCenter) + (Number(yRange.to) - Number(yCenter)) * factor,
-      });
-    } else {
-      // Scroll horizontal: pan X while preserving the number of visible bars.
-      const logicalPerPixel = (Number(xRange.to) - Number(xRange.from)) / bounds.width;
-      const shift = dx * logicalPerPixel;
-      chart.timeScale().setVisibleLogicalRange({ from: Number(xRange.from) + shift, to: Number(xRange.to) + shift });
-    }
-    requestAnimationFrame(() => captureChartViewport(canvas));
-  }
-
   function finishDrawingAndCapture(event: PointerEvent<HTMLElement>, canvas: ChartCanvas) {
     finishDrawing(event);
     requestAnimationFrame(() => captureChartViewport(canvas));
@@ -2847,7 +2807,7 @@ function Workspace() {
     const tpAmount = quantity * Math.abs(target - entry);
     return { side, entry, stop, target, targetPercent, quantity, notional, fees, leverage, marginMultiplier, slAmount, tpAmount, margin: leverage > 0 ? notional / leverage : 0 };
   }) : [];
-  const chartStageView = <div ref={chartStage} className={`chart-stage ${tool ? 'drawing-mode' : ''}`} onWheelCapture={event => handleChartWheel(event, 'entry')} onPointerDownCapture={startDrawing} onPointerMoveCapture={updateDrawing} onPointerUpCapture={event => finishDrawingAndCapture(event, 'entry')} onPointerCancelCapture={() => { setDrawingStart(null); setDrawingEnd(null); setMoveStart(null); panStartRef.current = null; setResizeStart(null); setLassoStart(null); setLassoEnd(null); }}><div className="chart-viewport-snapshot" aria-label="Snapshot del viewport de entrada">X {entryViewportSnapshot.bars} · Futuro {entryViewportSnapshot.futureBars} · Y− {entryViewportSnapshot.yBelow}% · Y+ {entryViewportSnapshot.yAbove}%</div>
+  const chartStageView = <div ref={chartStage} className={`chart-stage ${tool ? 'drawing-mode' : ''}`} onPointerDownCapture={startDrawing} onPointerMoveCapture={updateDrawing} onPointerUpCapture={event => finishDrawingAndCapture(event, 'entry')} onPointerCancelCapture={() => { setDrawingStart(null); setDrawingEnd(null); setMoveStart(null); panStartRef.current = null; setResizeStart(null); setLassoStart(null); setLassoEnd(null); }}><div className="chart-viewport-snapshot" aria-label="Snapshot del viewport de entrada">X {entryViewportSnapshot.bars} · Futuro {entryViewportSnapshot.futureBars} · Y− {entryViewportSnapshot.yBelow}% · Y+ {entryViewportSnapshot.yAbove}%</div>
     {pendingBinanceTp && <div className="binance-tp-confirm" role="status"><span>Nuevo TP {pendingBinanceTp.symbol}: {formatPaperPrice(pendingBinanceTp.price)}</span><button type="button" onClick={() => void confirmBinanceTakeProfit()}>Confirmar TP</button><button type="button" onClick={() => { pendingBinanceTpRef.current = null; setPendingBinanceTp(null); }} aria-label="Cancelar cambio de TP">Cancelar</button></div>}
     <div ref={chartContainer} className="candlestick-chart" /><svg className="drawing-overlay" viewBox={`0 0 ${stageSize.width} ${stageSize.height}`} preserveAspectRatio="none" aria-hidden="true">{renderSessionIndicator()}{renderInterestMarkers()}{renderPriceLineHitAreas('entry')}{[...drawings, ...productionDrawings].map((drawing, index) => (!drawing.paper || !drawing.closed || drawing.id === visibleClosedId) && (!drawing.paper || !drawing.symbol || drawing.symbol === symbol) && (drawing.chart !== 'context' || drawing.paper) ? renderDrawing(drawing, index, 'entry') : null)}{tool && tool !== 'pan' && drawingStart && drawingEnd && drawingCanvas === 'entry' && renderDrawing({ type: tool, chart: 'entry', start: drawingStart, end: drawingEnd }, 'preview', 'entry')}{lassoStart && lassoEnd && drawingCanvas === 'entry' && <rect x={Math.min(lassoStart.x, lassoEnd.x)} y={Math.min(lassoStart.y, lassoEnd.y)} width={Math.abs(lassoStart.x - lassoEnd.x)} height={Math.abs(lassoStart.y - lassoEnd.y)} className="selection-lasso" />}</svg><div className="chart-bottom-controls"><span className="timezone-icon" aria-hidden="true">◷</span><select className="timezone-select" value={timezone} onChange={event => setTimezone(event.target.value)} aria-label="Zona horaria">{TIMEZONES.map(([label, value]) => <option key={value} value={value}>{value}</option>)}</select></div>
     <div className="floating-order-buttons" aria-label="Abrir operación simulada"><button className="open-long-button" disabled={!paperReady} onClick={() => void openSimulatedPosition('long')}>▲ <span>Abrir Long</span><small>{binancePreview.find(preview => preview.side === 'LONG') ? `SL -${binanceStopPercent.toFixed(2)}% · TP +${binancePreview.find(preview => preview.side === 'LONG')!.targetPercent.toFixed(2)}% · N ${binancePreview.find(preview => preview.side === 'LONG')!.notional.toFixed(2)} · M ${binancePreview.find(preview => preview.side === 'LONG')!.margin.toFixed(4)} · ${binancePreview.find(preview => preview.side === 'LONG')!.leverage}x` : labRecommendations ? `${labRecommendations.long.label} · R:R ${labRecommendations.long.rr.toFixed(2)}:1` : 'Calculando recomendación…'}</small></button><button className="open-short-button" disabled={!paperReady} onClick={() => void openSimulatedPosition('short')}>▼ <span>Abrir Short</span><small>{binancePreview.find(preview => preview.side === 'SHORT') ? `SL -${binanceStopPercent.toFixed(2)}% · TP +${binancePreview.find(preview => preview.side === 'SHORT')!.targetPercent.toFixed(2)}% · N ${binancePreview.find(preview => preview.side === 'SHORT')!.notional.toFixed(2)} · M ${binancePreview.find(preview => preview.side === 'SHORT')!.margin.toFixed(4)} · ${binancePreview.find(preview => preview.side === 'SHORT')!.leverage}x` : labRecommendations ? `${labRecommendations.short.label} · R:R ${labRecommendations.short.rr.toFixed(2)}:1` : 'Calculando recomendación…'}</small></button></div>
@@ -2925,7 +2885,7 @@ function Workspace() {
   const tradingAgent = <TradingAgentChat activeSymbol={symbol} interval={interval} apiUrl={apiUrl} accessToken={auth.accessToken} />;
 
   const toolOptions = [['line', '╱', 'Línea'], ['ruler', '▥', 'Medir'], ['long', 'L', 'Long'], ['short', 'S', 'Short'], ['pan', '✋', 'Pan']] as const;
-  const chartsRow = <div className="charts-row"><section ref={overviewStage} className={`secondary-chart ${tool ? 'drawing-mode' : ''}`} onWheelCapture={event => handleChartWheel(event, 'context')} onPointerDownCapture={event => startDrawing(event, 'context')} onPointerMoveCapture={updateDrawing} onPointerUpCapture={event => finishDrawingAndCapture(event, 'context')} onPointerCancelCapture={() => { setDrawingStart(null); setDrawingEnd(null); setMoveStart(null); panStartRef.current = null; setResizeStart(null); setLassoStart(null); setLassoEnd(null); }}><div className="chart-panel-label">{interval.toUpperCase()} · CONTEXTO · {symbol}</div><div className="chart-viewport-snapshot" aria-label="Snapshot del viewport de contexto">X {overviewViewportSnapshot.bars} · Futuro {overviewViewportSnapshot.futureBars} · Y− {overviewViewportSnapshot.yBelow}% · Y+ {overviewViewportSnapshot.yAbove}%</div><div ref={overviewChartContainer} className="overview-chart" /><svg className="overview-overlay" viewBox={`0 0 ${overviewSize.width} ${overviewSize.height}`} preserveAspectRatio="none" aria-hidden="true">{renderOverviewSessions()}{renderOverviewInterestMarkers()}{renderPriceLineHitAreas('context')}{[...drawings, ...productionDrawings].map((drawing, index) => (!drawing.paper || !drawing.closed || drawing.id === visibleClosedId) && (!drawing.paper || !drawing.symbol || drawing.symbol === symbol) && (drawing.chart === 'context' || drawing.paper) ? renderDrawing(drawing, index, 'context') : null)}{tool && tool !== 'pan' && drawingStart && drawingEnd && drawingCanvas === 'context' && renderDrawing({ type: tool, chart: 'context', start: drawingStart, end: drawingEnd }, 'preview', 'context')}{lassoStart && lassoEnd && drawingCanvas === 'context' && <rect x={Math.min(lassoStart.x, lassoEnd.x)} y={Math.min(lassoStart.y, lassoEnd.y)} width={Math.abs(lassoStart.x - lassoEnd.x)} height={Math.abs(lassoStart.y - lassoEnd.y)} className="selection-lasso" />}</svg></section><section className="primary-chart"><div className="chart-panel-label">{entryInterval.toUpperCase()} · AJUSTE DE ENTRADA</div>{chartStageView}</section></div>;
+  const chartsRow = <div className="charts-row"><section ref={overviewStage} className={`secondary-chart ${tool ? 'drawing-mode' : ''}`} onPointerDownCapture={event => startDrawing(event, 'context')} onPointerMoveCapture={updateDrawing} onPointerUpCapture={event => finishDrawingAndCapture(event, 'context')} onPointerCancelCapture={() => { setDrawingStart(null); setDrawingEnd(null); setMoveStart(null); panStartRef.current = null; setResizeStart(null); setLassoStart(null); setLassoEnd(null); }}><div className="chart-panel-label">{interval.toUpperCase()} · CONTEXTO · {symbol}</div><div className="chart-viewport-snapshot" aria-label="Snapshot del viewport de contexto">X {overviewViewportSnapshot.bars} · Futuro {overviewViewportSnapshot.futureBars} · Y− {overviewViewportSnapshot.yBelow}% · Y+ {overviewViewportSnapshot.yAbove}%</div><div ref={overviewChartContainer} className="overview-chart" /><svg className="overview-overlay" viewBox={`0 0 ${overviewSize.width} ${overviewSize.height}`} preserveAspectRatio="none" aria-hidden="true">{renderOverviewSessions()}{renderOverviewInterestMarkers()}{renderPriceLineHitAreas('context')}{[...drawings, ...productionDrawings].map((drawing, index) => (!drawing.paper || !drawing.closed || drawing.id === visibleClosedId) && (!drawing.paper || !drawing.symbol || drawing.symbol === symbol) && (drawing.chart === 'context' || drawing.paper) ? renderDrawing(drawing, index, 'context') : null)}{tool && tool !== 'pan' && drawingStart && drawingEnd && drawingCanvas === 'context' && renderDrawing({ type: tool, chart: 'context', start: drawingStart, end: drawingEnd }, 'preview', 'context')}{lassoStart && lassoEnd && drawingCanvas === 'context' && <rect x={Math.min(lassoStart.x, lassoEnd.x)} y={Math.min(lassoStart.y, lassoEnd.y)} width={Math.abs(lassoStart.x - lassoEnd.x)} height={Math.abs(lassoStart.y - lassoEnd.y)} className="selection-lasso" />}</svg></section><section className="primary-chart"><div className="chart-panel-label">{entryInterval.toUpperCase()} · AJUSTE DE ENTRADA</div>{chartStageView}</section></div>;
 
   return mobilePwa ? <main className="trading-shell pwa-shell">
     <header className="pwa-mobile-header"><div><span className="pwa-brand">helloworld</span><span className="pwa-market">{broker.toUpperCase()} · {entryInterval.toUpperCase()} ENTRADA · {interval.toUpperCase()} CONTEXTO</span></div><select className="pwa-symbol-select" value={broker} onChange={event => { const next = event.target.value as 'binance' | 'ctrader'; setBroker(next); setSymbol(next === 'ctrader' ? 'AUDUSD' : 'BTCUSDT'); }} aria-label="Broker"><option value="binance">Binance</option><option value="ctrader">cTrader</option></select><select className="pwa-symbol-select" value={symbol} onChange={event => setSymbol(event.target.value)} aria-label="Símbolo">{selectableSymbols.map(option => <option key={option}>{option}</option>)}</select>{profileButton}</header>
