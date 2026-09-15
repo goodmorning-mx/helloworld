@@ -1234,7 +1234,13 @@ function Workspace() {
     trackerPriceLinesRef.current = [];
     const addLines = (canvas: ChartCanvas, series: ReturnType<ReturnType<typeof createChart>['addSeries']> | null) => {
       if (!series) return;
-      const operationDrawings = productionOnlyRef.current ? productionDrawingsRef.current : drawings;
+      // Binance positions are live exchange state and must remain visible in
+      // the chart regardless of whether the paper/production panel toggle is
+      // currently selected. Paper drawings are kept alongside them so the
+      // user can compare both layers without losing the real SL/TP.
+      const operationDrawings = productionOnlyRef.current
+        ? productionDrawingsRef.current
+        : [...drawings, ...productionDrawingsRef.current];
       operationDrawings.forEach((drawing, index) => {
         if (!drawing.paper || (drawing.type !== 'long' && drawing.type !== 'short')) return;
         if (drawing.symbol && drawing.symbol !== symbol) return;
