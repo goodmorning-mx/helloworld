@@ -111,6 +111,23 @@ def test_account_events_are_emitted_immediately_for_realtime_consumers():
     assert emitted[0]["backend_received_at_ms"] > 0
 
 
+def test_filled_entry_reconciles_position_risk_before_publish(monkeypatch):
+    emitted = []
+    instance = BinanceAccountMonitor(Settings(
+        APIKEY="key", APISECRET="secret", BINANCE_BASE_URL="https://fapi.example.test",
+    ), on_event=emitted.append)
+    instance._thread = object()
+    refreshed = {"totalWalletBalance": "100", "totalMarginBalance": "99", "availableBalance": "90", "totalUnrealizedProfit": "1"}
+    monkeypatch.setattr(instance, "_signed_get", lambda path: refreshed if path == "/fapi/v2/account" else [{
+        "symbol": "BTCUSDT", "positionAmt": "0.01", "entryPrice": "60000", "markPrice": "60100",
+        "unRealizedProfit": "1", "notional": "601", "isolatedMargin": "30", "leverage": "20",
+        "marginType": "isolated", "positionSide": "BOTH",
+    }])
+    instance._handle_event({"e": "ORDER_TRADE_UPDATE", "o": {"s": "BTCUSDT", "S": "BUY", "X": "FILLED"}})
+    assert instance.snapshot()["positions"][0]["symbol"] == "BTCUSDT"
+    assert emitted[-1]["snapshot"]["positions"][0]["entry_price"] == "60000"
+
+
 def test_position_risk_projection_preserves_binance_risk_fields():
     projected = monitor()._position({
         "symbol": "BULLAUSDT", "positionAmt": "5", "entryPrice": "0.0743230",

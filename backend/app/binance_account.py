@@ -293,6 +293,17 @@ class BinanceAccountMonitor:
                     if symbol and (order.get("cp") is True or (current_quantity > 0 and executed >= current_quantity)):
                         self._snapshot["positions"] = [row for row in self._snapshot["positions"] if str(row.get("symbol", "")).upper() != symbol]
             self._set(last_order=item, last_event=event_type, last_update=item["time"])
+            # Binance normally follows a filled entry with ACCOUNT_UPDATE,
+            # but the entry fill is the first authoritative signal. Re-read
+            # positionRisk immediately so a position opened outside this UI
+            # is visible even if the account update is delayed or dropped.
+            is_filled = str(order.get("X") or "").upper() == "FILLED"
+            is_close = order.get("cp") is True or str(order.get("cp") or "").lower() == "true" or order.get("R") is True or str(order.get("R") or "").lower() == "true"
+            if is_filled and not is_close and self._thread is not None:
+                try:
+                    self._refresh_account()
+                except Exception:
+                    logger.warning("Binance entry fill reconciliation failed", exc_info=True)
         if event_type in {"ACCOUNT_UPDATE", "ORDER_TRADE_UPDATE", "MARGIN_CALL", "listenKeyExpired"}:
             self._emit_event({
                 "type": str(event_type), "event": event, "snapshot": self.snapshot(),
