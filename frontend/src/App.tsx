@@ -867,7 +867,11 @@ function Workspace() {
   const [sslPeriod, setSslPeriod] = useState(9);
   const [trackerPeriod, setTrackerPeriod] = useState(() => Number(localStorage.getItem('helloworld-tracker-period') ?? 5) || 5);
   const [wickPeriod, setWickPeriod] = useState(() => Number(localStorage.getItem('helloworld-wick-period') ?? 10) || 10);
-  const [wickDisplayPeriod, setWickDisplayPeriod] = useState(() => Number(localStorage.getItem('helloworld-wick-display-period') ?? 10) || 10);
+  const [wickDisplayPeriod, setWickDisplayPeriod] = useState(() => {
+    const stored = localStorage.getItem('helloworld-wick-display-period');
+    // Migrate the old hard-coded display window to the new default.
+    return stored === null || stored === '10' ? 30 : Math.max(1, Math.min(100, Number(stored) || 30));
+  });
   const [wickMultiplier, setWickMultiplier] = useState(() => Number(localStorage.getItem('helloworld-wick-multiplier') ?? 1.5) || 1.5);
   const [showIndicatorSettings, setShowIndicatorSettings] = useState(false);
   const [indicatorHover, setIndicatorHover] = useState<{ canvas: ChartCanvas; x: number; y: number; label: string } | null>(null);
@@ -2004,6 +2008,10 @@ function Workspace() {
     if (!chart || !candles || !bars.length || (!showRsi && !showSsl && !showWickExtensions)) return null;
     const rsi = showRsi ? calculateRsi(bars, rsiPeriod) : [];
     const ssl = showSsl ? calculateSslChannel(bars, sslPeriod) : { up: [], down: [], bullish: [] };
+    // Wick direction is always filtered by SSL, even when the SSL lines are
+    // hidden. A positive regime permits Long points; a negative regime
+    // permits Short points only.
+    const wickSsl = calculateSslChannel(bars, sslPeriod);
     const wickLookback = wickPeriod;
     const wickStart = Math.max(0, bars.length - (wickDisplayPeriod + wickLookback));
     const wickBars = bars.slice(wickStart);
@@ -2038,8 +2046,8 @@ function Workspace() {
       const shortPoint = toPoint(wickExtensions.short[wickIndex], index);
       const timeLabel = new Date(Number(bar.time) * 1000).toLocaleString('es-MX', { timeZone: timezone, dateStyle: 'short', timeStyle: 'short' });
       return <g key={`wick-${canvas}-${bar.time}`} className="wick-extension-markers">
-        {longPoint && <circle cx={longPoint.x} cy={longPoint.y} r="4.5" className="wick-extension-marker wick-extension-long" pointerEvents="all" onPointerEnter={() => setIndicatorHover({ canvas, x: longPoint.x, y: longPoint.y, label: `Long ${wickMultiplier.toFixed(1)}x · ${timeLabel}` })} onPointerLeave={() => setIndicatorHover(null)}><title>Long: extensión favorable {wickMultiplier.toFixed(1)}x</title></circle>}
-        {shortPoint && <circle cx={shortPoint.x} cy={shortPoint.y} r="4.5" className="wick-extension-marker wick-extension-short" pointerEvents="all" onPointerEnter={() => setIndicatorHover({ canvas, x: shortPoint.x, y: shortPoint.y, label: `Short ${wickMultiplier.toFixed(1)}x · ${timeLabel}` })} onPointerLeave={() => setIndicatorHover(null)}><title>Short: extensión favorable {wickMultiplier.toFixed(1)}x</title></circle>}
+        {longPoint && wickSsl.bullish[index] && <circle cx={longPoint.x} cy={longPoint.y} r="4.5" className="wick-extension-marker wick-extension-long" pointerEvents="all" onPointerEnter={() => setIndicatorHover({ canvas, x: longPoint.x, y: longPoint.y, label: `Long ${wickMultiplier.toFixed(1)}x · ${timeLabel}` })} onPointerLeave={() => setIndicatorHover(null)}><title>Long: extensión favorable {wickMultiplier.toFixed(1)}x · SSL positivo</title></circle>}
+        {shortPoint && wickSsl.bullish[index] === false && <circle cx={shortPoint.x} cy={shortPoint.y} r="4.5" className="wick-extension-marker wick-extension-short" pointerEvents="all" onPointerEnter={() => setIndicatorHover({ canvas, x: shortPoint.x, y: shortPoint.y, label: `Short ${wickMultiplier.toFixed(1)}x · ${timeLabel}` })} onPointerLeave={() => setIndicatorHover(null)}><title>Short: extensión favorable {wickMultiplier.toFixed(1)}x · SSL negativo</title></circle>}
       </g>;
     });
     return <g className={`price-indicators price-indicators-${canvas}`}>
