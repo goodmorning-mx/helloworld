@@ -68,21 +68,31 @@ function applyDefaultChartViewport(chart: ReturnType<typeof createChart>, data: 
   }
 }
 function zoomChartOnWheel(chart: ReturnType<typeof createChart>, event: WheelEvent) {
-  // Trackpad vertical scrolling is used as a synchronized X/Y zoom. Keep
-  // horizontal two-finger movement available to the chart's native scroll.
+  // Trackpad vertical scrolling behaves like CAD/3D zoom: a fixed step,
+  // synchronized X/Y scaling, anchored at the pointer. Keep horizontal
+  // two-finger movement available to the chart's native scroll.
   if (Math.abs(event.deltaY) <= Math.abs(event.deltaX) || event.deltaY === 0) return;
   const logical = chart.timeScale().getVisibleLogicalRange();
   const price = chart.priceScale('right').getVisibleRange();
   if (!logical || !price) return;
   event.preventDefault();
   event.stopPropagation();
-  const factor = Math.max(0.65, Math.min(1.55, Math.exp(event.deltaY * 0.0015)));
-  const logicalCenter = (logical.from + logical.to) / 2;
-  const logicalSpan = Math.max(2, (logical.to - logical.from) * factor);
-  const priceCenter = (price.from + price.to) / 2;
-  const priceSpan = Math.max(Number.EPSILON, (price.to - price.from) * factor);
-  chart.timeScale().setVisibleLogicalRange({ from: logicalCenter - logicalSpan / 2, to: logicalCenter + logicalSpan / 2 });
-  chart.priceScale('right').setVisibleRange({ from: priceCenter - priceSpan / 2, to: priceCenter + priceSpan / 2 });
+  const bounds = (event.currentTarget as HTMLElement).getBoundingClientRect();
+  const xRatio = Math.max(0, Math.min(1, (event.clientX - bounds.left) / bounds.width));
+  const yRatio = Math.max(0, Math.min(1, (event.clientY - bounds.top) / bounds.height));
+  const factor = event.deltaY < 0 ? 0.88 : 1.12;
+  const xAnchor = logical.from + (logical.to - logical.from) * xRatio;
+  const yAnchor = price.to - (price.to - price.from) * yRatio;
+  const nextLogicalSpan = Math.max(2, (logical.to - logical.from) * factor);
+  const nextPriceSpan = Math.max(Number.EPSILON, (price.to - price.from) * factor);
+  chart.timeScale().setVisibleLogicalRange({
+    from: xAnchor - nextLogicalSpan * xRatio,
+    to: xAnchor + nextLogicalSpan * (1 - xRatio),
+  });
+  chart.priceScale('right').setVisibleRange({
+    from: yAnchor - nextPriceSpan * (1 - yRatio),
+    to: yAnchor + nextPriceSpan * yRatio,
+  });
 }
 function getChartViewportSnapshot(chart: ReturnType<typeof createChart>, data: Array<{ close: number }>) {
   const logicalRange = chart.timeScale().getVisibleLogicalRange();
