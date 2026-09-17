@@ -67,6 +67,23 @@ function applyDefaultChartViewport(chart: ReturnType<typeof createChart>, data: 
     chart.priceScale('right').setVisibleRange({ from: close * (1 - yBelow / 100), to: close * (1 + yAbove / 100) });
   }
 }
+function zoomChartOnWheel(chart: ReturnType<typeof createChart>, event: WheelEvent) {
+  // Trackpad vertical scrolling is used as a synchronized X/Y zoom. Keep
+  // horizontal two-finger movement available to the chart's native scroll.
+  if (Math.abs(event.deltaY) <= Math.abs(event.deltaX) || event.deltaY === 0) return;
+  const logical = chart.timeScale().getVisibleLogicalRange();
+  const price = chart.priceScale('right').getVisibleRange();
+  if (!logical || !price) return;
+  event.preventDefault();
+  event.stopPropagation();
+  const factor = Math.max(0.65, Math.min(1.55, Math.exp(event.deltaY * 0.0015)));
+  const logicalCenter = (logical.from + logical.to) / 2;
+  const logicalSpan = Math.max(2, (logical.to - logical.from) * factor);
+  const priceCenter = (price.from + price.to) / 2;
+  const priceSpan = Math.max(Number.EPSILON, (price.to - price.from) * factor);
+  chart.timeScale().setVisibleLogicalRange({ from: logicalCenter - logicalSpan / 2, to: logicalCenter + logicalSpan / 2 });
+  chart.priceScale('right').setVisibleRange({ from: priceCenter - priceSpan / 2, to: priceCenter + priceSpan / 2 });
+}
 function getChartViewportSnapshot(chart: ReturnType<typeof createChart>, data: Array<{ close: number }>) {
   const logicalRange = chart.timeScale().getVisibleLogicalRange();
   const priceRange = chart.priceScale('right').getVisibleRange();
@@ -1358,12 +1375,15 @@ function Workspace() {
       rightPriceScale: { borderColor: '#252a31' },
       localization: { locale: 'es-MX', timeFormatter: (time: Time) => chartTimeLabel(time, timezone, true), priceFormatter: formatPaperPrice },
       handleScroll: { mouseWheel: true, pressedMouseMove: true, horzTouchDrag: true, vertTouchDrag: true },
-      handleScale: { axisPressedMouseMove: false, mouseWheel: true, pinch: true },
+      // Vertical trackpad wheel is handled below so X and Y zoom together.
+      handleScale: { axisPressedMouseMove: false, mouseWheel: false, pinch: true },
       timeScale: { borderColor: '#252a31', timeVisible: true, secondsVisible: false, tickMarkFormatter: (time: Time) => chartTimeLabel(time, timezone, false) },
     });
     const candles = chart.addSeries(CandlestickSeries, { upColor: '#64d39a', downColor: '#f27e7e', borderVisible: false, wickUpColor: '#64d39a', wickDownColor: '#f27e7e', priceFormat: { type: 'price', precision: binanceRules?.price_precision ?? 8, minMove: binanceRules?.tick_size || 0.00000001 } });
     chartRef.current = chart;
     candlesRef.current = candles;
+    const wheelHandler = (event: WheelEvent) => zoomChartOnWheel(chart, event);
+    chartContainer.current.addEventListener('wheel', wheelHandler, { passive: false });
     let hasChartData = false;
     let initializingViewport = false;
     const setDataPreservingRange = (data: Array<{ time: UTCTimestamp; open: number; high: number; low: number; close: number }>) => {
@@ -1461,7 +1481,7 @@ function Workspace() {
       const candleTimer = window.setInterval(() => void loadCTrader(), 30_000);
       const tickTimer = window.setInterval(pollTick, 1_000);
       void pollTick();
-      return () => { active = false; window.clearInterval(candleTimer); window.clearInterval(tickTimer); chart.timeScale().unsubscribeVisibleTimeRangeChange(refreshDrawings); chart.timeScale().unsubscribeVisibleLogicalRangeChange(refreshDrawings); chartRef.current = null; candlesRef.current = null; candleDataRef.current = []; candleBarsRef.current = []; loadingOlderRef.current = false; chart.remove(); };
+      return () => { active = false; window.clearInterval(candleTimer); window.clearInterval(tickTimer); chart.timeScale().unsubscribeVisibleTimeRangeChange(refreshDrawings); chart.timeScale().unsubscribeVisibleLogicalRangeChange(refreshDrawings); chartContainer.current?.removeEventListener('wheel', wheelHandler); chartRef.current = null; candlesRef.current = null; candleDataRef.current = []; candleBarsRef.current = []; loadingOlderRef.current = false; chart.remove(); };
     }
     // The chart/history uses Binance Futures, so the live stream must use the
     // Futures WebSocket too. Spot streams can silently stop for Futures-only
@@ -1591,6 +1611,7 @@ function Workspace() {
       stream.close();
       chart.timeScale().unsubscribeVisibleTimeRangeChange(refreshDrawings);
       chart.timeScale().unsubscribeVisibleLogicalRangeChange(refreshDrawings);
+      chartContainer.current?.removeEventListener('wheel', wheelHandler);
       chartRef.current = null;
       candlesRef.current = null;
       candleDataRef.current = [];
@@ -1627,12 +1648,14 @@ function Workspace() {
       rightPriceScale: { borderColor: '#252a31' },
       localization: { locale: 'es-MX', timeFormatter: (time: Time) => chartTimeLabel(time, timezone, true), priceFormatter: formatPaperPrice },
       handleScroll: { mouseWheel: true, pressedMouseMove: true, horzTouchDrag: true, vertTouchDrag: true },
-      handleScale: { axisPressedMouseMove: false, mouseWheel: true, pinch: true },
+      handleScale: { axisPressedMouseMove: false, mouseWheel: false, pinch: true },
       timeScale: { borderColor: '#252a31', timeVisible: true, secondsVisible: false, tickMarkFormatter: (time: Time) => chartTimeLabel(time, timezone, false) },
     });
     const candles = chart.addSeries(CandlestickSeries, { upColor: '#64d39a', downColor: '#f27e7e', borderVisible: false, wickUpColor: '#64d39a', wickDownColor: '#f27e7e', priceFormat: { type: 'price', precision: binanceRules?.price_precision ?? 8, minMove: binanceRules?.tick_size || 0.00000001 } });
     overviewChartRef.current = chart;
     overviewCandlesRef.current = candles;
+    const wheelHandler = (event: WheelEvent) => zoomChartOnWheel(chart, event);
+    overviewChartContainer.current.addEventListener('wheel', wheelHandler, { passive: false });
     let hasChartData = false;
     let initializingViewport = false;
     const setDataPreservingRange = (data: Array<{ time: UTCTimestamp; open: number; high: number; low: number; close: number }>) => {
@@ -1731,7 +1754,7 @@ function Workspace() {
       const candleTimer = window.setInterval(() => void loadCTrader(), 30_000);
       const tickTimer = window.setInterval(pollTick, 1_000);
       void pollTick();
-      return () => { active = false; window.clearInterval(candleTimer); window.clearInterval(tickTimer); chart.timeScale().unsubscribeVisibleTimeRangeChange(refreshOverview); chart.timeScale().unsubscribeVisibleLogicalRangeChange(refreshOverview); overviewChartRef.current = null; overviewCandlesRef.current = null; overviewCandleDataRef.current = []; overviewBarsRef.current = []; overviewLoadingOlderRef.current = false; chart.remove(); };
+      return () => { active = false; window.clearInterval(candleTimer); window.clearInterval(tickTimer); chart.timeScale().unsubscribeVisibleTimeRangeChange(refreshOverview); chart.timeScale().unsubscribeVisibleLogicalRangeChange(refreshOverview); overviewChartContainer.current?.removeEventListener('wheel', wheelHandler); overviewChartRef.current = null; overviewCandlesRef.current = null; overviewCandleDataRef.current = []; overviewBarsRef.current = []; overviewLoadingOlderRef.current = false; chart.remove(); };
     }
     const stream = createBinanceKlineStream(symbol, interval);
     const gatewayInterval = interval === '1s' ? '1m' : interval;
@@ -1784,7 +1807,7 @@ function Workspace() {
       scheduleOverviewRefresh();
       if (isNewBar) setTrackerRevision(value => value + 1);
     };
-    return () => { active = false; stream.close(); chart.timeScale().unsubscribeVisibleTimeRangeChange(refreshOverview); chart.timeScale().unsubscribeVisibleLogicalRangeChange(refreshOverview); overviewChartRef.current = null; overviewCandlesRef.current = null; overviewCandleDataRef.current = []; overviewBarsRef.current = []; overviewLoadingOlderRef.current = false; chart.remove(); };
+    return () => { active = false; stream.close(); chart.timeScale().unsubscribeVisibleTimeRangeChange(refreshOverview); chart.timeScale().unsubscribeVisibleLogicalRangeChange(refreshOverview); overviewChartContainer.current?.removeEventListener('wheel', wheelHandler); overviewChartRef.current = null; overviewCandlesRef.current = null; overviewCandleDataRef.current = []; overviewBarsRef.current = []; overviewLoadingOlderRef.current = false; chart.remove(); };
   }, [auth.accessToken, broker, symbol, interval, timezone, mobilePwa, showHeikinAshi]);
 
   useEffect(() => {
