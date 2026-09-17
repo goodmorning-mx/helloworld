@@ -824,18 +824,21 @@ function Workspace() {
   const loadingOlderRef = useRef(false);
   const candleDataRef = useRef<Array<{ time: UTCTimestamp; close: number }>>([]);
   const updateOhlcTooltip = (tooltip: HTMLDivElement | null, series: ReturnType<ReturnType<typeof createChart>['addSeries']>, bars: Array<{ time: UTCTimestamp; open: number; high: number; low: number; close: number }>, param: any) => {
-    if (!tooltip || !param?.time || !param?.point) {
-      if (tooltip) tooltip.hidden = true;
+    if (!tooltip || !param?.point) {
+      if (tooltip) { tooltip.hidden = true; tooltip.style.display = 'none'; }
       return;
     }
     const seriesBar = param.seriesData?.get(series) as { time?: Time; open?: number; high?: number; low?: number; close?: number } | undefined;
-    const bar = seriesBar ?? bars.find(item => Number(item.time) === Number(param.time));
+    const logicalIndex = Number.isFinite(Number(param.logical)) ? Math.round(Number(param.logical)) : -1;
+    const bar = seriesBar ?? (logicalIndex >= 0 ? bars[logicalIndex] : undefined) ?? (param.time ? bars.find(item => Number(item.time) === Number(param.time)) : undefined);
     if (!bar || bar.open == null || bar.high == null || bar.low == null || bar.close == null) {
       tooltip.hidden = true;
+      tooltip.style.display = 'none';
       return;
     }
     tooltip.textContent = `${chartTimeLabel(bar.time ?? param.time, timezone, true)}  ·  O ${formatPaperPrice(Number(bar.open))}  H ${formatPaperPrice(Number(bar.high))}  L ${formatPaperPrice(Number(bar.low))}  C ${formatPaperPrice(Number(bar.close))}`;
     tooltip.hidden = false;
+    tooltip.style.display = 'block';
     const host = tooltip.parentElement;
     if (host) {
       const x = Math.max(8, Math.min(host.clientWidth - tooltip.offsetWidth - 8, Number(param.point.x) + 12));
