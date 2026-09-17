@@ -823,6 +823,25 @@ function Workspace() {
   const productionOnlyRef = useRef(false);
   const loadingOlderRef = useRef(false);
   const candleDataRef = useRef<Array<{ time: UTCTimestamp; close: number }>>([]);
+  const updateOhlcTooltip = (tooltip: HTMLDivElement | null, series: ReturnType<ReturnType<typeof createChart>['addSeries']>, param: any) => {
+    if (!tooltip || !param?.time || !param?.point) {
+      if (tooltip) tooltip.hidden = true;
+      return;
+    }
+    const bar = param.seriesData?.get(series) as { time?: Time; open?: number; high?: number; low?: number; close?: number } | undefined;
+    if (!bar || bar.open == null || bar.high == null || bar.low == null || bar.close == null) {
+      tooltip.hidden = true;
+      return;
+    }
+    tooltip.textContent = `${chartTimeLabel(bar.time ?? param.time, timezone, true)}  ·  O ${formatPaperPrice(Number(bar.open))}  H ${formatPaperPrice(Number(bar.high))}  L ${formatPaperPrice(Number(bar.low))}  C ${formatPaperPrice(Number(bar.close))}`;
+    tooltip.hidden = false;
+    const host = tooltip.parentElement;
+    if (host) {
+      const x = Math.max(8, Math.min(host.clientWidth - tooltip.offsetWidth - 8, Number(param.point.x) + 12));
+      const y = Math.max(8, Math.min(host.clientHeight - tooltip.offsetHeight - 8, Number(param.point.y) - tooltip.offsetHeight - 12));
+      tooltip.style.transform = `translate(${x}px, ${y}px)`;
+    }
+  };
   const [symbol, setSymbol] = useState(() => localStorage.getItem('helloworld-selected-symbol') ?? 'BTCUSDT');
   const [binanceRules, setBinanceRules] = useState<BinanceSymbolRules | null>(null);
   const [binanceSymbolConfig, setBinanceSymbolConfig] = useState<BinanceSymbolConfig | null>(null);
@@ -1400,6 +1419,12 @@ function Workspace() {
     candlesRef.current = candles;
     const wheelHandler = (event: WheelEvent) => zoomChartOnWheel(chart, event);
     chartContainer.current.addEventListener('wheel', wheelHandler, { passive: false });
+    const ohlcTooltip = document.createElement('div');
+    ohlcTooltip.className = 'ohlc-tooltip';
+    ohlcTooltip.hidden = true;
+    chartContainer.current.parentElement?.appendChild(ohlcTooltip);
+    const crosshairHandler = (param: any) => updateOhlcTooltip(ohlcTooltip, candles, param);
+    chart.subscribeCrosshairMove(crosshairHandler);
     let hasChartData = false;
     let initializingViewport = false;
     const setDataPreservingRange = (data: Array<{ time: UTCTimestamp; open: number; high: number; low: number; close: number }>) => {
@@ -1497,7 +1522,7 @@ function Workspace() {
       const candleTimer = window.setInterval(() => void loadCTrader(), 30_000);
       const tickTimer = window.setInterval(pollTick, 1_000);
       void pollTick();
-      return () => { active = false; window.clearInterval(candleTimer); window.clearInterval(tickTimer); chart.timeScale().unsubscribeVisibleTimeRangeChange(refreshDrawings); chart.timeScale().unsubscribeVisibleLogicalRangeChange(refreshDrawings); chartContainer.current?.removeEventListener('wheel', wheelHandler); chartRef.current = null; candlesRef.current = null; candleDataRef.current = []; candleBarsRef.current = []; loadingOlderRef.current = false; chart.remove(); };
+      return () => { active = false; window.clearInterval(candleTimer); window.clearInterval(tickTimer); chart.timeScale().unsubscribeVisibleTimeRangeChange(refreshDrawings); chart.timeScale().unsubscribeVisibleLogicalRangeChange(refreshDrawings); chart.unsubscribeCrosshairMove(crosshairHandler); chartContainer.current?.removeEventListener('wheel', wheelHandler); ohlcTooltip.remove(); chartRef.current = null; candlesRef.current = null; candleDataRef.current = []; candleBarsRef.current = []; loadingOlderRef.current = false; chart.remove(); };
     }
     // The chart/history uses Binance Futures, so the live stream must use the
     // Futures WebSocket too. Spot streams can silently stop for Futures-only
@@ -1627,7 +1652,9 @@ function Workspace() {
       stream.close();
       chart.timeScale().unsubscribeVisibleTimeRangeChange(refreshDrawings);
       chart.timeScale().unsubscribeVisibleLogicalRangeChange(refreshDrawings);
+      chart.unsubscribeCrosshairMove(crosshairHandler);
       chartContainer.current?.removeEventListener('wheel', wheelHandler);
+      ohlcTooltip.remove();
       chartRef.current = null;
       candlesRef.current = null;
       candleDataRef.current = [];
@@ -1672,6 +1699,12 @@ function Workspace() {
     overviewCandlesRef.current = candles;
     const wheelHandler = (event: WheelEvent) => zoomChartOnWheel(chart, event);
     overviewChartContainer.current.addEventListener('wheel', wheelHandler, { passive: false });
+    const ohlcTooltip = document.createElement('div');
+    ohlcTooltip.className = 'ohlc-tooltip';
+    ohlcTooltip.hidden = true;
+    overviewChartContainer.current.parentElement?.appendChild(ohlcTooltip);
+    const crosshairHandler = (param: any) => updateOhlcTooltip(ohlcTooltip, candles, param);
+    chart.subscribeCrosshairMove(crosshairHandler);
     let hasChartData = false;
     let initializingViewport = false;
     const setDataPreservingRange = (data: Array<{ time: UTCTimestamp; open: number; high: number; low: number; close: number }>) => {
@@ -1770,7 +1803,7 @@ function Workspace() {
       const candleTimer = window.setInterval(() => void loadCTrader(), 30_000);
       const tickTimer = window.setInterval(pollTick, 1_000);
       void pollTick();
-      return () => { active = false; window.clearInterval(candleTimer); window.clearInterval(tickTimer); chart.timeScale().unsubscribeVisibleTimeRangeChange(refreshOverview); chart.timeScale().unsubscribeVisibleLogicalRangeChange(refreshOverview); overviewChartContainer.current?.removeEventListener('wheel', wheelHandler); overviewChartRef.current = null; overviewCandlesRef.current = null; overviewCandleDataRef.current = []; overviewBarsRef.current = []; overviewLoadingOlderRef.current = false; chart.remove(); };
+      return () => { active = false; window.clearInterval(candleTimer); window.clearInterval(tickTimer); chart.timeScale().unsubscribeVisibleTimeRangeChange(refreshOverview); chart.timeScale().unsubscribeVisibleLogicalRangeChange(refreshOverview); chart.unsubscribeCrosshairMove(crosshairHandler); overviewChartContainer.current?.removeEventListener('wheel', wheelHandler); ohlcTooltip.remove(); overviewChartRef.current = null; overviewCandlesRef.current = null; overviewCandleDataRef.current = []; overviewBarsRef.current = []; overviewLoadingOlderRef.current = false; chart.remove(); };
     }
     const stream = createBinanceKlineStream(symbol, interval);
     const gatewayInterval = interval === '1s' ? '1m' : interval;
@@ -1823,7 +1856,7 @@ function Workspace() {
       scheduleOverviewRefresh();
       if (isNewBar) setTrackerRevision(value => value + 1);
     };
-    return () => { active = false; stream.close(); chart.timeScale().unsubscribeVisibleTimeRangeChange(refreshOverview); chart.timeScale().unsubscribeVisibleLogicalRangeChange(refreshOverview); overviewChartContainer.current?.removeEventListener('wheel', wheelHandler); overviewChartRef.current = null; overviewCandlesRef.current = null; overviewCandleDataRef.current = []; overviewBarsRef.current = []; overviewLoadingOlderRef.current = false; chart.remove(); };
+    return () => { active = false; stream.close(); chart.timeScale().unsubscribeVisibleTimeRangeChange(refreshOverview); chart.timeScale().unsubscribeVisibleLogicalRangeChange(refreshOverview); chart.unsubscribeCrosshairMove(crosshairHandler); overviewChartContainer.current?.removeEventListener('wheel', wheelHandler); ohlcTooltip.remove(); overviewChartRef.current = null; overviewCandlesRef.current = null; overviewCandleDataRef.current = []; overviewBarsRef.current = []; overviewLoadingOlderRef.current = false; chart.remove(); };
   }, [auth.accessToken, broker, symbol, interval, timezone, mobilePwa, showHeikinAshi]);
 
   useEffect(() => {
