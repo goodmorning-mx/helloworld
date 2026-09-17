@@ -80,7 +80,9 @@ function zoomChartOnWheel(chart: ReturnType<typeof createChart>, event: WheelEve
   const bounds = (event.currentTarget as HTMLElement).getBoundingClientRect();
   const xRatio = Math.max(0, Math.min(1, (event.clientX - bounds.left) / bounds.width));
   const yRatio = Math.max(0, Math.min(1, (event.clientY - bounds.top) / bounds.height));
-  const factor = event.deltaY < 0 ? 0.88 : 1.12;
+  // Small fixed steps make trackpad wheel zoom feel controlled instead of
+  // jumping several viewport widths with one gesture.
+  const factor = event.deltaY < 0 ? 0.96 : 1.04;
   const xAnchor = logical.from + (logical.to - logical.from) * xRatio;
   const yAnchor = price.to - (price.to - price.from) * yRatio;
   const nextLogicalSpan = Math.max(2, (logical.to - logical.from) * factor);
