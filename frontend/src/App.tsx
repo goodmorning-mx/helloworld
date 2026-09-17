@@ -51,9 +51,18 @@ const BINANCE_MIN_OPERATION_LEVERAGE = 1;
 const BINANCE_MARGIN_RESERVE_USDT = 1;
 type BinanceSizingMode = 'minimum' | 'maximum';
 type ViewportSnapshot = { bars: number; futureBars: number; yBelow: number; yAbove: number };
+type OhlcHover = { time: UTCTimestamp; open: number; high: number; low: number; close: number; x: number; y: number };
 const ENTRY_VIEWPORT_DEFAULTS: ViewportSnapshot = { bars: 100, futureBars: 0, yBelow: 14, yAbove: 11 };
 function renderBars(bars: Array<{ time: UTCTimestamp; open: number; high: number; low: number; close: number }>, max: number) {
   return bars.slice(-max);
+}
+function resolveOhlcHover(param: any, series: any, bars: Array<{ time: UTCTimestamp; open: number; high: number; low: number; close: number }>): OhlcHover | null {
+  if (!param?.point) return null;
+  const seriesBar = param.seriesData?.get(series) as { time?: UTCTimestamp; open?: number; high?: number; low?: number; close?: number } | undefined;
+  const logicalIndex = Number.isFinite(Number(param.logical)) ? Math.round(Number(param.logical)) : -1;
+  const bar = seriesBar ?? (logicalIndex >= 0 ? bars[logicalIndex] : undefined) ?? (param.time ? bars.find(item => Number(item.time) === Number(param.time)) : undefined);
+  if (!bar || bar.time == null || bar.open == null || bar.high == null || bar.low == null || bar.close == null) return null;
+  return { time: bar.time, open: Number(bar.open), high: Number(bar.high), low: Number(bar.low), close: Number(bar.close), x: Number(param.point.x), y: Number(param.point.y) };
 }
 function applyDefaultChartViewport(chart: ReturnType<typeof createChart>, data: Array<{ close: number }>, visibleBars: number, futureBars = 20, yBelow = 15, yAbove = 10) {
   if (!data.length) return;
@@ -818,6 +827,8 @@ function Workspace() {
   const chartRef = useRef<ReturnType<typeof createChart> | null>(null);
   const candlesRef = useRef<ReturnType<ReturnType<typeof createChart>['addSeries']> | null>(null);
   const candleBarsRef = useRef<Array<{ time: UTCTimestamp; open: number; high: number; low: number; close: number }>>([]);
+  const [entryOhlcHover, setEntryOhlcHover] = useState<OhlcHover | null>(null);
+  const [overviewOhlcHover, setOverviewOhlcHover] = useState<OhlcHover | null>(null);
   const binanceLivePriceRef = useRef<BinanceLivePrice | null>(null);
   const productionDrawingsRef = useRef<Drawing[]>([]);
   const productionOnlyRef = useRef(false);
@@ -1400,6 +1411,8 @@ function Workspace() {
     candlesRef.current = candles;
     const wheelHandler = (event: WheelEvent) => zoomChartOnWheel(chart, event);
     chartContainer.current.addEventListener('wheel', wheelHandler, { passive: false });
+    const crosshairHandler = (param: any) => setEntryOhlcHover(resolveOhlcHover(param, candles, candleBarsRef.current));
+    chart.subscribeCrosshairMove(crosshairHandler);
     let hasChartData = false;
     let initializingViewport = false;
     const setDataPreservingRange = (data: Array<{ time: UTCTimestamp; open: number; high: number; low: number; close: number }>) => {
@@ -1497,7 +1510,7 @@ function Workspace() {
       const candleTimer = window.setInterval(() => void loadCTrader(), 30_000);
       const tickTimer = window.setInterval(pollTick, 1_000);
       void pollTick();
-      return () => { active = false; window.clearInterval(candleTimer); window.clearInterval(tickTimer); chart.timeScale().unsubscribeVisibleTimeRangeChange(refreshDrawings); chart.timeScale().unsubscribeVisibleLogicalRangeChange(refreshDrawings); chartContainer.current?.removeEventListener('wheel', wheelHandler); chartRef.current = null; candlesRef.current = null; candleDataRef.current = []; candleBarsRef.current = []; loadingOlderRef.current = false; chart.remove(); };
+      return () => { active = false; window.clearInterval(candleTimer); window.clearInterval(tickTimer); chart.timeScale().unsubscribeVisibleTimeRangeChange(refreshDrawings); chart.timeScale().unsubscribeVisibleLogicalRangeChange(refreshDrawings); chart.unsubscribeCrosshairMove(crosshairHandler); chartContainer.current?.removeEventListener('wheel', wheelHandler); setEntryOhlcHover(null); chartRef.current = null; candlesRef.current = null; candleDataRef.current = []; candleBarsRef.current = []; loadingOlderRef.current = false; chart.remove(); };
     }
     // The chart/history uses Binance Futures, so the live stream must use the
     // Futures WebSocket too. Spot streams can silently stop for Futures-only
@@ -1628,6 +1641,8 @@ function Workspace() {
       chart.timeScale().unsubscribeVisibleTimeRangeChange(refreshDrawings);
       chart.timeScale().unsubscribeVisibleLogicalRangeChange(refreshDrawings);
       chartContainer.current?.removeEventListener('wheel', wheelHandler);
+      chart.unsubscribeCrosshairMove(crosshairHandler);
+      setEntryOhlcHover(null);
       chartRef.current = null;
       candlesRef.current = null;
       candleDataRef.current = [];
@@ -1672,6 +1687,8 @@ function Workspace() {
     overviewCandlesRef.current = candles;
     const wheelHandler = (event: WheelEvent) => zoomChartOnWheel(chart, event);
     overviewChartContainer.current.addEventListener('wheel', wheelHandler, { passive: false });
+    const crosshairHandler = (param: any) => setOverviewOhlcHover(resolveOhlcHover(param, candles, overviewBarsRef.current));
+    chart.subscribeCrosshairMove(crosshairHandler);
     let hasChartData = false;
     let initializingViewport = false;
     const setDataPreservingRange = (data: Array<{ time: UTCTimestamp; open: number; high: number; low: number; close: number }>) => {
@@ -1770,7 +1787,7 @@ function Workspace() {
       const candleTimer = window.setInterval(() => void loadCTrader(), 30_000);
       const tickTimer = window.setInterval(pollTick, 1_000);
       void pollTick();
-      return () => { active = false; window.clearInterval(candleTimer); window.clearInterval(tickTimer); chart.timeScale().unsubscribeVisibleTimeRangeChange(refreshOverview); chart.timeScale().unsubscribeVisibleLogicalRangeChange(refreshOverview); overviewChartContainer.current?.removeEventListener('wheel', wheelHandler); overviewChartRef.current = null; overviewCandlesRef.current = null; overviewCandleDataRef.current = []; overviewBarsRef.current = []; overviewLoadingOlderRef.current = false; chart.remove(); };
+      return () => { active = false; window.clearInterval(candleTimer); window.clearInterval(tickTimer); chart.timeScale().unsubscribeVisibleTimeRangeChange(refreshOverview); chart.timeScale().unsubscribeVisibleLogicalRangeChange(refreshOverview); chart.unsubscribeCrosshairMove(crosshairHandler); overviewChartContainer.current?.removeEventListener('wheel', wheelHandler); setOverviewOhlcHover(null); overviewChartRef.current = null; overviewCandlesRef.current = null; overviewCandleDataRef.current = []; overviewBarsRef.current = []; overviewLoadingOlderRef.current = false; chart.remove(); };
     }
     const stream = createBinanceKlineStream(symbol, interval);
     const gatewayInterval = interval === '1s' ? '1m' : interval;
@@ -1823,7 +1840,7 @@ function Workspace() {
       scheduleOverviewRefresh();
       if (isNewBar) setTrackerRevision(value => value + 1);
     };
-    return () => { active = false; stream.close(); chart.timeScale().unsubscribeVisibleTimeRangeChange(refreshOverview); chart.timeScale().unsubscribeVisibleLogicalRangeChange(refreshOverview); overviewChartContainer.current?.removeEventListener('wheel', wheelHandler); overviewChartRef.current = null; overviewCandlesRef.current = null; overviewCandleDataRef.current = []; overviewBarsRef.current = []; overviewLoadingOlderRef.current = false; chart.remove(); };
+    return () => { active = false; stream.close(); chart.timeScale().unsubscribeVisibleTimeRangeChange(refreshOverview); chart.timeScale().unsubscribeVisibleLogicalRangeChange(refreshOverview); chart.unsubscribeCrosshairMove(crosshairHandler); overviewChartContainer.current?.removeEventListener('wheel', wheelHandler); setOverviewOhlcHover(null); overviewChartRef.current = null; overviewCandlesRef.current = null; overviewCandleDataRef.current = []; overviewBarsRef.current = []; overviewLoadingOlderRef.current = false; chart.remove(); };
   }, [auth.accessToken, broker, symbol, interval, timezone, mobilePwa, showHeikinAshi]);
 
   useEffect(() => {
@@ -2900,8 +2917,9 @@ function Workspace() {
     const tpAmount = quantity * Math.abs(target - entry);
     return { side, entry, stop, target, targetPercent, quantity, notional, fees, leverage, marginMultiplier, slAmount, tpAmount, margin: leverage > 0 ? notional / leverage : 0 };
   }) : [];
+  const renderOhlcOverlay = (hover: OhlcHover | null) => hover ? <div className="chart-ohlc-overlay" aria-label="Datos OHLC de la vela seleccionada"><span className="chart-ohlc-time">{chartTimeLabel(hover.time, timezone, true)}</span><span>O <b>{formatPaperPrice(hover.open)}</b></span><span>H <b className="chart-ohlc-high">{formatPaperPrice(hover.high)}</b></span><span>L <b className="chart-ohlc-low">{formatPaperPrice(hover.low)}</b></span><span>C <b>{formatPaperPrice(hover.close)}</b></span></div> : null;
   const chartStageView = <div ref={chartStage} className={`chart-stage ${tool ? 'drawing-mode' : ''}`} onPointerDownCapture={startDrawing} onPointerMoveCapture={updateDrawing} onPointerUpCapture={event => finishDrawingAndCapture(event, 'entry')} onPointerCancelCapture={() => { setDrawingStart(null); setDrawingEnd(null); setMoveStart(null); panStartRef.current = null; setResizeStart(null); setLassoStart(null); setLassoEnd(null); }}><div className="chart-viewport-snapshot" aria-label="Snapshot del viewport de entrada">X {entryViewportSnapshot.bars} · Futuro {entryViewportSnapshot.futureBars} · Y− {entryViewportSnapshot.yBelow}% · Y+ {entryViewportSnapshot.yAbove}%</div>
-    {pendingBinanceTp && <div className="binance-tp-confirm" role="status"><span>Nuevo TP {pendingBinanceTp.symbol}: {formatPaperPrice(pendingBinanceTp.price)}</span><button type="button" onClick={() => void confirmBinanceTakeProfit()}>Confirmar TP</button><button type="button" onClick={() => { pendingBinanceTpRef.current = null; setPendingBinanceTp(null); }} aria-label="Cancelar cambio de TP">Cancelar</button></div>}
+    {pendingBinanceTp && <div className="binance-tp-confirm" role="status"><span>Nuevo TP {pendingBinanceTp.symbol}: {formatPaperPrice(pendingBinanceTp.price)}</span><button type="button" onClick={() => void confirmBinanceTakeProfit()}>Confirmar TP</button><button type="button" onClick={() => { pendingBinanceTpRef.current = null; setPendingBinanceTp(null); }} aria-label="Cancelar cambio de TP">Cancelar</button></div>}{renderOhlcOverlay(entryOhlcHover)}
     <div ref={chartContainer} className="candlestick-chart" /><svg className="drawing-overlay" viewBox={`0 0 ${stageSize.width} ${stageSize.height}`} preserveAspectRatio="none" aria-hidden="true">{renderSessionIndicator()}{renderInterestMarkers()}{renderPriceLineHitAreas('entry')}{[...drawings, ...productionDrawings].map((drawing, index) => (!drawing.paper || !drawing.closed || drawing.id === visibleClosedId) && (!drawing.paper || !drawing.symbol || drawing.symbol === symbol) && (drawing.chart !== 'context' || drawing.paper) ? renderDrawing(drawing, index, 'entry') : null)}{tool && tool !== 'pan' && drawingStart && drawingEnd && drawingCanvas === 'entry' && renderDrawing({ type: tool, chart: 'entry', start: drawingStart, end: drawingEnd }, 'preview', 'entry')}{lassoStart && lassoEnd && drawingCanvas === 'entry' && <rect x={Math.min(lassoStart.x, lassoEnd.x)} y={Math.min(lassoStart.y, lassoEnd.y)} width={Math.abs(lassoStart.x - lassoEnd.x)} height={Math.abs(lassoStart.y - lassoEnd.y)} className="selection-lasso" />}</svg><div className="chart-bottom-controls"><span className="timezone-icon" aria-hidden="true">◷</span><select className="timezone-select" value={timezone} onChange={event => setTimezone(event.target.value)} aria-label="Zona horaria">{TIMEZONES.map(([label, value]) => <option key={value} value={value}>{value}</option>)}</select></div>
     <div className="floating-order-buttons" aria-label="Abrir operación simulada"><button className="open-long-button" disabled={!paperReady} onClick={() => void openSimulatedPosition('long')}>▲ <span>Abrir Long</span><small>{binancePreview.find(preview => preview.side === 'LONG') ? `SL -${binanceStopPercent.toFixed(2)}% · TP +${binancePreview.find(preview => preview.side === 'LONG')!.targetPercent.toFixed(2)}% · N ${binancePreview.find(preview => preview.side === 'LONG')!.notional.toFixed(2)} · M ${binancePreview.find(preview => preview.side === 'LONG')!.margin.toFixed(4)} · ${binancePreview.find(preview => preview.side === 'LONG')!.leverage}x` : labRecommendations ? `${labRecommendations.long.label} · R:R ${labRecommendations.long.rr.toFixed(2)}:1` : 'Calculando recomendación…'}</small></button><button className="open-short-button" disabled={!paperReady} onClick={() => void openSimulatedPosition('short')}>▼ <span>Abrir Short</span><small>{binancePreview.find(preview => preview.side === 'SHORT') ? `SL -${binanceStopPercent.toFixed(2)}% · TP +${binancePreview.find(preview => preview.side === 'SHORT')!.targetPercent.toFixed(2)}% · N ${binancePreview.find(preview => preview.side === 'SHORT')!.notional.toFixed(2)} · M ${binancePreview.find(preview => preview.side === 'SHORT')!.margin.toFixed(4)} · ${binancePreview.find(preview => preview.side === 'SHORT')!.leverage}x` : labRecommendations ? `${labRecommendations.short.label} · R:R ${labRecommendations.short.rr.toFixed(2)}:1` : 'Calculando recomendación…'}</small></button></div>
   </div>;
@@ -2978,7 +2996,7 @@ function Workspace() {
   const tradingAgent = <TradingAgentChat activeSymbol={symbol} interval={interval} apiUrl={apiUrl} accessToken={auth.accessToken} />;
 
   const toolOptions = [['line', '╱', 'Línea'], ['ruler', '▥', 'Medir'], ['long', 'L', 'Long'], ['short', 'S', 'Short'], ['zoom', '⌗', 'Zoom lazo'], ['pan', '✋', 'Pan']] as const;
-  const chartsRow = <div className="charts-row"><section ref={overviewStage} className={`secondary-chart ${tool ? 'drawing-mode' : ''}`} onPointerDownCapture={event => startDrawing(event, 'context')} onPointerMoveCapture={updateDrawing} onPointerUpCapture={event => finishDrawingAndCapture(event, 'context')} onPointerCancelCapture={() => { setDrawingStart(null); setDrawingEnd(null); setMoveStart(null); panStartRef.current = null; setResizeStart(null); setLassoStart(null); setLassoEnd(null); }}><div className="chart-panel-label">{interval.toUpperCase()} · CONTEXTO · {symbol}</div><div className="chart-viewport-snapshot" aria-label="Snapshot del viewport de contexto">X {overviewViewportSnapshot.bars} · Futuro {overviewViewportSnapshot.futureBars} · Y− {overviewViewportSnapshot.yBelow}% · Y+ {overviewViewportSnapshot.yAbove}%</div><div ref={overviewChartContainer} className="overview-chart" /><svg className="overview-overlay" viewBox={`0 0 ${overviewSize.width} ${overviewSize.height}`} preserveAspectRatio="none" aria-hidden="true">{renderOverviewSessions()}{renderOverviewInterestMarkers()}{renderPriceLineHitAreas('context')}{[...drawings, ...productionDrawings].map((drawing, index) => (!drawing.paper || !drawing.closed || drawing.id === visibleClosedId) && (!drawing.paper || !drawing.symbol || drawing.symbol === symbol) && (drawing.chart === 'context' || drawing.paper) ? renderDrawing(drawing, index, 'context') : null)}{tool && tool !== 'pan' && drawingStart && drawingEnd && drawingCanvas === 'context' && renderDrawing({ type: tool, chart: 'context', start: drawingStart, end: drawingEnd }, 'preview', 'context')}{lassoStart && lassoEnd && drawingCanvas === 'context' && <rect x={Math.min(lassoStart.x, lassoEnd.x)} y={Math.min(lassoStart.y, lassoEnd.y)} width={Math.abs(lassoStart.x - lassoEnd.x)} height={Math.abs(lassoStart.y - lassoEnd.y)} className="selection-lasso" />}</svg></section><section className="primary-chart"><div className="chart-panel-label">{entryInterval.toUpperCase()} · AJUSTE DE ENTRADA</div>{chartStageView}</section></div>;
+  const chartsRow = <div className="charts-row"><section ref={overviewStage} className={`secondary-chart ${tool ? 'drawing-mode' : ''}`} onPointerDownCapture={event => startDrawing(event, 'context')} onPointerMoveCapture={updateDrawing} onPointerUpCapture={event => finishDrawingAndCapture(event, 'context')} onPointerCancelCapture={() => { setDrawingStart(null); setDrawingEnd(null); setMoveStart(null); panStartRef.current = null; setResizeStart(null); setLassoStart(null); setLassoEnd(null); }}><div className="chart-panel-label">{interval.toUpperCase()} · CONTEXTO · {symbol}</div><div className="chart-viewport-snapshot" aria-label="Snapshot del viewport de contexto">X {overviewViewportSnapshot.bars} · Futuro {overviewViewportSnapshot.futureBars} · Y− {overviewViewportSnapshot.yBelow}% · Y+ {overviewViewportSnapshot.yAbove}%</div><div ref={overviewChartContainer} className="overview-chart" />{renderOhlcOverlay(overviewOhlcHover)}<svg className="overview-overlay" viewBox={`0 0 ${overviewSize.width} ${overviewSize.height}`} preserveAspectRatio="none" aria-hidden="true">{renderOverviewSessions()}{renderOverviewInterestMarkers()}{renderPriceLineHitAreas('context')}{[...drawings, ...productionDrawings].map((drawing, index) => (!drawing.paper || !drawing.closed || drawing.id === visibleClosedId) && (!drawing.paper || !drawing.symbol || drawing.symbol === symbol) && (drawing.chart === 'context' || drawing.paper) ? renderDrawing(drawing, index, 'context') : null)}{tool && tool !== 'pan' && drawingStart && drawingEnd && drawingCanvas === 'context' && renderDrawing({ type: tool, chart: 'context', start: drawingStart, end: drawingEnd }, 'preview', 'context')}{lassoStart && lassoEnd && drawingCanvas === 'context' && <rect x={Math.min(lassoStart.x, lassoEnd.x)} y={Math.min(lassoStart.y, lassoEnd.y)} width={Math.abs(lassoStart.x - lassoEnd.x)} height={Math.abs(lassoStart.y - lassoEnd.y)} className="selection-lasso" />}</svg></section><section className="primary-chart"><div className="chart-panel-label">{entryInterval.toUpperCase()} · AJUSTE DE ENTRADA</div>{chartStageView}</section></div>;
 
   return mobilePwa ? <main className="trading-shell pwa-shell">
     <header className="pwa-mobile-header"><div><span className="pwa-brand">helloworld</span><span className="pwa-market">{broker.toUpperCase()} · {entryInterval.toUpperCase()} ENTRADA · {interval.toUpperCase()} CONTEXTO</span></div><select className="pwa-symbol-select" value={broker} onChange={event => { const next = event.target.value as 'binance' | 'ctrader'; setBroker(next); setSymbol(next === 'ctrader' ? 'AUDUSD' : 'BTCUSDT'); }} aria-label="Broker"><option value="binance">Binance</option><option value="ctrader">cTrader</option></select><select className="pwa-symbol-select" value={symbol} onChange={event => setSymbol(event.target.value)} aria-label="Símbolo">{selectableSymbols.map(option => <option key={option}>{option}</option>)}</select>{profileButton}</header>
