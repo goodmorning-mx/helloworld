@@ -2046,10 +2046,12 @@ function Workspace() {
       const wickIndex = index - wickStart;
       const longPoint = toPoint(wickExtensions.long[wickIndex], index);
       const shortPoint = toPoint(wickExtensions.short[wickIndex], index);
+      const longCrossed = wickExtensions.long[wickIndex] !== null && bar.low <= Number(wickExtensions.long[wickIndex]);
+      const shortCrossed = wickExtensions.short[wickIndex] !== null && bar.high >= Number(wickExtensions.short[wickIndex]);
       const timeLabel = new Date(Number(bar.time) * 1000).toLocaleString('es-MX', { timeZone: timezone, dateStyle: 'short', timeStyle: 'short' });
       return <g key={`wick-${canvas}-${bar.time}`} className="wick-extension-markers">
-        {longPoint && wickSsl.bullish[index] && <circle cx={longPoint.x} cy={longPoint.y} r="4.5" className="wick-extension-marker wick-extension-long" pointerEvents="all" onPointerEnter={() => setIndicatorHover({ canvas, x: longPoint.x, y: longPoint.y, label: `Long ${wickMultiplier.toFixed(1)}x · ${timeLabel}` })} onPointerLeave={() => setIndicatorHover(null)}><title>Long: extensión favorable {wickMultiplier.toFixed(1)}x · SSL positivo</title></circle>}
-        {shortPoint && wickSsl.bullish[index] === false && <circle cx={shortPoint.x} cy={shortPoint.y} r="4.5" className="wick-extension-marker wick-extension-short" pointerEvents="all" onPointerEnter={() => setIndicatorHover({ canvas, x: shortPoint.x, y: shortPoint.y, label: `Short ${wickMultiplier.toFixed(1)}x · ${timeLabel}` })} onPointerLeave={() => setIndicatorHover(null)}><title>Short: extensión favorable {wickMultiplier.toFixed(1)}x · SSL negativo</title></circle>}
+        {longPoint && longCrossed && wickSsl.bullish[index] && <circle cx={longPoint.x} cy={longPoint.y} r="4.5" className="wick-extension-marker wick-extension-long" pointerEvents="all" onPointerEnter={() => setIndicatorHover({ canvas, x: longPoint.x, y: longPoint.y, label: `Long ${wickMultiplier.toFixed(1)}x · ${timeLabel}` })} onPointerLeave={() => setIndicatorHover(null)}><title>Long: mecha cruzó el nivel · SSL positivo</title></circle>}
+        {shortPoint && shortCrossed && wickSsl.bullish[index] === false && <circle cx={shortPoint.x} cy={shortPoint.y} r="4.5" className="wick-extension-marker wick-extension-short" pointerEvents="all" onPointerEnter={() => setIndicatorHover({ canvas, x: shortPoint.x, y: shortPoint.y, label: `Short ${wickMultiplier.toFixed(1)}x · ${timeLabel}` })} onPointerLeave={() => setIndicatorHover(null)}><title>Short: mecha cruzó el nivel · SSL negativo</title></circle>}
       </g>;
     });
     return <g className={`price-indicators price-indicators-${canvas}`}>
