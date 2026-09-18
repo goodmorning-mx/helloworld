@@ -2835,9 +2835,13 @@ function Workspace() {
     if (drawing.type === 'ruler') {
       const minutes = Math.round(Math.abs(Number(drawing.end.time) - Number(drawing.start.time)) / 60);
       const priceDelta = Math.abs(drawing.end.price - drawing.start.price);
+      const movePercent = drawing.start.price > 0 ? Math.abs((drawing.end.price - drawing.start.price) / drawing.start.price * 100) : 0;
+      const measuredSide = drawing.end.price >= drawing.start.price ? 'LONG' : 'SHORT';
+      const preview = binancePreview.find(item => item.side === measuredSide);
+      const mfeUsd = preview ? preview.notional * movePercent / 100 : 0;
       const left = Math.min(start.x, end.x);
       const top = Math.min(start.y, end.y);
-      return <g key={index} className={selectedClass}><rect x={left} y={top} width={Math.max(1, Math.abs(end.x - start.x))} height={Math.max(1, Math.abs(end.y - start.y))} className="measurement-box" /><text x={left + 8} y={top + 18} className="measurement-label">{minutes} min · {priceDelta.toFixed(2)} · {pricePercent >= 0 ? '+' : ''}{pricePercent.toFixed(2)}%</text>{handleNodes}</g>;
+      return <g key={index} className={selectedClass}><rect x={left} y={top} width={Math.max(1, Math.abs(end.x - start.x))} height={Math.max(1, Math.abs(end.y - start.y))} className="measurement-box" /><text x={left + 8} y={top + 18} className="measurement-label">{minutes} min · {priceDelta.toFixed(2)} · {pricePercent >= 0 ? '+' : ''}{pricePercent.toFixed(2)}% · MFE +{mfeUsd.toFixed(4)} USDT</text>{handleNodes}</g>;
     }
     const left = Math.min(start.x, end.x);
     const width = Math.max(1, Math.abs(end.x - start.x));
