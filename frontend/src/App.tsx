@@ -38,7 +38,9 @@ async function fetchJson<T>(input: RequestInfo | URL, init?: RequestInit, retrie
 
 // Keep the interactive charts responsive. The Lab keeps its own historical
 // dataset; these limits only control what is rendered in the live canvases.
-const MAX_ENTRY_RENDER_BARS = 240;
+// Keep the complete loaded 1m history in the series. Trimming it back to 240
+// bars after loading older data invalidates the logical range and resets zoom.
+const MAX_ENTRY_RENDER_BARS = 10080;
 const MAX_CONTEXT_RENDER_BARS = 180;
 const INITIAL_ENTRY_BARS = 240;
 const INITIAL_CONTEXT_BARS = 180;
@@ -2891,7 +2893,7 @@ function Workspace() {
   };
 
   const liveReferencePrice = binanceLivePriceRef.current?.price ?? candleBarsRef.current[candleBarsRef.current.length - 1]?.close ?? 0;
-  const binanceOnline = broker === 'binance' && Boolean(binanceLiveAccount?.healthy && binanceLiveAccount?.stream_connected);
+  const binanceOnline = broker === 'binance' && executionMode === 'production' && Boolean(binanceLiveAccount?.healthy && binanceLiveAccount?.stream_connected);
   const availableRiskBalance = binanceOnline
     ? Number(binanceLiveAccount?.available_balance ?? binanceSymbolConfig?.futures_balance ?? 0)
     : paperEquity;
