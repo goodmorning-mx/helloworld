@@ -2886,8 +2886,11 @@ function Workspace() {
   };
 
   const liveReferencePrice = binanceLivePriceRef.current?.price ?? candleBarsRef.current[candleBarsRef.current.length - 1]?.close ?? 0;
-  const availableRiskBalance = Number(binanceLiveAccount?.available_balance ?? binanceSymbolConfig?.futures_balance ?? 0) || paperInitialBalance;
-  const riskBalanceForSizing = riskBalancePreview ?? availableRiskBalance;
+  const binanceOnline = broker === 'binance' && Boolean(binanceLiveAccount?.healthy && binanceLiveAccount?.stream_connected);
+  const availableRiskBalance = binanceOnline
+    ? Number(binanceLiveAccount?.available_balance ?? binanceSymbolConfig?.futures_balance ?? 0)
+    : paperEquity;
+  const riskBalanceForSizing = availableRiskBalance;
   const activeRiskPercent = Number((JSON.parse(localStorage.getItem('helloworld-paper-assist') ?? '{}') as { riskPercent?: number }).riskPercent) || paperRiskPercent;
   const binancePreview = broker === 'binance' && binanceRules && liveReferencePrice > 0 ? (['LONG', 'SHORT'] as const).map(side => {
     const direction = side === 'LONG' ? 1 : -1;
@@ -2895,7 +2898,9 @@ function Workspace() {
     const stop = roundToBinance(entry * (1 - direction * binanceStopPercent / 100), binanceRules.tick_size, binanceRules.price_precision);
     const targetPercent = binanceTargetPercent;
     const target = roundToBinance(entry * (1 + direction * targetPercent / 100), binanceRules.tick_size, binanceRules.price_precision);
-    const availableBalance = Number(binanceLiveAccount?.available_balance ?? binanceSymbolConfig?.futures_balance ?? 0);
+    const availableBalance = binanceOnline
+      ? Number(binanceLiveAccount?.available_balance ?? binanceSymbolConfig?.futures_balance ?? 0)
+      : paperEquity;
     const maximumLeverage = maxLeverageFor('binance', symbol);
     const recommendedLeverage = binanceSizingMode === 'maximum'
       ? Math.floor(Math.max(BINANCE_MIN_OPERATION_LEVERAGE, maximumLeverage))
@@ -2974,7 +2979,7 @@ function Workspace() {
     : '';
   const scannerStatusBar = broker === 'binance' ? <div className="header-market-scanner" aria-label="Market scanner Binance">{[...activeMarketSymbols].sort((a, b) => { const priority = { due: 0, overdue: 1, waiting: 2, '': 3 }; const stateA = getMarketReviewState(marketReviewTimes[a.symbol] ?? ''); const stateB = getMarketReviewState(marketReviewTimes[b.symbol] ?? ''); return priority[stateA as keyof typeof priority] - priority[stateB as keyof typeof priority] || b.variation_sum_pct - a.variation_sum_pct; }).map(candidate => { const variation = candidate.variation_sum_pct; const reviewTime = marketReviewTimes[candidate.symbol] ?? ''; const reviewState = getMarketReviewState(reviewTime); return <article key={candidate.symbol} className={`header-market-item ${candidate.symbol === symbol ? 'active' : ''} ${reviewTime ? `has-review-time review-${reviewState}` : ''}`}><button type="button" className="header-market-main" onClick={() => { setLabRecommendations(null); setSymbol(candidate.symbol); }}><b>{candidate.symbol}</b><span className={variation >= 0 ? 'ticker-up' : 'ticker-down'}>{variation >= 0 ? '▲' : '▼'} {Math.abs(variation).toFixed(2)}%</span></button><label className="header-market-review" title="Próxima revisión"><input type="time" value={reviewTime} onChange={event => updateMarketReviewTime(candidate.symbol, event.target.value)} aria-label={`Próxima revisión de ${candidate.symbol}`} />{reviewState === 'overdue' && <button type="button" className="header-market-reset" onClick={event => { event.stopPropagation(); updateMarketReviewTime(candidate.symbol, ''); }} aria-label={`Eliminar revisión de ${candidate.symbol}`} title="Eliminar revisión vencida">↻</button>}</label></article>; })}</div> : null;
   const statusBarMessage = paperSyncError || binanceLeverageError || activeMarketError;
-  const binanceReady = Boolean(binanceLiveAccount?.healthy && binanceLiveAccount?.stream_connected);
+  const binanceReady = binanceOnline;
   const binanceStatusClass = binanceReady
     ? executionMode === 'production' ? 'broker-production-connected' : 'broker-paper-ready'
     : 'broker-not-ready';
