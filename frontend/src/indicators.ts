@@ -3,6 +3,23 @@ export type IndicatorBar = { high: number; low: number; close: number };
 // branded UTCTimestamp). Keep the utility agnostic to that brand.
 export type OhlcBar = { time: any; open: number; high: number; low: number; close: number };
 
+/** Returns candles inside a recurring wall-clock window for each calendar day. */
+export function calculateDailyTimeWindow(
+  bars: OhlcBar[],
+  timezone: string,
+  startMinute = 7 * 60 + 20,
+  endMinute = 7 * 60 + 35,
+): boolean[] {
+  const active = Array.from({ length: bars.length }, () => false);
+  const formatter = new Intl.DateTimeFormat('en-US', { timeZone: timezone, hour: '2-digit', minute: '2-digit', hourCycle: 'h23' });
+  bars.forEach((bar, index) => {
+    const parts = Object.fromEntries(formatter.formatToParts(new Date(Number(bar.time) * 1000)).map(part => [part.type, part.value]));
+    const minute = Number(parts.hour) * 60 + Number(parts.minute);
+    active[index] = minute >= startMinute && minute < endMinute;
+  });
+  return active;
+}
+
 /** Builds TradingView-style Heikin Ashi candles from the real OHLC series. */
 export function calculateHeikinAshi(bars: OhlcBar[]): OhlcBar[] {
   let previousOpen = 0;

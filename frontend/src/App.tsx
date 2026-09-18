@@ -5,7 +5,7 @@ import { CandlestickSeries, createChart, type IPriceLine, type Time, type UTCTim
 import LabWindow, { type LabRecommendations } from './LabWindow';
 import BacktestPanel, { type WickBacktestTrade } from './BacktestPanel';
 import { cacheBars } from './marketData';
-import { calculateHeikinAshi, calculateRsi, calculateSslChannel, calculateTrackerLevels, calculateWickExtensions } from './indicators';
+import { calculateDailyTimeWindow, calculateHeikinAshi, calculateRsi, calculateSslChannel, calculateTrackerLevels, calculateWickExtensions } from './indicators';
 import { tradingCosts, tradingCostRate } from './tradingCosts';
 import './styles.css';
 
@@ -447,9 +447,9 @@ function MobileSheet({ title, onClose, children }: { title: string; onClose: () 
 }
 
 function IndicatorSettingsModal({
-  showSessions, showRsi, showSsl, showTracker, showWickExtensions, rsiPeriod, rsiLowBand, rsiHighBand, sslPeriod, trackerPeriod, wickPeriod, wickDisplayPeriod, wickMultiplier, onClose, onSessions, onRsi, onSsl, onTracker, onWickExtensions, onRsiPeriod, onRsiLowBand, onRsiHighBand, onSslPeriod, onTrackerPeriod, onWickPeriod, onWickDisplayPeriod, onWickMultiplier,
-}: { showSessions: boolean; showRsi: boolean; showSsl: boolean; showTracker: boolean; showWickExtensions: boolean; rsiPeriod: number; rsiLowBand: number; rsiHighBand: number; sslPeriod: number; trackerPeriod: number; wickPeriod: number; wickDisplayPeriod: number; wickMultiplier: number; onClose: () => void; onSessions: () => void; onRsi: () => void; onSsl: () => void; onTracker: () => void; onWickExtensions: () => void; onRsiPeriod: (value: number) => void; onRsiLowBand: (value: number) => void; onRsiHighBand: (value: number) => void; onSslPeriod: (value: number) => void; onTrackerPeriod: (value: number) => void; onWickPeriod: (value: number) => void; onWickDisplayPeriod: (value: number) => void; onWickMultiplier: (value: number) => void }) {
-  const row = (label: string, description: string, active: boolean, toggle: () => void, period?: number, setPeriod?: (value: number) => void) => <div className="indicator-setting-row"><button className={`indicator-toggle ${active ? 'indicator-toggle-active' : ''}`} onClick={toggle} aria-pressed={active}><span className="indicator-check">{active ? '✓' : ''}</span><span><b>{label}</b><small>{description}</small></span></button>{period !== undefined && setPeriod && <label className="indicator-period">Periodo<input type="number" min="2" max="200" value={period} onChange={event => setPeriod(Math.max(2, Math.min(200, Number(event.target.value) || 2)))} /></label>}</div>;
+  showSessions, showSevenAmMarkers, showRsi, showSsl, showTracker, showWickExtensions, rsiPeriod, rsiLowBand, rsiHighBand, sslPeriod, trackerPeriod, wickPeriod, wickDisplayPeriod, wickMultiplier, onClose, onSessions, onSevenAmMarkers, onRsi, onSsl, onTracker, onWickExtensions, onRsiPeriod, onRsiLowBand, onRsiHighBand, onSslPeriod, onTrackerPeriod, onWickPeriod, onWickDisplayPeriod, onWickMultiplier,
+}: { showSessions: boolean; showSevenAmMarkers: boolean; showRsi: boolean; showSsl: boolean; showTracker: boolean; showWickExtensions: boolean; rsiPeriod: number; rsiLowBand: number; rsiHighBand: number; sslPeriod: number; trackerPeriod: number; wickPeriod: number; wickDisplayPeriod: number; wickMultiplier: number; onClose: () => void; onSessions: () => void; onSevenAmMarkers: () => void; onRsi: () => void; onSsl: () => void; onTracker: () => void; onWickExtensions: () => void; onRsiPeriod: (value: number) => void; onRsiLowBand: (value: number) => void; onRsiHighBand: (value: number) => void; onSslPeriod: (value: number) => void; onTrackerPeriod: (value: number) => void; onWickPeriod: (value: number) => void; onWickDisplayPeriod: (value: number) => void; onWickMultiplier: (value: number) => void }) {
+  const row = (label: string, description: string, active: boolean, toggle: () => void, period?: number, setPeriod?: (value: number) => void) => <>{<div className="indicator-setting-row"><button className={`indicator-toggle ${active ? 'indicator-toggle-active' : ''}`} onClick={toggle} aria-pressed={active}><span className="indicator-check">{active ? '✓' : ''}</span><span><b>{label}</b><small>{description}</small></span></button>{period !== undefined && setPeriod && <label className="indicator-period">Periodo<input type="number" min="2" max="200" value={period} onChange={event => setPeriod(Math.max(2, Math.min(200, Number(event.target.value) || 2)))} /></label>}</div>}{label === 'Sesiones de mercado' && <div className="indicator-setting-row"><button className={`indicator-toggle ${showSevenAmMarkers ? 'indicator-toggle-active' : ''}`} onClick={onSevenAmMarkers} aria-pressed={showSevenAmMarkers}><span className="indicator-check">{showSevenAmMarkers ? '✓' : ''}</span><span><b>Marcadores 7 AM</b><small>Ventana diaria 07:20–07:35 · Ciudad de México</small></span></button></div>}</>;
   return <div className="indicator-modal-backdrop" role="presentation" onClick={onClose}><section className="indicator-modal" role="dialog" aria-modal="true" aria-label="Indicadores" onClick={event => event.stopPropagation()}><div className="indicator-modal-head"><div><span className="eyebrow">CHART · INDICATORS</span><h2>Indicadores</h2></div><button onClick={onClose} aria-label="Cerrar">×</button></div><p className="indicator-modal-help">Activa los indicadores que se dibujan directamente sobre el precio. La configuración se conserva por usuario.</p>{row('Sesiones de mercado', 'Tokyo, Londres, Nueva York y Sydney', showSessions, onSessions)}{row('RSI', 'Solo marca valores fuera de las bandas', showRsi, onRsi, rsiPeriod, onRsiPeriod)}{showRsi && <div className="indicator-band-row"><label>Low band<input type="number" min="1" max="49" value={rsiLowBand} onChange={event => onRsiLowBand(Math.max(1, Math.min(49, Number(event.target.value) || 1)))} /></label><label>High band<input type="number" min="51" max="99" value={rsiHighBand} onChange={event => onRsiHighBand(Math.max(51, Math.min(99, Number(event.target.value) || 99)))} /></label></div>}{row('SSL Channel', 'Canal dinámico sobre el precio', showSsl, onSsl, sslPeriod, onSslPeriod)}{row('Tracker', 'Price lines H2 · H1 · L1 · L2', showTracker, onTracker)}{showTracker && <div className="indicator-band-row"><label>Periodo (N velas)<input type="number" min="1" max="50" value={trackerPeriod} onChange={event => onTrackerPeriod(Math.max(1, Math.min(50, Number(event.target.value) || 1)))} /></label><span className="indicator-modal-help">Cada vela fija sus niveles usando las N anteriores</span></div>}{row('Extensiones de mechazo', 'Puntos Long/Short según las mechas contrarias', showWickExtensions, onWickExtensions, wickPeriod, onWickPeriod)}{showWickExtensions && <div className="indicator-band-row"><label>Velas visibles<input type="number" min="1" max="100" value={wickDisplayPeriod} onChange={event => onWickDisplayPeriod(Math.max(1, Math.min(100, Number(event.target.value) || 1)))} /></label><label>Multiplicador<input type="number" min="0" max="10" step="0.1" value={wickMultiplier} onChange={event => onWickMultiplier(Math.max(0, Math.min(10, Number(event.target.value) || 0)))} /></label><span className="indicator-modal-help">Muestra los puntos de las velas más recientes</span></div>}<button className="indicator-modal-done" onClick={onClose}>Listo</button></section></div>;
 }
 
@@ -871,6 +871,7 @@ function Workspace() {
   const brokerSymbols = broker === 'ctrader' ? ['AUDUSD', 'XAUUSD', 'XAGUSD'] : ['BTCUSDT', 'ETHUSDT', 'BNBUSDT', 'SOLUSDT', 'XRPUSDT', 'DOGEUSDT'];
   const [timezone, setTimezone] = useState('America/Mexico_City');
   const [showSessions, setShowSessions] = useState(true);
+  const [showSevenAmMarkers, setShowSevenAmMarkers] = useState(() => localStorage.getItem('helloworld-indicator-seven-am') !== 'false');
   const [showRsi, setShowRsi] = useState(() => localStorage.getItem('helloworld-indicator-rsi') === 'true');
   const [showSsl, setShowSsl] = useState(() => localStorage.getItem('helloworld-indicator-ssl') === 'true');
   const [showTracker, setShowTracker] = useState(() => localStorage.getItem('helloworld-indicator-tracker') === 'true');
@@ -1132,6 +1133,7 @@ function Workspace() {
 
   useEffect(() => {
     localStorage.setItem('helloworld-indicator-rsi', String(showRsi));
+    localStorage.setItem('helloworld-indicator-seven-am', String(showSevenAmMarkers));
     localStorage.setItem('helloworld-indicator-ssl', String(showSsl));
     localStorage.setItem('helloworld-indicator-tracker', String(showTracker));
     localStorage.setItem('helloworld-indicator-wick-extensions', String(showWickExtensions));
@@ -1147,7 +1149,7 @@ function Workspace() {
     localStorage.setItem('helloworld-wick-multiplier', String(wickMultiplier));
     setViewportRevision(value => value + 1);
     setOverviewRevision(value => value + 1);
-  }, [showRsi, showSsl, showTracker, showWickExtensions, showHeikinAshi, rsiPeriod, rsiLowBand, rsiHighBand, sslPeriod, sslRegimeWindow, trackerPeriod, wickPeriod, wickDisplayPeriod, wickMultiplier]);
+  }, [showRsi, showSevenAmMarkers, showSsl, showTracker, showWickExtensions, showHeikinAshi, rsiPeriod, rsiLowBand, rsiHighBand, sslPeriod, sslRegimeWindow, trackerPeriod, wickPeriod, wickDisplayPeriod, wickMultiplier]);
 
   useEffect(() => {
     const syncAssist = () => {
@@ -2029,7 +2031,7 @@ function Workspace() {
     const bars = renderBars(rawBars, canvas === 'entry' ? MAX_ENTRY_RENDER_BARS : MAX_CONTEXT_RENDER_BARS);
     const width = canvas === 'entry' ? stageSize.width : overviewSize.width;
     const height = canvas === 'entry' ? stageSize.height : overviewSize.height;
-    if (!chart || !candles || !bars.length || (!showRsi && !showSsl && !showWickExtensions)) return null;
+    if (!chart || !candles || !bars.length || (!showRsi && !showSsl && !showWickExtensions && !showSevenAmMarkers)) return null;
     const rsi = showRsi ? calculateRsi(bars, rsiPeriod) : [];
     const ssl = showSsl ? calculateSslChannel(bars, sslPeriod) : { up: [], down: [], bullish: [] };
     // Wick direction is always filtered by SSL, even when the SSL lines are
@@ -2041,6 +2043,7 @@ function Workspace() {
     const wickBars = bars.slice(wickStart);
     const wickExtensions = showWickExtensions ? calculateWickExtensions(wickBars, wickLookback, wickMultiplier) : { long: [], short: [] };
     const wickVisibleStart = Math.max(0, bars.length - wickDisplayPeriod);
+    const sevenAmWindow = calculateDailyTimeWindow(bars, SESSION_TIMEZONE);
     const toPoint = (value: number | null, index: number) => {
       if (value === null || value === undefined) return null;
       const x = chart.timeScale().timeToCoordinate(bars[index].time);
@@ -2077,6 +2080,11 @@ function Workspace() {
       </g>;
     });
     return <g className={`price-indicators price-indicators-${canvas}`}>
+      {showSevenAmMarkers && <g className="seven-am-marker-layer">{bars.map((bar, index) => {
+        if (!sevenAmWindow[index]) return null;
+        const point = toPoint(bar.close, index);
+        return point ? <circle key={`seven-am-${canvas}-${bar.time}`} cx={point.x} cy={point.y} r="6" className="ny-interest-marker"><title>Ventana 7 AM · {chartTimeLabel(bar.time, SESSION_TIMEZONE, true)}</title></circle> : null;
+      })}</g>}
       {showSsl && <><path d={path(ssl.up)} className="ssl-channel ssl-channel-up" /><path d={path(ssl.down)} className="ssl-channel ssl-channel-down" /></>}
       {showRsi && <g className="rsi-markers">{rsiMarkers}</g>}
       {showWickExtensions && <g className="wick-extension-layer">{wickMarkers}</g>}
@@ -2085,19 +2093,7 @@ function Workspace() {
   }
 
   function renderInterestMarkers() {
-    const chart = chartRef.current;
-    const candles = candlesRef.current;
-    if (!chart || !candles) return null;
-    const markers = candleDataRef.current.flatMap(candle => {
-      const local = timezoneParts(Number(candle.time), SESSION_TIMEZONE);
-      const hour = Number(local.hour);
-      const minute = Number(local.minute);
-      if (hour !== 7 || minute < 20 || minute >= 35) return [];
-      const x = chart.timeScale().timeToCoordinate(candle.time);
-      const y = candles.priceToCoordinate(candle.close);
-      return x === null || x === undefined || y === null || y === undefined ? [] : [{ x, y }];
-    });
-    return <g className="ny-interest-markers">{markers.map((marker, index) => <circle key={`${marker.x}-${index}`} cx={marker.x} cy={marker.y} r="6" className="ny-interest-marker" />)}</g>;
+    return null;
   }
 
   function renderChartEventMarkers(canvas: ChartCanvas) {
@@ -2137,15 +2133,7 @@ function Workspace() {
   }
 
   function renderOverviewInterestMarkers() {
-    if (!overviewChartRef.current || !overviewCandlesRef.current) return null;
-    const markers = overviewCandleDataRef.current.flatMap(candle => {
-      const local = timezoneParts(Number(candle.time), SESSION_TIMEZONE);
-      if (Number(local.hour) !== 7 || Number(local.minute) < 20 || Number(local.minute) >= 35) return [];
-      const x = overviewChartRef.current?.timeScale().timeToCoordinate(candle.time);
-      const y = overviewCandlesRef.current?.priceToCoordinate(candle.close);
-      return x === null || x === undefined || y === null || y === undefined ? [] : [{ x, y }];
-    });
-    return <g className="ny-interest-markers">{markers.map((marker, index) => <circle key={`${marker.x}-${index}`} cx={marker.x} cy={marker.y} r="6" className="ny-interest-marker" />)}</g>;
+    return null;
   }
 
   function drawingAt(point: { x: number; y: number }, canvas: ChartCanvas = 'entry') {
@@ -2953,7 +2941,7 @@ function Workspace() {
   </div>;
 
   const avatarLabel = (auth.identity?.name ?? auth.identity?.email ?? 'U').slice(0, 1).toUpperCase();
-  const profileButton = <><button className="profile-avatar" onClick={() => setShowProfile(true)} aria-label="Abrir perfil" title="Perfil">{avatarLabel}</button>{showIndicatorSettings && <IndicatorSettingsModal showSessions={showSessions} showRsi={showRsi} showSsl={showSsl} showTracker={showTracker} showWickExtensions={showWickExtensions} rsiPeriod={rsiPeriod} rsiLowBand={rsiLowBand} rsiHighBand={rsiHighBand} sslPeriod={sslPeriod} trackerPeriod={trackerPeriod} wickPeriod={wickPeriod} wickDisplayPeriod={wickDisplayPeriod} wickMultiplier={wickMultiplier} onClose={() => setShowIndicatorSettings(false)} onSessions={() => setShowSessions(value => !value)} onRsi={() => setShowRsi(value => !value)} onSsl={() => setShowSsl(value => !value)} onTracker={() => setShowTracker(value => !value)} onWickExtensions={() => setShowWickExtensions(value => !value)} onRsiPeriod={setRsiPeriod} onRsiLowBand={setRsiLowBand} onRsiHighBand={setRsiHighBand} onSslPeriod={setSslPeriod} onTrackerPeriod={setTrackerPeriod} onWickPeriod={setWickPeriod} onWickDisplayPeriod={setWickDisplayPeriod} onWickMultiplier={setWickMultiplier} />}</>;
+  const profileButton = <><button className="profile-avatar" onClick={() => setShowProfile(true)} aria-label="Abrir perfil" title="Perfil">{avatarLabel}</button>{showIndicatorSettings && <IndicatorSettingsModal showSessions={showSessions} showSevenAmMarkers={showSevenAmMarkers} showRsi={showRsi} showSsl={showSsl} showTracker={showTracker} showWickExtensions={showWickExtensions} rsiPeriod={rsiPeriod} rsiLowBand={rsiLowBand} rsiHighBand={rsiHighBand} sslPeriod={sslPeriod} trackerPeriod={trackerPeriod} wickPeriod={wickPeriod} wickDisplayPeriod={wickDisplayPeriod} wickMultiplier={wickMultiplier} onClose={() => setShowIndicatorSettings(false)} onSessions={() => setShowSessions(value => !value)} onSevenAmMarkers={() => setShowSevenAmMarkers(value => !value)} onRsi={() => setShowRsi(value => !value)} onSsl={() => setShowSsl(value => !value)} onTracker={() => setShowTracker(value => !value)} onWickExtensions={() => setShowWickExtensions(value => !value)} onRsiPeriod={setRsiPeriod} onRsiLowBand={setRsiLowBand} onRsiHighBand={setRsiHighBand} onSslPeriod={setSslPeriod} onTrackerPeriod={setTrackerPeriod} onWickPeriod={setWickPeriod} onWickDisplayPeriod={setWickDisplayPeriod} onWickMultiplier={setWickMultiplier} />}</>;
   const labButton = <button className="indicator-bar-button" onClick={() => setShowIndicatorSettings(true)} aria-label="Configurar indicadores" title="Indicadores">◌</button>;
   const riskEngineButton = <button className="indicator-bar-button" onClick={() => setShowRiskEngine(true)} aria-label="Abrir Risk Engine" title="Risk Engine">⚖</button>;
   const pnlCalendarButton = <button className="indicator-bar-button" onClick={() => setShowPnlCalendar(true)} aria-label="Abrir calendario PNL" title="Calendario PNL">▦</button>;
