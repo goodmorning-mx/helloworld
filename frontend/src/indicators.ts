@@ -47,20 +47,26 @@ export function calculateSslChannel(bars: IndicatorBar[], period = 9) {
   const up: Array<number | null> = Array.from({ length: bars.length }, () => null);
   const down: Array<number | null> = Array.from({ length: bars.length }, () => null);
   const bullish: boolean[] = Array.from({ length: bars.length }, () => false);
+  const regimeAge: number[] = Array.from({ length: bars.length }, () => 0);
   let direction = 0;
+  let age = 0;
   for (let index = length - 1; index < bars.length; index += 1) {
     const window = bars.slice(index - length + 1, index + 1);
     const high = window.reduce((sum, bar) => sum + bar.high, 0) / length;
     const low = window.reduce((sum, bar) => sum + bar.low, 0) / length;
+    const previousDirection = direction;
     if (bars[index].close > high) direction = 1;
     else if (bars[index].close < low) direction = -1;
+    if (direction !== 0 && direction !== previousDirection) age = 1;
+    else if (direction !== 0) age += 1;
     // Standard SSL Channel: the two averages exchange positions when the
     // regime changes, producing the characteristic bullish/bearish cross.
     up[index] = direction >= 0 ? high : low;
     down[index] = direction >= 0 ? low : high;
     bullish[index] = direction >= 0;
+    regimeAge[index] = direction === 0 ? 0 : age;
   }
-  return { up, down, bullish };
+  return { up, down, bullish, regimeAge };
 }
 
 /**
