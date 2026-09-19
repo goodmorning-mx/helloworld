@@ -42,14 +42,13 @@ export type WickBacktestReport = {
   totalFees: number;
 };
 
-export function runWickBacktest(bars: OhlcBar[], period: number, multiplier: number, stopPercent: number, targetPercent: number, initialBalance: number, riskPercent: number, leverage: number, broker: TradingBroker, sslPeriod: number, regimeWindow: number, displayBars: number, higherTimeframeBars: OhlcBar[] = []) {
+export function runWickBacktest(bars: OhlcBar[], period: number, multiplier: number, stopPercent: number, targetPercent: number, initialBalance: number, riskPercent: number, leverage: number, broker: TradingBroker, sslPeriod: number, regimeWindow: number, displayBars: number) {
   const visibleBars = Math.max(1, Math.round(displayBars));
   const warmup = Math.max(period, sslPeriod, 2);
   // SHOW N controls the tested range; warmup is only used to initialize SSL/wicks.
   const source = bars.slice(-(visibleBars + warmup));
   const extensions = calculateWickExtensions(source, period, multiplier);
   const ssl = calculateSslChannel(source, sslPeriod);
-  const higherSsl = higherTimeframeBars.length ? calculateSslChannel(higherTimeframeBars, sslPeriod) : null;
   const trades: WickBacktestTrade[] = [];
   let signals = 0;
   let balance = Math.max(0, initialBalance);
@@ -60,25 +59,14 @@ export function runWickBacktest(bars: OhlcBar[], period: number, multiplier: num
   while (cursor < source.length) {
     const bar = source[cursor];
     const regimeActive = ssl.regimeAge[cursor] >= 2 && ssl.regimeAge[cursor] <= regimeWindow;
-    const completedHigherTime = Math.floor(Number(bar.time) / 300) * 300 - 300;
-    let higherIndex = -1;
-    if (higherTimeframeBars.length) {
-      for (let index = higherTimeframeBars.length - 1; index >= 0; index -= 1) {
-        if (Number(higherTimeframeBars[index].time) <= completedHigherTime) { higherIndex = index; break; }
-      }
-    }
-    const higherBullish = higherIndex >= 0 && higherSsl ? higherSsl.bullish[higherIndex] : null;
     const baseBullish = ssl.bullish[cursor];
-    // The attempt window belongs to the 1m regime. The 5m SSL only filters direction.
     const regimeDirection = typeof baseBullish === 'boolean' ? baseBullish : null;
     if (regimeDirection !== null && regimeDirection !== lastRegimeDirection) {
       lastRegimeDirection = regimeDirection;
       regimeAttempt = 0;
     }
-    const higherLongAllowed = higherTimeframeBars.length ? higherBullish === true : true;
-    const higherShortAllowed = higherTimeframeBars.length ? higherBullish === false : true;
-    const longSignal = regimeActive && higherLongAllowed && extensions.long[cursor] != null && bar.low <= Number(extensions.long[cursor]) && ssl.bullish[cursor];
-    const shortSignal = regimeActive && higherShortAllowed && extensions.short[cursor] != null && bar.high >= Number(extensions.short[cursor]) && !ssl.bullish[cursor];
+    const longSignal = regimeActive && extensions.long[cursor] != null && bar.low <= Number(extensions.long[cursor]) && ssl.bullish[cursor];
+    const shortSignal = regimeActive && extensions.short[cursor] != null && bar.high >= Number(extensions.short[cursor]) && !ssl.bullish[cursor];
     if (!longSignal && !shortSignal) { cursor += 1; continue; }
     signals += 1;
     const side: 'long' | 'short' = longSignal ? 'long' : 'short';
@@ -152,7 +140,7 @@ const defaultStorycard = JSON.stringify({
 
 type ScannerBacktestRow = WickBacktestReport & { symbol: string; firstOperation?: number; lastOperation?: number; error?: string };
 
-export default function BacktestPanel({ activeSymbol, apiUrl, accessToken, getBars, getHigherTimeframeBars, scannerSymbols = [], initialBalance = 100, riskPercent = 1, leverage = 1, broker = 'binance', wickPeriod, wickMultiplier, stopPercent, targetPercent, sslPeriod, regimeWindow, displayBars = 300, barRevision = 0, onWickTrades }: { activeSymbol: string; apiUrl: string; accessToken?: string | null; getBars?: () => OhlcBar[]; getHigherTimeframeBars?: () => OhlcBar[]; scannerSymbols?: string[]; initialBalance?: number; riskPercent?: number; leverage?: number; broker?: TradingBroker; wickPeriod?: number; wickMultiplier?: number; stopPercent?: number; targetPercent?: number; sslPeriod?: number; regimeWindow?: number; displayBars?: number; barRevision?: number; onWickTrades?: (trades: WickBacktestTrade[]) => void }) {
+export default function BacktestPanel({ activeSymbol, apiUrl, accessToken, getBars, scannerSymbols = [], initialBalance = 100, riskPercent = 1, leverage = 1, broker = 'binance', wickPeriod, wickMultiplier, stopPercent, targetPercent, sslPeriod, regimeWindow, displayBars = 300, barRevision = 0, onWickTrades }: { activeSymbol: string; apiUrl: string; accessToken?: string | null; getBars?: () => OhlcBar[]; scannerSymbols?: string[]; initialBalance?: number; riskPercent?: number; leverage?: number; broker?: TradingBroker; wickPeriod?: number; wickMultiplier?: number; stopPercent?: number; targetPercent?: number; sslPeriod?: number; regimeWindow?: number; displayBars?: number; barRevision?: number; onWickTrades?: (trades: WickBacktestTrade[]) => void }) {
   const [storycard, setStorycard] = useState(defaultStorycard);
   const [result, setResult] = useState<BacktestResult | null>(null);
   const [agentMessage, setAgentMessage] = useState('');
@@ -202,7 +190,7 @@ export default function BacktestPanel({ activeSymbol, apiUrl, accessToken, getBa
   function runWickStrategyBacktest() {
     const bars = getBars?.() ?? [];
     if (bars.length < Math.max(20, wickPeriod ?? 10)) { setAgentMessage('Aún no hay suficientes velas cargadas para el backtest.'); return; }
-    const result = runWickBacktest(bars, wickPeriod ?? 10, wickMultiplier ?? 1.5, stopPercent ?? .2, targetPercent ?? 4.1, initialBalance, riskPercent, leverage, broker, sslPeriod ?? 9, regimeWindow ?? 5, displayBars, getHigherTimeframeBars?.() ?? []);
+    const result = runWickBacktest(bars, wickPeriod ?? 10, wickMultiplier ?? 1.5, stopPercent ?? .2, targetPercent ?? 4.1, initialBalance, riskPercent, leverage, broker, sslPeriod ?? 9, regimeWindow ?? 5, displayBars);
     setWickReport(result.report);
     setWickTrades(result.trades);
     onWickTrades?.(result.trades);
@@ -226,9 +214,9 @@ export default function BacktestPanel({ activeSymbol, apiUrl, accessToken, getBa
             const payload = await response.json() as { bars?: OhlcBar[] };
             return (payload.bars ?? []).filter(bar => Number(bar.time) >= from && Number(bar.time) <= to);
           };
-          const [bars, higherBars] = await Promise.all([fetchBars('1m'), fetchBars('5m')]);
+          const bars = await fetchBars('1m');
           if (bars.length < Math.max(20, wickPeriod ?? 10)) throw new Error('velas insuficientes');
-          const output = runWickBacktest(bars, wickPeriod ?? 10, wickMultiplier ?? 1.5, stopPercent ?? .2, targetPercent ?? 4.1, initialBalance, riskPercent, leverage, broker, sslPeriod ?? 9, regimeWindow ?? 5, bars.length, higherBars);
+          const output = runWickBacktest(bars, wickPeriod ?? 10, wickMultiplier ?? 1.5, stopPercent ?? .2, targetPercent ?? 4.1, initialBalance, riskPercent, leverage, broker, sslPeriod ?? 9, regimeWindow ?? 5, bars.length);
           return { symbol, ...output.report, firstOperation: output.trades[0]?.entryTime, lastOperation: output.trades[output.trades.length - 1]?.exitTime };
         } catch (error) {
           return { symbol, bars: 0, signals: 0, operations: 0, wins: 0, losses: 0, winRate: 0, netPnl: 0, profitFactor: 0, maxDrawdown: 0, averageMfe: 0, averageMae: 0, initialBalance, finalBalance: initialBalance, totalFees: 0, error: error instanceof Error ? error.message : 'error' };
