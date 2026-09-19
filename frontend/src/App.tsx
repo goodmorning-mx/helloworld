@@ -2836,9 +2836,14 @@ function Workspace() {
       const measuredSide = drawing.end.price >= drawing.start.price ? 'LONG' : 'SHORT';
       const preview = binancePreview.find(item => item.side === measuredSide);
       const mfeUsd = preview ? preview.notional * movePercent / 100 : 0;
+      const stopPrice = drawing.start.price - (drawing.end.price - drawing.start.price) / 4;
+      const stopPoint = screenPoint({ time: drawing.end.time, price: stopPrice }, canvas);
+      const stopPercent = drawing.start.price > 0 ? Math.abs(stopPrice - drawing.start.price) / drawing.start.price * 100 : 0;
+      const slUsd = preview ? preview.notional * stopPercent / 100 : 0;
       const left = Math.min(start.x, end.x);
       const top = Math.min(start.y, end.y);
-      return <g key={index} className={selectedClass}><rect x={left} y={top} width={Math.max(1, Math.abs(end.x - start.x))} height={Math.max(1, Math.abs(end.y - start.y))} className="measurement-box" /><text x={left + 8} y={top + 18} className="measurement-label">{minutes} min · {priceDelta.toFixed(2)} · {pricePercent >= 0 ? '+' : ''}{pricePercent.toFixed(2)}% · MFE +{mfeUsd.toFixed(4)} USDT</text>{handleNodes}</g>;
+      const width = Math.max(1, Math.abs(end.x - start.x));
+      return <g key={index} className={selectedClass}><rect x={left} y={top} width={width} height={Math.max(1, Math.abs(end.y - start.y))} className="measurement-box" />{stopPoint && <><rect x={left} y={Math.min(start.y, stopPoint.y)} width={width} height={Math.max(1, Math.abs(start.y - stopPoint.y))} className="measurement-risk-zone" /><line x1={left} y1={stopPoint.y} x2={left + width} y2={stopPoint.y} className="measurement-stop-line" /><text x={left + 8} y={stopPoint.y + (stopPoint.y >= start.y ? 16 : -7)} className="measurement-stop-label">SL -{stopPercent.toFixed(2)}% · -{slUsd.toFixed(4)} USDT</text></>}{<text x={left + 8} y={top + 18} className="measurement-label">{minutes} min · {priceDelta.toFixed(2)} · {pricePercent >= 0 ? '+' : ''}{pricePercent.toFixed(2)}% · MFE +{mfeUsd.toFixed(4)} USDT</text>}{handleNodes}</g>;
     }
     const left = Math.min(start.x, end.x);
     const width = Math.max(1, Math.abs(end.x - start.x));
