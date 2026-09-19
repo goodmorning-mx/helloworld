@@ -218,3 +218,9 @@
 .backtest-panel .backtest-editor,
 .backtest-panel .backtest-event-list { display: none; }
 .backtest-panel .backtest-summary { margin-top: .65rem; }
+.backtest-balance-table-wrap { margin-top: .7rem; overflow-x: auto; color: #b9dcff; font: .6rem 'DM Mono', monospace; }
+.backtest-balance-table-wrap > strong { display: block; margin-bottom: .35rem; }
+.backtest-balance-table { width: 100%; min-width: 900px; border-collapse: collapse; }
+.backtest-balance-table th, .backtest-balance-table td { padding: .38rem .45rem; border: 1px solid #263746; background: #101923; text-align: right; white-space: nowrap; }
+.backtest-balance-table th { color: #718096; font-size: .52rem; font-weight: 400; }
+.backtest-balance-table th:nth-child(2), .backtest-balance-table td:nth-child(2), .backtest-balance-table th:nth-child(3), .backtest-balance-table td:nth-child(3) { text-align: left; }
