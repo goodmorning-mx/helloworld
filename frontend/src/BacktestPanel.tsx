@@ -69,7 +69,8 @@ export function runWickBacktest(bars: OhlcBar[], period: number, multiplier: num
     }
     const higherBullish = higherIndex >= 0 && higherSsl ? higherSsl.bullish[higherIndex] : null;
     const baseBullish = ssl.bullish[cursor];
-    const regimeDirection = typeof higherBullish === 'boolean' ? higherBullish : typeof baseBullish === 'boolean' ? baseBullish : null;
+    // The attempt window belongs to the 1m regime. The 5m SSL only filters direction.
+    const regimeDirection = typeof baseBullish === 'boolean' ? baseBullish : null;
     if (regimeDirection !== null && regimeDirection !== lastRegimeDirection) {
       lastRegimeDirection = regimeDirection;
       regimeAttempt = 0;
