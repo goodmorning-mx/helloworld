@@ -224,3 +224,7 @@
 .backtest-balance-table th, .backtest-balance-table td { padding: .38rem .45rem; border: 1px solid #263746; background: #101923; text-align: right; white-space: nowrap; }
 .backtest-balance-table th { color: #718096; font-size: .52rem; font-weight: 400; }
 .backtest-balance-table th:nth-child(2), .backtest-balance-table td:nth-child(2), .backtest-balance-table th:nth-child(3), .backtest-balance-table td:nth-child(3) { text-align: left; }
+.backtest-scanner-controls { display: flex; align-items: center; flex-wrap: wrap; gap: .45rem; margin-top: .65rem; color: #89909b; font: .6rem 'DM Mono', monospace; }
+.backtest-scanner-controls label { display: inline-flex; align-items: center; gap: .3rem; color: #b9dcff; }
+.backtest-scanner-controls input { padding: .25rem .35rem; border: 1px solid #303f4d; border-radius: 5px; background: #111a23; color: #d7eaff; font: .6rem 'DM Mono', monospace; }
+.backtest-scanner-controls small { color: #718096; }
