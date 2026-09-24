@@ -20,7 +20,7 @@ export type WickBacktestTrade = {
   grossPnl: number;
   pnl: number;
   attemptNumber: number;
-  reason: 'TP' | 'SL' | 'END';
+  reason: 'TP' | 'SL' | 'SIGNAL' | 'END';
 };
 
 export type WickBacktestReport = {
@@ -50,22 +50,25 @@ export function runWickBacktest(bars: OhlcBar[], period: number, multiplier: num
   const startingBalance = balance;
   let attemptNumber = 0;
   let cursor = warmup;
+
+  const trackerSignal = (index: number) => {
+    const bar = source[index];
+    const levels = tracker[index];
+    if (!levels) return null;
+    if (bar.close >= levels.h1 && bar.close >= levels.h2) return { level: 'H2' as const, side: 'short' as const };
+    else if (bar.close >= levels.h1 && bar.close < levels.h2) return { level: 'H1' as const, side: 'short' as const };
+    else if (bar.close <= levels.l1 && bar.close > levels.l2) return { level: 'L1' as const, side: 'long' as const };
+    else if (bar.close <= levels.l2 && bar.close <= levels.l1) return { level: 'L2' as const, side: 'long' as const };
+    return null;
+  };
+
   while (cursor < source.length) {
     const bar = source[cursor];
-    const levels = tracker[cursor];
-    if (!levels) { cursor += 1; continue; }
-
-    // Clasificación exclusiva: la vela actual solamente se compara contra
-    // los niveles calculados con las N velas anteriores.
-    let level: 'H2' | 'H1' | 'L1' | 'L2' | null = null;
-    if (bar.close >= levels.h1 && bar.close >= levels.h2) level = 'H2';
-    else if (bar.close >= levels.h1 && bar.close < levels.h2) level = 'H1';
-    else if (bar.close <= levels.l1 && bar.close > levels.l2) level = 'L1';
-    else if (bar.close <= levels.l2 && bar.close <= levels.l1) level = 'L2';
-    if (!level) { cursor += 1; continue; }
+    const signal = trackerSignal(cursor);
+    if (!signal) { cursor += 1; continue; }
 
     signals += 1;
-    const side: 'long' | 'short' = level === 'H1' || level === 'H2' ? 'short' : 'long';
+    const side = signal.side;
     const entryPrice = Number(bar.close);
     const riskAmount = balance * Math.max(0, riskPercent) / 100;
     const stopDistance = Math.max(Math.abs(stopPercent) / 100, 0.000001);
@@ -90,6 +93,19 @@ export function runWickBacktest(bars: OhlcBar[], period: number, multiplier: num
         reason = hitStop ? 'SL' : 'TP';
         exitIndex = index;
         exitPrice = hitStop ? stopPrice : targetPrice;
+        break;
+      }
+      const oppositeSignal = trackerSignal(index);
+      const favorablePercent = side === 'long'
+        ? ((next.close - entryPrice) / entryPrice) * 100
+        : ((entryPrice - next.close) / entryPrice) * 100;
+      // Equivalente a closelong/closeshort: cerrar ante una señal opuesta
+      // solo cuando la operación ya alcanzó el umbral configurado. La nueva
+      // entrada queda para una vela posterior, nunca en la misma vela.
+      if (oppositeSignal && oppositeSignal.side !== side && favorablePercent >= Math.abs(targetPercent)) {
+        reason = 'SIGNAL';
+        exitIndex = index;
+        exitPrice = next.close;
         break;
       }
     }
