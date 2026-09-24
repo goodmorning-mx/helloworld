@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { calculateTrackerLevels, type OhlcBar } from './indicators';
+import { calculateSslChannel, calculateWickExtensions, type OhlcBar } from './indicators';
 import { tradingCosts, type TradingBroker } from './tradingCosts';
 
 export type WickBacktestTrade = {
@@ -20,7 +20,7 @@ export type WickBacktestTrade = {
   grossPnl: number;
   pnl: number;
   attemptNumber: number;
-  reason: 'TP' | 'SL' | 'SIGNAL' | 'END';
+  reason: 'TP' | 'SL' | 'END';
 };
 
 export type WickBacktestReport = {
@@ -40,42 +40,40 @@ export type WickBacktestReport = {
 
 export function runWickBacktest(bars: OhlcBar[], period: number, multiplier: number, stopPercent: number, targetPercent: number, initialBalance: number, riskPercent: number, leverage: number, broker: TradingBroker, sslPeriod: number, regimeWindow: number, displayBars: number) {
   const visibleBars = Math.max(1, Math.round(displayBars));
-  const warmup = Math.max(1, Math.round(period));
-  // SHOW N controls the tested range; the tracker warmup is outside that range.
+  const warmup = Math.max(period, sslPeriod, 2);
+  // SHOW N controls the tested range; warmup is only used to initialize SSL/wicks.
   const source = bars.slice(-(visibleBars + warmup));
-  const tracker = calculateTrackerLevels(source, warmup);
+  const extensions = calculateWickExtensions(source, period, multiplier);
+  const ssl = calculateSslChannel(source, sslPeriod);
   const trades: WickBacktestTrade[] = [];
   let signals = 0;
   let balance = Math.max(0, initialBalance);
   const startingBalance = balance;
-  let attemptNumber = 0;
+  let lastRegimeDirection: boolean | null = null;
+  let regimeAttempt = 0;
   let cursor = warmup;
-
-  const trackerSignal = (index: number) => {
-    const bar = source[index];
-    const levels = tracker[index];
-    if (!levels) return null;
-    if (bar.close >= levels.h1 && bar.close >= levels.h2) return { level: 'H2' as const, side: 'short' as const };
-    else if (bar.close >= levels.h1 && bar.close < levels.h2) return { level: 'H1' as const, side: 'short' as const };
-    else if (bar.close <= levels.l1 && bar.close > levels.l2) return { level: 'L1' as const, side: 'long' as const };
-    else if (bar.close <= levels.l2 && bar.close <= levels.l1) return { level: 'L2' as const, side: 'long' as const };
-    return null;
-  };
-
   while (cursor < source.length) {
     const bar = source[cursor];
-    const signal = trackerSignal(cursor);
-    if (!signal) { cursor += 1; continue; }
-
+    const regimeActive = ssl.regimeAge[cursor] >= 2 && ssl.regimeAge[cursor] <= regimeWindow;
+    const baseBullish = ssl.bullish[cursor];
+    const regimeDirection = typeof baseBullish === 'boolean' ? baseBullish : null;
+    if (regimeDirection !== null && regimeDirection !== lastRegimeDirection) {
+      lastRegimeDirection = regimeDirection;
+      regimeAttempt = 0;
+    }
+    const longSignal = regimeActive && extensions.long[cursor] != null && bar.low <= Number(extensions.long[cursor]) && ssl.bullish[cursor];
+    const shortSignal = regimeActive && extensions.short[cursor] != null && bar.high >= Number(extensions.short[cursor]) && !ssl.bullish[cursor];
+    if (!longSignal && !shortSignal) { cursor += 1; continue; }
     signals += 1;
-    const side = signal.side;
-    const entryPrice = Number(bar.close);
+    const side: 'long' | 'short' = longSignal ? 'long' : 'short';
+    const entryPrice = Number(side === 'long' ? extensions.long[cursor] : extensions.short[cursor]);
     const riskAmount = balance * Math.max(0, riskPercent) / 100;
-    const stopDistance = Math.max(Math.abs(stopPercent) / 100, 0.000001);
+    const stopDistance = Math.max(stopPercent / 100, 0.000001);
     const riskNotional = riskAmount / stopDistance;
     const notional = Math.min(riskNotional, balance * Math.max(1, leverage));
     if (!(notional > 0) || !(entryPrice > 0)) { cursor += 1; continue; }
-    attemptNumber += 1;
+    regimeAttempt += 1;
+    const attemptNumber = regimeAttempt;
     const margin = leverage > 0 ? notional / leverage : notional;
     const balanceBefore = balance;
     const direction = side === 'long' ? 1 : -1;
@@ -84,7 +82,7 @@ export function runWickBacktest(bars: OhlcBar[], period: number, multiplier: num
     let exitIndex = source.length - 1;
     let exitPrice = source[exitIndex].close;
     let reason: WickBacktestTrade['reason'] = 'END';
-    for (let index = cursor + 1; index < source.length; index += 1) {
+    for (let index = cursor; index < source.length; index += 1) {
       const next = source[index];
       const hitStop = side === 'long' ? next.low <= stopPrice : next.high >= stopPrice;
       const hitTarget = side === 'long' ? next.high >= targetPrice : next.low <= targetPrice;
@@ -95,25 +93,12 @@ export function runWickBacktest(bars: OhlcBar[], period: number, multiplier: num
         exitPrice = hitStop ? stopPrice : targetPrice;
         break;
       }
-      const oppositeSignal = trackerSignal(index);
-      const favorablePercent = side === 'long'
-        ? ((next.close - entryPrice) / entryPrice) * 100
-        : ((entryPrice - next.close) / entryPrice) * 100;
-      // Equivalente a closelong/closeshort: cerrar ante una señal opuesta
-      // solo cuando la operación ya alcanzó el umbral configurado. La nueva
-      // entrada queda para una vela posterior, nunca en la misma vela.
-      if (oppositeSignal && oppositeSignal.side !== side && favorablePercent >= Math.abs(targetPercent)) {
-        reason = 'SIGNAL';
-        exitIndex = index;
-        exitPrice = next.close;
-        break;
-      }
     }
     const grossPnl = ((exitPrice - entryPrice) / entryPrice) * direction * notional;
     const fees = tradingCosts(broker, notional).total;
     const pnl = grossPnl - fees;
     balance = Math.max(0, balance + pnl);
-    trades.push({ id: `tracker-backtest-${source[cursor].time}-${side}`, side, entryTime: Number(source[cursor].time), exitTime: Number(source[exitIndex].time), entryPrice, exitPrice, stopPrice, targetPrice, balanceBefore, balanceAfter: balance, riskAmount, margin, notional, fees, grossPnl, pnl, attemptNumber, reason });
+    trades.push({ id: `wick-backtest-${source[cursor].time}-${side}`, side, entryTime: Number(source[cursor].time), exitTime: Number(source[exitIndex].time), entryPrice, exitPrice, stopPrice, targetPrice, balanceBefore, balanceAfter: balance, riskAmount, margin, notional, fees, grossPnl, pnl, attemptNumber, reason });
     cursor = Math.max(cursor + 1, exitIndex + 1);
   }
   let equity = 0;
@@ -248,5 +233,5 @@ export default function BacktestPanel({ activeSymbol, apiUrl, accessToken, getBa
   const firstTrade = wickTrades[0];
   const lastTrade = wickTrades[wickTrades.length - 1];
   const stats = result?.statistics;
-  return <section className="backtest-panel" aria-label="Backtest Tracker"><div className="backtest-head"><div><span className="positions-kicker">BACKTEST · TRACKER</span><h2>Backtest Tracker · SHOW {displayBars}</h2><p>{message} · {activeSymbol} · actualiza cada 10 velas</p></div><div className="backtest-actions"><button type="button" onClick={runWickStrategyBacktest}>Actualizar Tracker</button><button type="button" onClick={() => void runScannerBacktest()} disabled={scannerLoading}>{scannerLoading ? 'Procesando scanner…' : `Backtest scanner (${scannerSymbols.length})`}</button><button type="button" onClick={() => void run()} disabled={loading}>{loading ? 'Procesando…' : 'Ejecutar storycard'}</button><button type="button" className="backtest-agent-button" onClick={() => void askAgent()} disabled={loading}>Analizar con IA</button></div></div><div className="backtest-scanner-controls"><span>Periodo scanner</span><label>Desde<input type="date" value={scannerFrom} onChange={event => setScannerFrom(event.target.value)} /></label><label>Hasta<input type="date" value={scannerTo} onChange={event => setScannerTo(event.target.value)} /></label><small>{scannerSymbols.length} símbolos visibles · hasta 1,500 velas por símbolo</small></div><div className="backtest-editor"><label>Storycard de eventos<textarea value={storycard} onChange={event => setStorycard(event.target.value)} spellCheck={false} /></label><div className="backtest-help"><strong>Estrategia Tracker</strong><small>H2/H1 abren SHORT · L1/L2 abren LONG. Cada vela usa exclusivamente las N velas anteriores y solo existe una operación abierta.</small><small>Balance {initialBalance.toFixed(2)} USDT · Riesgo {riskPercent.toFixed(2)}% · Leverage {leverage.toFixed(1)}x · N Tracker {wickPeriod ?? 10} · SL {stopPercent ?? .2}% · TP {targetPercent ?? 4.1}%</small>{agentMessage && <p>{agentMessage}</p>}</div></div>{scannerRows.length > 0 && <div className="backtest-balance-table-wrap"><strong>Resultados independientes del scanner</strong><table className="backtest-balance-table"><thead><tr><th>Símbolo</th><th>Inicio</th><th>Final</th><th>Operaciones</th><th>Win rate</th><th>PNL neto</th><th>Drawdown</th><th>Costos</th></tr></thead><tbody>{scannerRows.map(row => <tr key={row.symbol}><td>{row.symbol}</td><td>{row.firstOperation ? formatTradeTime(row.firstOperation) : '—'}</td><td>{row.lastOperation ? formatTradeTime(row.lastOperation) : '—'}</td><td>{row.operations}</td><td>{row.winRate.toFixed(1)}%</td><td className={row.netPnl >= 0 ? 'value-positive' : 'value-negative'}>{row.netPnl >= 0 ? '+' : ''}{row.netPnl.toFixed(2)} USDT</td><td className="value-negative">-{row.maxDrawdown.toFixed(2)} USDT</td><td>{row.totalFees.toFixed(2)} USDT</td></tr>)}</tbody></table></div>}{wickReport && <><div className="backtest-summary"><div><small>Primera operación</small><strong>{formatTradeTime(firstTrade?.entryTime)}</strong></div><div><small>Última operación</small><strong>{formatTradeTime(lastTrade?.exitTime ?? lastTrade?.entryTime)}</strong></div><div><small>Balance inicial</small><strong>{wickReport.initialBalance.toFixed(2)} USDT</strong></div><div><small>Balance final</small><strong className={wickReport.finalBalance >= wickReport.initialBalance ? 'value-positive' : 'value-negative'}>{wickReport.finalBalance.toFixed(2)} USDT</strong></div><div><small>Velas</small><strong>{wickReport.bars}</strong></div><div><small>Señales</small><strong>{wickReport.signals}</strong></div><div><small>Operaciones</small><strong>{wickReport.operations}</strong></div><div><small>Win rate</small><strong>{wickReport.winRate.toFixed(1)}%</strong></div><div><small>PNL neto</small><strong className={wickReport.netPnl >= 0 ? 'value-positive' : 'value-negative'}>{wickReport.netPnl >= 0 ? '+' : ''}{wickReport.netPnl.toFixed(4)} USDT</strong></div><div><small>Costos totales</small><strong>{wickReport.totalFees.toFixed(4)} USDT</strong></div><div><small>Profit factor</small><strong>{Number.isFinite(wickReport.profitFactor) ? wickReport.profitFactor.toFixed(2) : '∞'}</strong></div><div><small>Drawdown</small><strong className="value-negative">-{wickReport.maxDrawdown.toFixed(4)} USDT</strong></div></div><div className="backtest-balance-table-wrap"><strong>Desarrollo del balance</strong><table className="backtest-balance-table"><thead><tr><th>#</th><th>Fecha</th><th>Lado</th><th>Tracker</th><th>Balance antes</th><th>Riesgo</th><th>Margen</th><th>Notional</th><th>Costos</th><th>PNL neto</th><th>Balance después</th></tr></thead><tbody>{wickTrades.map((trade, index) => <tr key={trade.id}><td>{index + 1}</td><td>{formatTradeTime(trade.entryTime)}</td><td>{trade.side.toUpperCase()}</td><td>{trade.attemptNumber}</td><td>{trade.balanceBefore.toFixed(2)}</td><td>{trade.riskAmount.toFixed(2)}</td><td>{trade.margin.toFixed(2)}</td><td>{trade.notional.toFixed(2)}</td><td>{trade.fees.toFixed(4)}</td><td className={trade.pnl >= 0 ? 'value-positive' : 'value-negative'}>{trade.pnl >= 0 ? '+' : ''}{trade.pnl.toFixed(4)}</td><td>{trade.balanceAfter.toFixed(2)}</td></tr>)}</tbody></table></div><div className="backtest-event-list"><strong>Operaciones dibujadas · {wickTrades.length}</strong>{wickTrades.map(trade => <div key={trade.id}><span>{trade.side.toUpperCase()}</span><b className={trade.pnl >= 0 ? 'value-positive' : 'value-negative'}>{trade.reason} · {trade.pnl >= 0 ? '+' : ''}{trade.pnl.toFixed(4)} USDT</b></div>)}</div></>}{result && <><div className="backtest-summary"><div><small>Eventos</small><strong>{result.event_count}/{result.scheduled_event_count}</strong></div><div><small>Operaciones</small><strong>{stats?.operations ?? 0}</strong></div><div><small>Win rate</small><strong>{stats ? `${stats.win_rate.toFixed(1)}%` : '—'}</strong></div><div><small>PNL neto</small><strong className={(stats?.net_pnl ?? 0) >= 0 ? 'value-positive' : 'value-negative'}>{stats ? `${stats.net_pnl >= 0 ? '+' : ''}${stats.net_pnl.toFixed(2)} USDT` : '—'}</strong></div><div><small>Profit factor</small><strong>{stats ? (Number.isFinite(stats.profit_factor) ? stats.profit_factor.toFixed(2) : '∞') : '—'}</strong></div><div><small>Drawdown</small><strong className="value-negative">{stats ? `${stats.max_drawdown.toFixed(2)} USDT` : '—'}</strong></div></div><div className="backtest-event-list"><strong>Timeline de eventos</strong>{result.events.map(event => <div key={`${event.event_id}-${event.timestamp}`}><span>{new Date(event.timestamp * 1000).toLocaleString('es-MX')}</span><b>{event.action}</b><small>{event.price.toFixed(6)} · {event.position_id ?? 'sin posición'}</small></div>)}</div></>}</section>;
+  return <section className="backtest-panel" aria-label="Backtest de extensiones de mechazo"><div className="backtest-head"><div><span className="positions-kicker">BACKTEST · MECHAZOS</span><h2>Backtest · SHOW {displayBars}</h2><p>{message} · {activeSymbol} · actualiza cada 10 velas</p></div><div className="backtest-actions"><button type="button" onClick={runWickStrategyBacktest}>Actualizar</button><button type="button" onClick={() => void runScannerBacktest()} disabled={scannerLoading}>{scannerLoading ? 'Procesando scanner…' : `Backtest scanner (${scannerSymbols.length})`}</button><button type="button" onClick={() => void run()} disabled={loading}>{loading ? 'Procesando…' : 'Ejecutar storycard'}</button><button type="button" className="backtest-agent-button" onClick={() => void askAgent()} disabled={loading}>Analizar con IA</button></div></div><div className="backtest-scanner-controls"><span>Periodo scanner</span><label>Desde<input type="date" value={scannerFrom} onChange={event => setScannerFrom(event.target.value)} /></label><label>Hasta<input type="date" value={scannerTo} onChange={event => setScannerTo(event.target.value)} /></label><small>{scannerSymbols.length} símbolos visibles · hasta 1,500 velas por símbolo</small></div><div className="backtest-editor"><label>Storycard de eventos<textarea value={storycard} onChange={event => setStorycard(event.target.value)} spellCheck={false} /></label><div className="backtest-help"><strong>Estrategia de mechazos</strong><small>Long cuando cruza la extensión inferior con SSL positivo · Short cuando cruza la extensión superior con SSL negativo.</small><small>Balance {initialBalance.toFixed(2)} USDT · Riesgo {riskPercent.toFixed(2)}% · Leverage {leverage.toFixed(1)}x · SSL {sslPeriod ?? 9} · Mechazo {wickPeriod ?? 10} · SL {stopPercent ?? .2}% · TP {targetPercent ?? 4.1}%</small>{agentMessage && <p>{agentMessage}</p>}</div></div>{scannerRows.length > 0 && <div className="backtest-balance-table-wrap"><strong>Resultados independientes del scanner</strong><table className="backtest-balance-table"><thead><tr><th>Símbolo</th><th>Inicio</th><th>Final</th><th>Operaciones</th><th>Win rate</th><th>PNL neto</th><th>Drawdown</th><th>Costos</th></tr></thead><tbody>{scannerRows.map(row => <tr key={row.symbol}><td>{row.symbol}</td><td>{row.firstOperation ? formatTradeTime(row.firstOperation) : '—'}</td><td>{row.lastOperation ? formatTradeTime(row.lastOperation) : '—'}</td><td>{row.operations}</td><td>{row.winRate.toFixed(1)}%</td><td className={row.netPnl >= 0 ? 'value-positive' : 'value-negative'}>{row.netPnl >= 0 ? '+' : ''}{row.netPnl.toFixed(2)} USDT</td><td className="value-negative">-{row.maxDrawdown.toFixed(2)} USDT</td><td>{row.totalFees.toFixed(2)} USDT</td></tr>)}</tbody></table></div>}{wickReport && <><div className="backtest-summary"><div><small>Primera operación</small><strong>{formatTradeTime(firstTrade?.entryTime)}</strong></div><div><small>Última operación</small><strong>{formatTradeTime(lastTrade?.exitTime ?? lastTrade?.entryTime)}</strong></div><div><small>Balance inicial</small><strong>{wickReport.initialBalance.toFixed(2)} USDT</strong></div><div><small>Balance final</small><strong className={wickReport.finalBalance >= wickReport.initialBalance ? 'value-positive' : 'value-negative'}>{wickReport.finalBalance.toFixed(2)} USDT</strong></div><div><small>Velas</small><strong>{wickReport.bars}</strong></div><div><small>Señales</small><strong>{wickReport.signals}</strong></div><div><small>Operaciones</small><strong>{wickReport.operations}</strong></div><div><small>Win rate</small><strong>{wickReport.winRate.toFixed(1)}%</strong></div><div><small>PNL neto</small><strong className={wickReport.netPnl >= 0 ? 'value-positive' : 'value-negative'}>{wickReport.netPnl >= 0 ? '+' : ''}{wickReport.netPnl.toFixed(4)} USDT</strong></div><div><small>Costos totales</small><strong>{wickReport.totalFees.toFixed(4)} USDT</strong></div><div><small>Profit factor</small><strong>{Number.isFinite(wickReport.profitFactor) ? wickReport.profitFactor.toFixed(2) : '∞'}</strong></div><div><small>Drawdown</small><strong className="value-negative">-{wickReport.maxDrawdown.toFixed(4)} USDT</strong></div></div><div className="backtest-balance-table-wrap"><strong>Desarrollo del balance</strong><table className="backtest-balance-table"><thead><tr><th>#</th><th>Fecha</th><th>Lado</th><th>Intento</th><th>Balance antes</th><th>Riesgo</th><th>Margen</th><th>Notional</th><th>Costos</th><th>PNL neto</th><th>Balance después</th></tr></thead><tbody>{wickTrades.map((trade, index) => <tr key={trade.id}><td>{index + 1}</td><td>{formatTradeTime(trade.entryTime)}</td><td>{trade.side.toUpperCase()}</td><td>{trade.attemptNumber}</td><td>{trade.balanceBefore.toFixed(2)}</td><td>{trade.riskAmount.toFixed(2)}</td><td>{trade.margin.toFixed(2)}</td><td>{trade.notional.toFixed(2)}</td><td>{trade.fees.toFixed(4)}</td><td className={trade.pnl >= 0 ? 'value-positive' : 'value-negative'}>{trade.pnl >= 0 ? '+' : ''}{trade.pnl.toFixed(4)}</td><td>{trade.balanceAfter.toFixed(2)}</td></tr>)}</tbody></table></div><div className="backtest-event-list"><strong>Operaciones dibujadas · {wickTrades.length}</strong>{wickTrades.map(trade => <div key={trade.id}><span>{trade.side.toUpperCase()}</span><b className={trade.pnl >= 0 ? 'value-positive' : 'value-negative'}>{trade.reason} · {trade.pnl >= 0 ? '+' : ''}{trade.pnl.toFixed(4)} USDT</b></div>)}</div></>}{result && <><div className="backtest-summary"><div><small>Eventos</small><strong>{result.event_count}/{result.scheduled_event_count}</strong></div><div><small>Operaciones</small><strong>{stats?.operations ?? 0}</strong></div><div><small>Win rate</small><strong>{stats ? `${stats.win_rate.toFixed(1)}%` : '—'}</strong></div><div><small>PNL neto</small><strong className={(stats?.net_pnl ?? 0) >= 0 ? 'value-positive' : 'value-negative'}>{stats ? `${stats.net_pnl >= 0 ? '+' : ''}${stats.net_pnl.toFixed(2)} USDT` : '—'}</strong></div><div><small>Profit factor</small><strong>{stats ? (Number.isFinite(stats.profit_factor) ? stats.profit_factor.toFixed(2) : '∞') : '—'}</strong></div><div><small>Drawdown</small><strong className="value-negative">{stats ? `${stats.max_drawdown.toFixed(2)} USDT` : '—'}</strong></div></div><div className="backtest-event-list"><strong>Timeline de eventos</strong>{result.events.map(event => <div key={`${event.event_id}-${event.timestamp}`}><span>{new Date(event.timestamp * 1000).toLocaleString('es-MX')}</span><b>{event.action}</b><small>{event.price.toFixed(6)} · {event.position_id ?? 'sin posición'}</small></div>)}</div></>}</section>;
 }
