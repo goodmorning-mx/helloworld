@@ -43,6 +43,83 @@ async function fetchJson<T>(input: RequestInfo | URL, init?: RequestInit, retrie
 const MAX_ENTRY_RENDER_BARS = 10080;
 const MAX_CONTEXT_RENDER_BARS = 180;
 const INITIAL_ENTRY_BARS = 240;
+
+type TrackerVirtualOperation = {
+  id: string;
+  side: 'long' | 'short';
+  level: 'H1' | 'H2' | 'L1' | 'L2';
+  start: { time: number; price: number };
+  end: { time: number; price: number };
+  stop: { time: number; price: number };
+  target: { time: number; price: number };
+  closed: boolean;
+  closeReason?: 'TP' | 'SL';
+  status: 'OPEN' | 'CLOSED - WIN' | 'CLOSED - FAILED';
+  pnl: number;
+  notional: number;
+};
+
+function runTrackerVisualSimulation(
+  bars: Array<{ time: number; open: number; high: number; low: number; close: number }>,
+  trackerPeriod: number,
+  stopPercent: number,
+  targetPercent: number,
+  initialBalance: number,
+  riskPercent: number,
+  leverage: number,
+): TrackerVirtualOperation[] {
+  const closedBars = bars.slice(0, -1);
+  const levels = calculateTrackerLevels(closedBars, trackerPeriod);
+  const operations: TrackerVirtualOperation[] = [];
+  let openOperation: TrackerVirtualOperation | null = null;
+  let balance = Math.max(0, initialBalance);
+  const stopDistance = Math.max(Math.abs(stopPercent) / 100, 0.000001);
+  const targetDistance = Math.abs(targetPercent) / 100;
+  const makeSignal = (index: number) => {
+    const bar = closedBars[index];
+    const level = levels[index];
+    if (!level) return null;
+    if (bar.close >= level.h1 && bar.close >= level.h2) return { side: 'short' as const, level: 'H2' as const };
+    if (bar.close >= level.h1 && bar.close < level.h2) return { side: 'short' as const, level: 'H1' as const };
+    if (bar.close <= level.l1 && bar.close > level.l2) return { side: 'long' as const, level: 'L1' as const };
+    if (bar.close <= level.l2 && bar.close <= level.l1) return { side: 'long' as const, level: 'L2' as const };
+    return null;
+  };
+  for (let index = Math.max(1, Math.round(trackerPeriod)); index < closedBars.length; index += 1) {
+    const bar = closedBars[index];
+    if (openOperation) {
+      const hitTarget = openOperation.side === 'long' ? bar.close >= openOperation.target.price : bar.close <= openOperation.target.price;
+      const hitStop = openOperation.side === 'long' ? bar.close <= openOperation.stop.price : bar.close >= openOperation.stop.price;
+      if (hitTarget || hitStop) {
+        const reason: 'TP' | 'SL' = hitStop ? 'SL' : 'TP';
+        const exitPrice = reason === 'TP' ? openOperation.target.price : openOperation.stop.price;
+        const direction = openOperation.side === 'long' ? 1 : -1;
+        const grossPnl = ((exitPrice - openOperation.start.price) / openOperation.start.price) * direction * openOperation.notional;
+        const pnl = grossPnl - tradingCosts('binance', openOperation.notional).total;
+        balance = Math.max(0, balance + pnl);
+        openOperation = { ...openOperation, end: { time: Number(bar.time), price: exitPrice }, closed: true, closeReason: reason, status: reason === 'TP' ? 'CLOSED - WIN' : 'CLOSED - FAILED', pnl };
+        operations.push(openOperation);
+        openOperation = null;
+        // A close is terminal for this candle; never reverse/open on it.
+        continue;
+      }
+      const currentOperation: TrackerVirtualOperation = openOperation;
+      openOperation = { ...currentOperation, end: { time: Number(bar.time), price: bar.close } };
+      continue;
+    }
+    const signal = makeSignal(index);
+    if (!signal || !(bar.close > 0)) continue;
+    const riskAmount = balance * Math.max(0, riskPercent) / 100;
+    const notional = Math.min(riskAmount / stopDistance, balance * Math.max(1, leverage));
+    if (!(notional > 0)) continue;
+    const direction = signal.side === 'long' ? 1 : -1;
+    const stopPrice = bar.close * (1 - direction * stopDistance);
+    const targetPrice = bar.close * (1 + direction * targetDistance);
+    openOperation = { id: `tracker-visual-${Number(bar.time)}-${signal.side}`, side: signal.side, level: signal.level, start: { time: Number(bar.time), price: bar.close }, end: { time: Number(bar.time), price: bar.close }, stop: { time: Number(bar.time), price: stopPrice }, target: { time: Number(bar.time), price: targetPrice }, closed: false, status: 'OPEN', pnl: 0, notional };
+  }
+  if (openOperation) operations.push(openOperation);
+  return operations;
+}
 const INITIAL_CONTEXT_BARS = 180;
 const MAX_CHART_HISTORY_SECONDS = 2 * 86400;
 const FIXED_BINANCE_STOP_PERCENT = 1.00;
@@ -877,6 +954,7 @@ function Workspace() {
   const [showTracker, setShowTracker] = useState(() => localStorage.getItem('helloworld-indicator-tracker') === 'true');
   const [showWickExtensions, setShowWickExtensions] = useState(() => localStorage.getItem('helloworld-indicator-wick-extensions') === 'true');
   const [wickBacktestTrades, setWickBacktestTrades] = useState<WickBacktestTrade[]>([]);
+  const [trackerVirtualOperations, setTrackerVirtualOperations] = useState<TrackerVirtualOperation[]>([]);
   const [showHeikinAshi, setShowHeikinAshi] = useState(() => localStorage.getItem('helloworld-heikin-ashi') === 'true');
   const [rsiPeriod, setRsiPeriod] = useState(() => Number(localStorage.getItem('helloworld-rsi-period') ?? 14) || 14);
   const [rsiLowBand, setRsiLowBand] = useState(() => Number(localStorage.getItem('helloworld-rsi-low-band') ?? 30) || 30);
@@ -2031,7 +2109,7 @@ function Workspace() {
     const bars = renderBars(rawBars, canvas === 'entry' ? MAX_ENTRY_RENDER_BARS : MAX_CONTEXT_RENDER_BARS);
     const width = canvas === 'entry' ? stageSize.width : overviewSize.width;
     const height = canvas === 'entry' ? stageSize.height : overviewSize.height;
-    if (!chart || !candles || !bars.length || (!showRsi && !showSsl && !showWickExtensions && !showSevenAmMarkers)) return null;
+    if (!chart || !candles || !bars.length || (!showRsi && !showSsl && !showTracker && !showWickExtensions && !showSevenAmMarkers)) return null;
     const rsi = showRsi ? calculateRsi(bars, rsiPeriod) : [];
     const ssl = showSsl ? calculateSslChannel(bars, sslPeriod) : { up: [], down: [], bullish: [] };
     // Wick direction is always filtered by SSL, even when the SSL lines are
@@ -2043,6 +2121,7 @@ function Workspace() {
     const wickBars = bars.slice(wickStart);
     const wickExtensions = showWickExtensions ? calculateWickExtensions(wickBars, wickLookback, wickMultiplier) : { long: [], short: [] };
     const wickVisibleStart = Math.max(0, bars.length - wickDisplayPeriod);
+    const trackerLevels = showTracker ? calculateTrackerLevels(bars, trackerPeriod) : [];
     const sevenAmWindow = calculateDailyTimeWindow(bars, SESSION_TIMEZONE);
     const toPoint = (value: number | null, index: number) => {
       if (value === null || value === undefined) return null;
@@ -2079,6 +2158,24 @@ function Workspace() {
         {shortPoint && shortCrossed && wickSsl.bullish[index] === false && wickSsl.regimeAge[index] >= 2 && wickSsl.regimeAge[index] <= sslRegimeWindow && <circle cx={shortPoint.x} cy={shortPoint.y} r="4.5" className="wick-extension-marker wick-extension-short" pointerEvents="all" onPointerEnter={() => setIndicatorHover({ canvas, x: shortPoint.x, y: shortPoint.y, label: `Short ${wickMultiplier.toFixed(1)}x · SSL N${wickSsl.regimeAge[index]} · ${timeLabel}` })} onPointerLeave={() => setIndicatorHover(null)}><title>Short: mecha cruzó el nivel · SSL negativo · régimen N{wickSsl.regimeAge[index]}</title></circle>}
       </g>;
     });
+    const trackerMarkers = canvas === 'entry' && showTracker ? bars.map((bar, index) => {
+      if (index >= bars.length - 1) return null;
+      const level = trackerLevels[index];
+      if (!level) return null;
+      const signal = bar.close >= level.h1 && bar.close >= level.h2
+        ? { side: 'SHORT', level: 'H2' }
+        : bar.close >= level.h1 && bar.close < level.h2
+          ? { side: 'SHORT', level: 'H1' }
+          : bar.close <= level.l1 && bar.close > level.l2
+            ? { side: 'LONG', level: 'L1' }
+            : bar.close <= level.l2 && bar.close <= level.l1
+              ? { side: 'LONG', level: 'L2' }
+              : null;
+      if (!signal) return null;
+      const point = toPoint(bar.close, index);
+      if (!point) return null;
+      return <circle key={`tracker-signal-${bar.time}`} cx={point.x} cy={point.y} r="5" className={`tracker-signal tracker-signal-${signal.side.toLowerCase()}`}><title>Tracker {signal.side} · {signal.level} · cierre {formatPaperPrice(bar.close)}</title></circle>;
+    }) : [];
     return <g className={`price-indicators price-indicators-${canvas}`}>
       {showSevenAmMarkers && <g className="seven-am-marker-layer">{bars.map((bar, index) => {
         if (!sevenAmWindow[index]) return null;
@@ -2087,6 +2184,7 @@ function Workspace() {
       })}</g>}
       {showSsl && <><path d={path(ssl.up)} className="ssl-channel ssl-channel-up" /><path d={path(ssl.down)} className="ssl-channel ssl-channel-down" /></>}
       {showRsi && <g className="rsi-markers">{rsiMarkers}</g>}
+      {showTracker && <g className="tracker-signal-layer">{trackerMarkers}</g>}
       {showWickExtensions && <g className="wick-extension-layer">{wickMarkers}</g>}
       {indicatorHover?.canvas === canvas && <g className="indicator-hover-label" pointerEvents="none"><rect x={Math.max(4, Math.min(width - 160, indicatorHover.x + 10))} y={Math.max(8, Math.min(height - 32, indicatorHover.y - 28))} width="150" height="24" rx="4" /><text x={Math.max(14, Math.min(width - 150, indicatorHover.x + 20))} y={Math.max(24, Math.min(height - 16, indicatorHover.y - 12))}>{indicatorHover.label}</text></g>}
     </g>;
@@ -2929,6 +3027,14 @@ function Workspace() {
     const tpAmount = quantity * Math.abs(target - entry);
     return { side, entry, stop, target, targetPercent, quantity, notional, fees, leverage, marginMultiplier, slAmount, tpAmount, margin: leverage > 0 ? notional / leverage : 0 };
   }) : [];
+  useEffect(() => {
+    if (!showTracker) {
+      setTrackerVirtualOperations([]);
+      return;
+    }
+    const source = renderBars(candleBarsRef.current, Math.max(300, Math.round(trackerPeriod) + 1));
+    setTrackerVirtualOperations(runTrackerVisualSimulation(source, trackerPeriod, binanceStopPercent, binanceTargetPercent, paperInitialBalance, paperRiskPercent, paperLeverage));
+  }, [showTracker, trackerPeriod, binanceStopPercent, binanceTargetPercent, paperInitialBalance, paperRiskPercent, paperLeverage, symbol, trackerRevision]);
   const backtestVisualDrawings: Drawing[] = wickBacktestTrades.map(trade => ({
     id: trade.id,
     symbol,
@@ -2936,14 +3042,29 @@ function Workspace() {
     paper: false,
     backtest: true,
     closed: true,
-    status: trade.pnl >= 0 ? 'CLOSED - WIN' : 'CLOSED - FAILED',
+    status: (trade.pnl >= 0 ? 'CLOSED - WIN' : 'CLOSED - FAILED') as Drawing['status'],
     start: { time: trade.entryTime as UTCTimestamp, price: trade.entryPrice },
     end: { time: trade.exitTime as UTCTimestamp, price: trade.exitPrice },
     stop: { time: trade.exitTime as UTCTimestamp, price: trade.stopPrice },
     target: { time: trade.exitTime as UTCTimestamp, price: trade.targetPrice },
     pnl: trade.pnl,
     notional: trade.notional,
-  }));
+  })).concat(trackerVirtualOperations.map(operation => ({
+    id: operation.id,
+    symbol,
+    type: operation.side,
+    paper: false,
+    backtest: true,
+    closed: operation.closed,
+    closeReason: operation.closeReason,
+    status: operation.status as Drawing['status'],
+    start: { time: operation.start.time as UTCTimestamp, price: operation.start.price },
+    end: { time: operation.end.time as UTCTimestamp, price: operation.end.price },
+    stop: { time: operation.end.time as UTCTimestamp, price: operation.stop.price },
+    target: { time: operation.end.time as UTCTimestamp, price: operation.target.price },
+    pnl: operation.pnl,
+    notional: operation.notional,
+  })));
   const renderOhlcOverlay = (hover: OhlcHover | null) => hover ? <div className="chart-ohlc-overlay" aria-label="Datos OHLC de la vela seleccionada"><span className="chart-ohlc-time">{chartTimeLabel(hover.time, timezone, true)}</span><span>O <b>{formatPaperPrice(hover.open)}</b></span><span>H <b className="chart-ohlc-high">{formatPaperPrice(hover.high)}</b></span><span>L <b className="chart-ohlc-low">{formatPaperPrice(hover.low)}</b></span><span>C <b>{formatPaperPrice(hover.close)}</b></span></div> : null;
   const chartStageView = <div ref={chartStage} className={`chart-stage ${tool ? 'drawing-mode' : ''}`} onPointerDownCapture={startDrawing} onPointerMoveCapture={updateDrawing} onPointerUpCapture={event => finishDrawingAndCapture(event, 'entry')} onPointerCancelCapture={() => { setDrawingStart(null); setDrawingEnd(null); setMoveStart(null); panStartRef.current = null; setResizeStart(null); setLassoStart(null); setLassoEnd(null); }}><div className="chart-viewport-snapshot" aria-label="Snapshot del viewport de entrada">X {entryViewportSnapshot.bars} · Futuro {entryViewportSnapshot.futureBars} · Y− {entryViewportSnapshot.yBelow}% · Y+ {entryViewportSnapshot.yAbove}%</div>
     {pendingBinanceTp && <div className="binance-tp-confirm" role="status"><span>Nuevo TP {pendingBinanceTp.symbol}: {formatPaperPrice(pendingBinanceTp.price)}</span><button type="button" onClick={() => void confirmBinanceTakeProfit()}>Confirmar TP</button><button type="button" onClick={() => { pendingBinanceTpRef.current = null; setPendingBinanceTp(null); }} aria-label="Cancelar cambio de TP">Cancelar</button></div>}{renderOhlcOverlay(entryOhlcHover)}
