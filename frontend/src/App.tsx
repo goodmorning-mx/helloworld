@@ -75,6 +75,15 @@ function runTrackerVisualSimulation(
   let balance = Math.max(0, initialBalance);
   const stopDistance = Math.max(Math.abs(stopPercent) / 100, 0.000001);
   const targetDistance = Math.abs(targetPercent) / 100;
+  const createOperation = (time: number, price: number, side: 'long' | 'short', level: TrackerVirtualOperation['level']) => {
+    const riskAmount = balance * Math.max(0, riskPercent) / 100;
+    const notional = Math.min(riskAmount / stopDistance, balance * Math.max(1, leverage));
+    if (!(notional > 0) || !(price > 0)) return null;
+    const direction = side === 'long' ? 1 : -1;
+    const stopPrice = price * (1 - direction * stopDistance);
+    const targetPrice = price * (1 + direction * targetDistance);
+    return { id: `tracker-visual-${time}-${side}-${operations.length}`, side, level, start: { time, price }, end: { time, price }, stop: { time, price: stopPrice }, target: { time, price: targetPrice }, closed: false, status: 'OPEN' as const, pnl: 0, notional };
+  };
   const makeSignal = (index: number) => {
     const bar = closedBars[index];
     const level = levels[index];
@@ -99,8 +108,13 @@ function runTrackerVisualSimulation(
         balance = Math.max(0, balance + pnl);
         openOperation = { ...openOperation, end: { time: Number(bar.time), price: exitPrice }, closed: true, closeReason: reason, status: reason === 'TP' ? 'CLOSED - WIN' : 'CLOSED - FAILED', pnl };
         operations.push(openOperation);
-        openOperation = null;
-        // A close is terminal for this candle; never reverse/open on it.
+        if (reason === 'TP') {
+          // A WIN reverses immediately at this candle's closing price. The
+          // next position is still virtual and remains the only open one.
+          openOperation = createOperation(Number(bar.time), exitPrice, openOperation.side === 'long' ? 'short' : 'long', openOperation.level);
+        } else {
+          openOperation = null;
+        }
         continue;
       }
       const currentOperation: TrackerVirtualOperation = openOperation;
@@ -109,13 +123,7 @@ function runTrackerVisualSimulation(
     }
     const signal = makeSignal(index);
     if (!signal || !(bar.close > 0)) continue;
-    const riskAmount = balance * Math.max(0, riskPercent) / 100;
-    const notional = Math.min(riskAmount / stopDistance, balance * Math.max(1, leverage));
-    if (!(notional > 0)) continue;
-    const direction = signal.side === 'long' ? 1 : -1;
-    const stopPrice = bar.close * (1 - direction * stopDistance);
-    const targetPrice = bar.close * (1 + direction * targetDistance);
-    openOperation = { id: `tracker-visual-${Number(bar.time)}-${signal.side}`, side: signal.side, level: signal.level, start: { time: Number(bar.time), price: bar.close }, end: { time: Number(bar.time), price: bar.close }, stop: { time: Number(bar.time), price: stopPrice }, target: { time: Number(bar.time), price: targetPrice }, closed: false, status: 'OPEN', pnl: 0, notional };
+    openOperation = createOperation(Number(bar.time), bar.close, signal.side, signal.level);
   }
   if (openOperation) operations.push(openOperation);
   return operations;
