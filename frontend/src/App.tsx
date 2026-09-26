@@ -97,12 +97,15 @@ function runTrackerVisualSimulation(
   for (let index = Math.max(1, Math.round(trackerPeriod)); index < closedBars.length; index += 1) {
     const bar = closedBars[index];
     if (openOperation) {
-      const hitTarget = openOperation.side === 'long' ? bar.close >= openOperation.target.price : bar.close <= openOperation.target.price;
-      const hitStop = openOperation.side === 'long' ? bar.close <= openOperation.stop.price : bar.close >= openOperation.stop.price;
+      const direction = openOperation.side === 'long' ? 1 : -1;
+      const closeRoe = ((bar.close - openOperation.start.price) / openOperation.start.price) * direction;
+      const hitTarget = closeRoe >= targetDistance;
+      const hitStop = closeRoe <= -stopDistance;
       if (hitTarget || hitStop) {
         const reason: 'TP' | 'SL' = hitStop ? 'SL' : 'TP';
-        const exitPrice = reason === 'TP' ? openOperation.target.price : openOperation.stop.price;
-        const direction = openOperation.side === 'long' ? 1 : -1;
+        // The operation is filled and closed at the completed candle close,
+        // never at the projected intrabar SL/TP level.
+        const exitPrice = bar.close;
         const grossPnl = ((exitPrice - openOperation.start.price) / openOperation.start.price) * direction * openOperation.notional;
         const pnl = grossPnl - tradingCosts('binance', openOperation.notional).total;
         balance = Math.max(0, balance + pnl);
