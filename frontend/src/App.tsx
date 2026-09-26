@@ -2026,6 +2026,21 @@ function Workspace() {
         { x: right, y: stop.y, index, endpoint: 'stop' as const, role: 'stop' as const },
       ];
     }
+    if (drawing.backtest && drawing.target) {
+      const target = drawing.closed && drawing.status === 'CLOSED - WIN'
+        ? end
+        : screenPoint(drawing.target, canvas);
+      const visualStop = drawing.closed && drawing.status === 'CLOSED - FAILED'
+        ? end
+        : stop;
+      if (!target || !visualStop) return [];
+      return [
+        { x: left, y: target.y, index, endpoint: 'target' as const, role: 'target' as const },
+        { x: right, y: target.y, index, endpoint: 'target' as const, role: 'target' as const },
+        { x: left, y: visualStop.y, index, endpoint: 'stop' as const, role: 'stop' as const },
+        { x: right, y: visualStop.y, index, endpoint: 'stop' as const, role: 'stop' as const },
+      ];
+    }
     return [
       { x: left, y: end.y, index, endpoint: 'end' as const, role: 'target' as const },
       { x: right, y: end.y, index, endpoint: 'end' as const, role: 'target' as const },
