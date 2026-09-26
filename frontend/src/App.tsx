@@ -2967,6 +2967,8 @@ function Workspace() {
     const targetPrice = drawing.target?.price ?? drawing.end.price;
     const targetPoint = drawing.target ? screenPoint(drawing.target, canvas) : end;
     if (!targetPoint) return null;
+    const winExitPoint = drawing.backtest && drawing.closed && drawing.status === 'CLOSED - WIN' ? end : targetPoint;
+    const failedExitPoint = drawing.backtest && drawing.closed && drawing.status === 'CLOSED - FAILED' ? end : stop;
     const targetPercent = ((targetPrice - drawing.start.price) / drawing.start.price) * 100 * (drawing.type === 'long' ? 1 : -1);
     const riskPercent = ((stopPrice - drawing.start.price) / drawing.start.price) * 100 * (drawing.type === 'long' ? 1 : -1);
     const riskDistance = Math.abs(drawing.start.price - stopPrice);
@@ -2991,10 +2993,10 @@ function Workspace() {
     const rr = riskDistance > 0 ? rewardDistance / riskDistance : 0;
     const targetLabel = `${targetPercent >= 0 ? '+' : ''}${targetPercent.toFixed(8)}%`;
     const riskLabel = `${riskPercent >= 0 ? '+' : ''}${riskPercent.toFixed(8)}%`;
-    const targetTop = Math.min(start.y, targetPoint.y);
-    const targetHeight = Math.abs(start.y - targetPoint.y);
-    const stopTop = Math.min(start.y, stop.y);
-    const stopHeight = Math.abs(start.y - stop.y);
+    const targetTop = Math.min(start.y, winExitPoint.y);
+    const targetHeight = Math.abs(start.y - winExitPoint.y);
+    const stopTop = Math.min(start.y, failedExitPoint.y);
+    const stopHeight = Math.abs(start.y - failedExitPoint.y);
     const paperClass = drawing.paper ? `paper-position ${drawing.real ? 'real-position' : ''} ${drawing.type === 'long' ? 'paper-long' : 'paper-short'}` : '';
     const paperStatusLabel = drawing.closed ? (drawing.status === 'CLOSED - WIN' ? '✓ Win' : '✕ Failed') : 'Open';
     const paperStatusClass = drawing.closed ? (drawing.status === 'CLOSED - WIN' ? 'paper-operation-win' : 'paper-operation-failed') : 'paper-operation-open';
