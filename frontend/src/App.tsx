@@ -116,7 +116,12 @@ function runTrackerVisualSimulation(
           // next position is still virtual and remains the only open one.
           openOperation = createOperation(Number(bar.time), exitPrice, openOperation.side === 'long' ? 'short' : 'long', openOperation.level);
         } else {
-          openOperation = null;
+          // After a FAIL, evaluate this same closed candle with Tracker. The
+          // replacement is not forced to be opposite; Tracker decides its side.
+          const retrySignal = makeSignal(index);
+          openOperation = retrySignal
+            ? createOperation(Number(bar.time), exitPrice, retrySignal.side, retrySignal.level)
+            : null;
         }
         continue;
       }
