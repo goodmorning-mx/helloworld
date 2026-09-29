@@ -3295,6 +3295,7 @@ function Workspace() {
     return { ...point, x, y };
   });
   const trackerEquityPointsSvg = trackerEquityCoordinates.map(point => `${point.x.toFixed(2)},${point.y.toFixed(2)}`).join(' ');
+  const [trackerSummarySort, setTrackerSummarySort] = useState<{ key: string; direction: 'asc' | 'desc' }>({ key: 'index', direction: 'asc' });
   useEffect(() => {
     const equityWrap = document.querySelector<HTMLElement>('.tracker-equity-wrap');
     if (!showTracker || !equityWrap) return;
@@ -3308,11 +3309,20 @@ function Workspace() {
     scroll.className = 'tracker-operations-table-scroll';
     const table = document.createElement('table');
     table.className = 'tracker-operations-table';
-    const headers = ['#', 'Lado', 'Nivel', 'MAXROE', 'REALMAXROE', 'MINROE', 'REALMINROE', 'Resultado'];
+    const headers = [['index', '#'], ['side', 'Lado'], ['level', 'Nivel'], ['maxroe', 'MAXROE'], ['realmaxroe', 'REALMAXROE'], ['minroe', 'MINROE'], ['realminroe', 'REALMINROE'], ['result', 'WIN/FAIL · RESULTADO']] as const;
     const head = table.createTHead().insertRow();
-    headers.forEach(label => { const cell = document.createElement('th'); cell.textContent = label; head.appendChild(cell); });
+    headers.forEach(([key, label]) => { const cell = document.createElement('th'); const button = document.createElement('button'); button.type = 'button'; button.className = 'tracker-sort-button'; button.textContent = `${label}${trackerSummarySort.key === key ? trackerSummarySort.direction === 'desc' ? ' ↓' : ' ↑' : ' ↕'}`; button.title = `Ordenar ${label} ${trackerSummarySort.key === key && trackerSummarySort.direction === 'desc' ? 'de menor a mayor' : 'de mayor a menor'}`; button.addEventListener('click', () => setTrackerSummarySort(current => current.key === key ? { key, direction: current.direction === 'desc' ? 'asc' : 'desc' } : { key, direction: 'desc' })); cell.appendChild(button); head.appendChild(cell); });
+    const sortedOperations = [...trackerClosedOperations].sort((left, right) => {
+      const pointValue = (point: TrackerExtremePoint) => point.roePercent;
+      const value = (operation: TrackerVirtualOperation, index: number): string | number => keyValue(operation, index);
+      const keyValue = (operation: TrackerVirtualOperation, index: number): string | number => trackerSummarySort.key === 'index' ? index : trackerSummarySort.key === 'side' ? operation.side : trackerSummarySort.key === 'level' ? operation.level : trackerSummarySort.key === 'maxroe' ? pointValue(operation.maxRoe) : trackerSummarySort.key === 'realmaxroe' ? pointValue(operation.realMaxRoe) : trackerSummarySort.key === 'minroe' ? pointValue(operation.minRoe) : trackerSummarySort.key === 'realminroe' ? pointValue(operation.realMinRoe) : operation.resultRoePercent;
+      const leftValue = value(left, trackerClosedOperations.indexOf(left));
+      const rightValue = value(right, trackerClosedOperations.indexOf(right));
+      const comparison = typeof leftValue === 'number' && typeof rightValue === 'number' ? leftValue - rightValue : String(leftValue).localeCompare(String(rightValue));
+      return (trackerSummarySort.direction === 'desc' ? -1 : 1) * comparison;
+    });
     const body = table.createTBody();
-    trackerClosedOperations.forEach((operation, index) => {
+    sortedOperations.forEach((operation, index) => {
       const row = body.insertRow();
       row.className = operation.status === 'CLOSED - WIN' ? 'tracker-operation-row-win' : 'tracker-operation-row-failed';
       const pointLabel = (point: TrackerExtremePoint) => `${point.roePercent >= 0 ? '+' : ''}${point.roePercent.toFixed(2)}% · ${point.pnlUsd >= 0 ? '+' : ''}${point.pnlUsd.toFixed(4)} USDT`;
