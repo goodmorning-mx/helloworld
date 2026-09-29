@@ -85,6 +85,14 @@
 .tracker-operation-tooltip { display: none; }
 .tracker-operation-summary-tooltip rect { fill: #0b1118f5; stroke: #f5b84b; stroke-width: 1; }
 .tracker-operation-summary-tooltip text { fill: #e8edf5; font: 10px 'DM Mono', monospace; }
+.tracker-operation-summary-tooltip { display: none; }
+.tracker-operation-result-tooltip rect { stroke-width: 1.2; }
+.tracker-operation-result-tooltip text { fill: #e8edf5; font: 10px 'DM Mono', monospace; }
+.tracker-summary-win rect { fill: #0b2118f5; stroke: #00ff87; }
+.tracker-summary-win text { fill: #b9ffd9; }
+.tracker-summary-failed rect { fill: #260d13f5; stroke: #ff1744; }
+.tracker-summary-failed text { fill: #ffd0d8; }
+.tracker-summary-open rect { fill: #17130af5; stroke: #f5b84b; }
 .paper-operation-label { font: 500 12px 'DM Mono', monospace; letter-spacing: .03em; }.paper-operation-open { fill: #d5dae2; }.paper-long .paper-operation-win { fill: #64d39a; }.paper-short .paper-operation-win { fill: #64d39a; }.paper-long .paper-operation-failed { fill: #f27e7e; }.paper-short .paper-operation-failed { fill: #f27e7e; }.paper-long .position-entry { stroke: #64d39a; }.paper-short .position-entry { stroke: #f27e7e; }
 .paper-current-price { stroke: #e8edf5; stroke-width: 2; stroke-dasharray: 2 3; }.real-position .position-entry { stroke: #60a5fa; }.real-position .paper-operation-label { fill: #60a5fa; }.paper-pnl-label { fill: #e8edf5; font: 700 13px 'DM Mono', monospace; }.position-status { display: inline-flex; align-items: center; gap: .35rem; }.position-status i { width: 6px; height: 6px; border-radius: 50%; background: currentColor; }.position-closed { color: #89909b; }.position-closed i { background: #89909b; }
 .paper-target-label, .paper-stop-label, .paper-current-label { font: 700 12px 'DM Mono', monospace; paint-order: stroke; stroke: #080a0d; stroke-width: 3px; stroke-linejoin: round; }.paper-target-label { fill: #60a5fa; }.paper-stop-label { fill: #f87171; }.paper-current-profit { fill: #64d39a; }.paper-current-loss { fill: #f27e7e; }
