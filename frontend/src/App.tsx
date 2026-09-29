@@ -44,6 +44,7 @@ const MAX_ENTRY_RENDER_BARS = 10080;
 const MAX_CONTEXT_RENDER_BARS = 180;
 const INITIAL_ENTRY_BARS = 240;
 
+type TrackerExtremePoint = { time: number; price: number; roePercent: number; pnlUsd: number };
 type TrackerVirtualOperation = {
   id: string;
   side: 'long' | 'short';
@@ -56,7 +57,12 @@ type TrackerVirtualOperation = {
   closeReason?: 'TP' | 'SL';
   status: 'OPEN' | 'CLOSED - WIN' | 'CLOSED - FAILED';
   pnl: number;
+  resultRoePercent: number;
   notional: number;
+  maxRoe: TrackerExtremePoint;
+  realMaxRoe: TrackerExtremePoint;
+  minRoe: TrackerExtremePoint;
+  realMinRoe: TrackerExtremePoint;
 };
 
 function runTrackerVisualSimulation(
@@ -75,6 +81,11 @@ function runTrackerVisualSimulation(
   let balance = Math.max(0, initialBalance);
   const stopDistance = Math.max(Math.abs(stopPercent) / 100, 0.000001);
   const targetDistance = Math.abs(targetPercent) / 100;
+  const extremePoint = (time: number, price: number, entry: number, side: 'long' | 'short', notional: number) => {
+    const direction = side === 'long' ? 1 : -1;
+    const move = entry > 0 ? ((price - entry) / entry) * direction : 0;
+    return { time, price, roePercent: move * Math.max(1, leverage) * 100, pnlUsd: move * notional };
+  };
   const createOperation = (time: number, price: number, side: 'long' | 'short', level: TrackerVirtualOperation['level']) => {
     const riskAmount = balance * Math.max(0, riskPercent) / 100;
     const notional = Math.min(riskAmount / stopDistance, balance * Math.max(1, leverage));
@@ -82,7 +93,23 @@ function runTrackerVisualSimulation(
     const direction = side === 'long' ? 1 : -1;
     const stopPrice = price * (1 - direction * stopDistance);
     const targetPrice = price * (1 + direction * targetDistance);
-    return { id: `tracker-visual-${time}-${side}-${operations.length}`, side, level, start: { time, price }, end: { time, price }, stop: { time, price: stopPrice }, target: { time, price: targetPrice }, closed: false, status: 'OPEN' as const, pnl: 0, notional };
+    const point = extremePoint(time, price, price, side, notional);
+    return { id: `tracker-visual-${time}-${side}-${operations.length}`, side, level, start: { time, price }, end: { time, price }, stop: { time, price: stopPrice }, target: { time, price: targetPrice }, closed: false, status: 'OPEN' as const, pnl: 0, resultRoePercent: 0, notional, maxRoe: point, realMaxRoe: point, minRoe: point, realMinRoe: point };
+  };
+  const updateExtremes = (operation: TrackerVirtualOperation, bar: { time: number; high: number; low: number; close: number }) => {
+    const candidates = [
+      { key: 'maxRoe' as const, point: extremePoint(Number(bar.time), operation.side === 'long' ? bar.high : bar.low, operation.start.price, operation.side, operation.notional), favorable: true },
+      { key: 'realMaxRoe' as const, point: extremePoint(Number(bar.time), bar.close, operation.start.price, operation.side, operation.notional), favorable: true },
+      { key: 'minRoe' as const, point: extremePoint(Number(bar.time), operation.side === 'long' ? bar.low : bar.high, operation.start.price, operation.side, operation.notional), favorable: false },
+      { key: 'realMinRoe' as const, point: extremePoint(Number(bar.time), bar.close, operation.start.price, operation.side, operation.notional), favorable: false },
+    ];
+    let next = { ...operation };
+    candidates.forEach(candidate => {
+      const current = next[candidate.key];
+      const improves = candidate.favorable ? candidate.point.roePercent > current.roePercent : candidate.point.roePercent < current.roePercent;
+      if (improves) next = { ...next, [candidate.key]: candidate.point };
+    });
+    return next;
   };
   const makeSignal = (index: number) => {
     const bar = closedBars[index];
@@ -97,6 +124,7 @@ function runTrackerVisualSimulation(
   for (let index = Math.max(1, Math.round(trackerPeriod)); index < closedBars.length; index += 1) {
     const bar = closedBars[index];
     if (openOperation) {
+      openOperation = updateExtremes(openOperation, bar);
       const direction = openOperation.side === 'long' ? 1 : -1;
       const closeRoe = ((bar.close - openOperation.start.price) / openOperation.start.price) * direction;
       const hitTarget = closeRoe >= targetDistance;
@@ -109,7 +137,7 @@ function runTrackerVisualSimulation(
         const grossPnl = ((exitPrice - openOperation.start.price) / openOperation.start.price) * direction * openOperation.notional;
         const pnl = grossPnl - tradingCosts('binance', openOperation.notional).total;
         balance = Math.max(0, balance + pnl);
-        openOperation = { ...openOperation, end: { time: Number(bar.time), price: exitPrice }, closed: true, closeReason: reason, status: reason === 'TP' ? 'CLOSED - WIN' : 'CLOSED - FAILED', pnl };
+        openOperation = { ...openOperation, end: { time: Number(bar.time), price: exitPrice }, closed: true, closeReason: reason, status: reason === 'TP' ? 'CLOSED - WIN' : 'CLOSED - FAILED', pnl, resultRoePercent: closeRoe * Math.max(1, leverage) * 100 };
         operations.push(openOperation);
         if (reason === 'TP') {
           // A WIN reverses immediately at this candle's closing price. The
@@ -1038,7 +1066,7 @@ function Workspace() {
   };
   type ChartPoint = { time: UTCTimestamp; price: number };
   type ChartCanvas = 'entry' | 'context';
-  type Drawing = { id?: string; symbol?: string; type: 'line' | 'ruler' | 'long' | 'short' | 'zoom'; start: ChartPoint; end: ChartPoint; stop?: ChartPoint; target?: ChartPoint; chart?: ChartCanvas; paper?: boolean; real?: boolean; backtest?: boolean; closed?: boolean; closeReason?: 'TP' | 'SL' | 'MANUAL'; status?: 'OPEN' | 'CLOSED - WIN' | 'CLOSED - FAILED'; riskPercent?: number; quantity?: number; notional?: number; margin?: number; pnl?: number };
+  type Drawing = { id?: string; symbol?: string; type: 'line' | 'ruler' | 'long' | 'short' | 'zoom'; start: ChartPoint; end: ChartPoint; stop?: ChartPoint; target?: ChartPoint; chart?: ChartCanvas; paper?: boolean; real?: boolean; backtest?: boolean; closed?: boolean; closeReason?: 'TP' | 'SL' | 'MANUAL'; status?: 'OPEN' | 'CLOSED - WIN' | 'CLOSED - FAILED'; riskPercent?: number; quantity?: number; notional?: number; margin?: number; pnl?: number; resultRoePercent?: number; maxRoe?: TrackerExtremePoint; realMaxRoe?: TrackerExtremePoint; minRoe?: TrackerExtremePoint; realMinRoe?: TrackerExtremePoint };
   const [drawings, setDrawings] = useState<Drawing[]>([]);
   const [chartEventRules, setChartEventRules] = useState<ChartEventRule[]>(() => {
     try {
@@ -1073,6 +1101,7 @@ function Workspace() {
   const [lassoStart, setLassoStart] = useState<{ x: number; y: number } | null>(null);
   const [lassoEnd, setLassoEnd] = useState<{ x: number; y: number } | null>(null);
   const [drawingCanvas, setDrawingCanvas] = useState<ChartCanvas>('entry');
+  const [trackerOperationHover, setTrackerOperationHover] = useState<{ id: string; x: number; y: number; label: string; roePercent: number; pnlUsd: number; time: number } | null>(null);
   const [moveStart, setMoveStart] = useState<{ index: number; point: ChartPoint; drawing: Drawing } | null>(null);
   const panStartRef = useRef<{ canvas: ChartCanvas; x: number; y: number; xLogicalPerPixel: number; startPrice: number; xRange: { from: number; to: number }; priceRange: { from: number; to: number } } | null>(null);
   const [mobileSheet, setMobileSheet] = useState<'indicators' | 'tools' | null>(null);
@@ -2956,7 +2985,7 @@ function Workspace() {
     const end = screenPoint(drawing.end, canvas);
     if (!start || !end) return null;
     const handles = drawingHandles(drawing, typeof index === 'number' ? index : -1, canvas);
-    const handleNodes = handles.filter(handle => !drawing.paper || handle.endpoint === 'target' || (handle.endpoint === 'stop' && !drawing.real)).map((handle, handleIndex) => <circle key={handleIndex} cx={handle.x} cy={handle.y} r="7" className={`drawing-handle ${handle.role === 'stop' ? 'handle-stop' : handle.role === 'target' ? 'handle-target' : drawing.type === 'ruler' ? 'handle-ruler' : ''}`} />);
+    let handleNodes = handles.filter(handle => !drawing.paper || handle.endpoint === 'target' || (handle.endpoint === 'stop' && !drawing.real)).map((handle, handleIndex) => <circle key={handleIndex} cx={handle.x} cy={handle.y} r="7" className={`drawing-handle ${handle.role === 'stop' ? 'handle-stop' : handle.role === 'target' ? 'handle-target' : drawing.type === 'ruler' ? 'handle-ruler' : ''}`} />);
     const pricePercent = ((drawing.end.price - drawing.start.price) / drawing.start.price) * 100;
     const selectedClass = typeof index === 'number' && (selectedDrawing === index || selectedDrawings.includes(index)) ? 'drawing-selected' : undefined;
     if (drawing.type === 'line') return <g key={index} className={selectedClass}><line x1={start.x} y1={start.y} x2={end.x} y2={end.y} className="drawing-line" /><text x={(start.x + end.x) / 2} y={(start.y + end.y) / 2 - 8} className="drawing-label">{pricePercent >= 0 ? '+' : ''}{pricePercent.toFixed(2)}%</text>{handleNodes}</g>;
@@ -3022,6 +3051,29 @@ function Workspace() {
     const paperStatusLabel = drawing.closed ? (drawing.status === 'CLOSED - WIN' ? '✓ Win' : '✕ Failed') : 'Open';
     const paperStatusClass = drawing.closed ? (drawing.status === 'CLOSED - WIN' ? 'paper-operation-win' : 'paper-operation-failed') : 'paper-operation-open';
     const resultLabelClass = drawing.status === 'CLOSED - WIN' ? 'tracker-result-win' : drawing.status === 'CLOSED - FAILED' ? 'tracker-result-failed' : '';
+    const trackerExtremeMarkers = drawing.backtest && canvas === 'entry'
+      ? ([
+        ['MAXROE', drawing.maxRoe, 'tracker-extreme-max'],
+        ['REALMAXROE', drawing.realMaxRoe, 'tracker-extreme-real-max'],
+        ['MINROE', drawing.minRoe, 'tracker-extreme-min'],
+        ['REALMINROE', drawing.realMinRoe, 'tracker-extreme-real-min'],
+      ] as const).flatMap(([label, point, markerClass]) => {
+        if (!point) return [];
+        const screen = screenPoint({ time: point.time as UTCTimestamp, price: point.price }, canvas);
+        if (!screen) return [];
+        const operationId = String(drawing.id ?? index);
+        return [<circle key={`${operationId}-${label}`} cx={screen.x} cy={screen.y} r="5" className={`tracker-extreme-point ${markerClass}`} pointerEvents="all" onPointerEnter={() => setTrackerOperationHover({ id: operationId, x: screen.x, y: screen.y, label, roePercent: point.roePercent, pnlUsd: point.pnlUsd, time: point.time })} onPointerLeave={() => setTrackerOperationHover(null)}><title>{label} · ROE {point.roePercent >= 0 ? '+' : ''}{point.roePercent.toFixed(2)}% · PNL {point.pnlUsd >= 0 ? '+' : ''}{point.pnlUsd.toFixed(4)} USDT</title></circle>];
+      })
+      : [];
+    const operationId = String(drawing.id ?? index);
+    const resultRoe = drawing.resultRoePercent ?? 0;
+    const resultPnl = drawing.pnl ?? 0;
+    const resultLabel = drawing.closed ? (drawing.status === 'CLOSED - WIN' ? 'WIN' : 'FAIL') : 'OPEN';
+    const trackerTooltip = trackerOperationHover?.id === operationId ? <g className="tracker-operation-tooltip" pointerEvents="none"><rect x={Math.max(6, Math.min(stageSize.width - 216, trackerOperationHover.x + 10))} y={Math.max(6, trackerOperationHover.y - 62)} width="206" height="52" rx="5" /><text x={Math.max(16, Math.min(stageSize.width - 206, trackerOperationHover.x + 20))} y={Math.max(21, trackerOperationHover.y - 43)}>{trackerOperationHover.label} · ROE {trackerOperationHover.roePercent >= 0 ? '+' : ''}{trackerOperationHover.roePercent.toFixed(2)}%</text><text x={Math.max(16, Math.min(stageSize.width - 206, trackerOperationHover.x + 20))} y={Math.max(39, trackerOperationHover.y - 25)}>PNL {trackerOperationHover.pnlUsd >= 0 ? '+' : ''}{trackerOperationHover.pnlUsd.toFixed(4)} USDT</text><text x={Math.max(16, Math.min(stageSize.width - 206, trackerOperationHover.x + 20))} y={Math.max(56, trackerOperationHover.y - 8)}>{chartTimeLabel(trackerOperationHover.time as Time, timezone, true)}</text></g> : null;
+    if (drawing.backtest && canvas === 'entry' && drawing.maxRoe) {
+      const resultHit = <rect key={`${operationId}-result-hover`} x={left} y={targetTop} width={Math.max(width, 120)} height="28" fill="transparent" pointerEvents="all" onPointerEnter={() => setTrackerOperationHover({ id: operationId, x: left + 8, y: targetTop + 18, label: resultLabel, roePercent: resultRoe, pnlUsd: resultPnl, time: Number(drawing.end.time) })} onPointerLeave={() => setTrackerOperationHover(null)} />;
+      handleNodes = [...handleNodes, ...trackerExtremeMarkers, resultHit, ...(trackerTooltip ? [trackerTooltip] : [])];
+    }
     return <g key={index} className={`${selectedClass ?? ''} ${paperClass}`}>{drawing.paper && canvas === 'context' && <><line x1={start.x} y1={0} x2={start.x} y2={overviewSize.height} className="paper-opening-index" /><text x={start.x + 6} y={18} className="paper-opening-label">Apertura · {chartTimeLabel(drawing.start.time, timezone, false)}</text></>}<rect x={left} y={targetTop} width={width} height={targetHeight} className={targetPercent >= 0 ? 'position-profit' : 'position-risk'} /><rect x={left} y={stopTop} width={width} height={stopHeight} className={riskPercent <= 0 ? 'position-risk' : 'position-profit'} /><line x1={left} y1={start.y} x2={left + width} y2={start.y} className="position-entry" /><line x1={left} y1={end.y} x2={left + width} y2={end.y} className="paper-current-price" />{drawing.paper && <><text x={left + 8} y={Math.max(14, start.y - 8)} className={`paper-operation-label ${paperStatusClass}`}>{drawing.real ? 'BINANCE · REAL' : `Paper Operation · ${paperStatusLabel}`}</text><text x={left + 8} y={targetPoint.y - 10} className="paper-target-label">TP {targetLabel} · +{tpAmount.toFixed(2)} USDT{feeLabel}</text><text x={left + 8} y={stop.y + 18} className="paper-stop-label">SL {riskLabel} · -{slAmount.toFixed(2)} USDT{feeLabel}</text><text x={left + width + 8} y={end.y - 8} className={`paper-current-label ${livePnl >= 0 ? 'paper-current-profit' : 'paper-current-loss'}`}>PNL {livePnl >= 0 ? '+' : ''}{livePnl.toFixed(2)} USDT</text></>}{!drawing.paper && drawing.backtest && <><text x={left + 8} y={targetTop + 18} className={`position-label ${resultLabelClass}`}>{drawing.status === 'CLOSED - WIN' ? 'WIN' : 'FAIL'} · PNL {drawing.pnl != null ? `${drawing.pnl >= 0 ? '+' : ''}${drawing.pnl.toFixed(2)} USDT` : ''}</text></>}{!drawing.paper && !drawing.backtest && <><text x={left + 8} y={targetTop + 18} className="position-label">TP {targetLabel}</text><text x={left + 8} y={stopTop + 18} className="position-label">SL {riskLabel}</text><text x={left + 8} y={Math.max(targetTop, stopTop) + 34} className="position-label">R:R {rr.toFixed(2)}:1</text></>}{drawing.real ? null : drawing.paper ? handleNodes : handleNodes}</g>;
   };
 
@@ -3099,6 +3151,11 @@ function Workspace() {
     target: { time: operation.end.time as UTCTimestamp, price: operation.target.price },
     pnl: operation.pnl,
     notional: operation.notional,
+    resultRoePercent: operation.resultRoePercent,
+    maxRoe: operation.maxRoe,
+    realMaxRoe: operation.realMaxRoe,
+    minRoe: operation.minRoe,
+    realMinRoe: operation.realMinRoe,
   })));
   const renderOhlcOverlay = (hover: OhlcHover | null) => hover ? <div className="chart-ohlc-overlay" aria-label="Datos OHLC de la vela seleccionada"><span className="chart-ohlc-time">{chartTimeLabel(hover.time, timezone, true)}</span><span>O <b>{formatPaperPrice(hover.open)}</b></span><span>H <b className="chart-ohlc-high">{formatPaperPrice(hover.high)}</b></span><span>L <b className="chart-ohlc-low">{formatPaperPrice(hover.low)}</b></span><span>C <b>{formatPaperPrice(hover.close)}</b></span></div> : null;
   const chartStageView = <div ref={chartStage} className={`chart-stage ${tool ? 'drawing-mode' : ''}`} onPointerDownCapture={startDrawing} onPointerMoveCapture={updateDrawing} onPointerUpCapture={event => finishDrawingAndCapture(event, 'entry')} onPointerCancelCapture={() => { setDrawingStart(null); setDrawingEnd(null); setMoveStart(null); panStartRef.current = null; setResizeStart(null); setLassoStart(null); setLassoEnd(null); }}><div className="chart-viewport-snapshot" aria-label="Snapshot del viewport de entrada">X {entryViewportSnapshot.bars} · Futuro {entryViewportSnapshot.futureBars} · Y− {entryViewportSnapshot.yBelow}% · Y+ {entryViewportSnapshot.yAbove}%</div>
@@ -3199,8 +3256,12 @@ function Workspace() {
   const trackerLosses = trackerClosedOperations.filter(operation => operation.status === 'CLOSED - FAILED').length;
   const trackerSettled = trackerWins + trackerLosses;
   const trackerWinRate = trackerSettled > 0 ? trackerWins / trackerSettled * 100 : 0;
-  const trackerAverageWin = trackerWins > 0 ? trackerClosedOperations.filter(operation => operation.status === 'CLOSED - WIN').reduce((sum, operation) => sum + operation.pnl, 0) / trackerWins : 0;
-  const trackerAverageLoss = trackerLosses > 0 ? trackerClosedOperations.filter(operation => operation.status === 'CLOSED - FAILED').reduce((sum, operation) => sum + operation.pnl, 0) / trackerLosses : 0;
+  const trackerAverageWinRoe = trackerWins > 0 ? trackerClosedOperations.filter(operation => operation.status === 'CLOSED - WIN').reduce((sum, operation) => sum + operation.resultRoePercent, 0) / trackerWins : 0;
+  const trackerAverageLossRoe = trackerLosses > 0 ? trackerClosedOperations.filter(operation => operation.status === 'CLOSED - FAILED').reduce((sum, operation) => sum + operation.resultRoePercent, 0) / trackerLosses : 0;
+  const trackerAverageWinValue = trackerWins > 0 ? trackerClosedOperations.filter(operation => operation.status === 'CLOSED - WIN').reduce((sum, operation) => sum + operation.pnl, 0) / trackerWins : 0;
+  const trackerAverageLossValue = trackerLosses > 0 ? trackerClosedOperations.filter(operation => operation.status === 'CLOSED - FAILED').reduce((sum, operation) => sum + operation.pnl, 0) / trackerLosses : 0;
+  const trackerAverageWin = { toFixed: (_digits?: number) => `${trackerAverageWinRoe.toFixed(2)}% · +${trackerAverageWinValue.toFixed(4)}` };
+  const trackerAverageLoss = { toFixed: (_digits?: number) => `${trackerAverageLossRoe.toFixed(2)}% · ${trackerAverageLossValue.toFixed(4)}` };
   let trackerEquity = paperInitialBalance;
   const trackerEquityPoints = [{ equity: trackerEquity, time: 0, side: '', status: 'INICIO' }, ...trackerClosedOperations.map(operation => {
     trackerEquity += operation.pnl;
