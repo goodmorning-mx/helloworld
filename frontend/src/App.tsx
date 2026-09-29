@@ -3274,7 +3274,7 @@ function Workspace() {
   const trackerAverageWinValue = trackerWins > 0 ? trackerClosedOperations.filter(operation => operation.status === 'CLOSED - WIN').reduce((sum, operation) => sum + operation.pnl, 0) / trackerWins : 0;
   const trackerAverageLossValue = trackerLosses > 0 ? trackerClosedOperations.filter(operation => operation.status === 'CLOSED - FAILED').reduce((sum, operation) => sum + operation.pnl, 0) / trackerLosses : 0;
   const trackerAverageWin = { toFixed: (_digits?: number) => `${trackerAverageWinRoe.toFixed(2)}% · +${trackerAverageWinValue.toFixed(4)}` };
-  const trackerAverageLoss = { toFixed: (_digits?: number) => `${trackerAverageLossRoe.toFixed(2)}% · ${trackerAverageLossValue.toFixed(4)}` };
+  const trackerAverageLoss = { toFixed: (_digits?: number) => `${(trackerLossLimitEnabled ? trackerDisplayedAverageLossRoe : trackerAverageLossRoe).toFixed(2)}% · ${(trackerLossLimitEnabled ? trackerDisplayedAverageLossValue : trackerAverageLossValue).toFixed(4)}` };
   let trackerEquity = paperInitialBalance;
   const trackerEquityPoints = [{ equity: trackerEquity, time: 0, side: '', status: 'INICIO' }, ...trackerClosedOperations.map(operation => {
     trackerEquity += operation.pnl;
@@ -3317,6 +3317,8 @@ function Workspace() {
     const grossLimitedPnl = -(trackerLossLimitAnalysis.limit / 100 / Math.max(1, operation.leverage)) * operation.notional;
     return Math.max(operation.pnl, grossLimitedPnl - tradingCosts('binance', operation.notional).total);
   });
+  const trackerDisplayedAverageLossValue = trackerLosses ? trackerClosedOperations.reduce((sum, operation, index) => operation.status === 'CLOSED - FAILED' ? sum + (trackerLossLimitEnabled ? trackerAdjustedPnls[index] : operation.pnl) : sum, 0) / trackerLosses : 0;
+  const trackerDisplayedAverageLossRoe = trackerLosses ? trackerClosedOperations.reduce((sum, operation, index) => operation.status === 'CLOSED - FAILED' ? sum + (trackerLossLimitEnabled ? Math.max(operation.resultRoePercent, -trackerLossLimitAnalysis.limit) : operation.resultRoePercent) : sum, 0) / trackerLosses : 0;
   let trackerAdjustedEquity = paperInitialBalance;
   const trackerAdjustedEquityPoints = [{ equity: trackerAdjustedEquity }, ...trackerAdjustedPnls.map(pnl => { trackerAdjustedEquity += pnl; return { equity: trackerAdjustedEquity }; })];
   const trackerAdjustedEquityCoordinates = trackerAdjustedEquityPoints.map((point, index) => {
@@ -3380,8 +3382,11 @@ function Workspace() {
     sortedOperations.forEach((operation, index) => {
       const row = body.insertRow();
       row.className = operation.status === 'CLOSED - WIN' ? 'tracker-operation-row-win' : 'tracker-operation-row-failed';
+      const originalIndex = trackerClosedOperations.indexOf(operation);
+      const displayedPnl = trackerLossLimitEnabled ? trackerAdjustedPnls[originalIndex] : operation.pnl;
+      const displayedRoe = trackerLossLimitEnabled && operation.status === 'CLOSED - FAILED' ? Math.max(operation.resultRoePercent, -trackerLossLimitAnalysis.limit) : operation.resultRoePercent;
       const pointLabel = (point: TrackerExtremePoint) => `${point.roePercent >= 0 ? '+' : ''}${point.roePercent.toFixed(2)}% · ${point.pnlUsd >= 0 ? '+' : ''}${point.pnlUsd.toFixed(4)} USDT`;
-      [String(index + 1), operation.side.toUpperCase(), operation.level, pointLabel(operation.maxRoe), pointLabel(operation.realMaxRoe), pointLabel(operation.minRoe), pointLabel(operation.realMinRoe), `${operation.status === 'CLOSED - WIN' ? 'WIN' : 'FAIL'} · ${operation.resultRoePercent >= 0 ? '+' : ''}${operation.resultRoePercent.toFixed(2)}% · ${operation.pnl >= 0 ? '+' : ''}${operation.pnl.toFixed(4)} USDT`].forEach(value => { const cell = row.insertCell(); cell.textContent = value; });
+      [String(index + 1), operation.side.toUpperCase(), operation.level, pointLabel(operation.maxRoe), pointLabel(operation.realMaxRoe), pointLabel(operation.minRoe), pointLabel(operation.realMinRoe), `${operation.status === 'CLOSED - WIN' ? 'WIN' : 'FAIL'}${trackerLossLimitEnabled && displayedPnl !== operation.pnl ? ' · LIMITADA' : ''} · ${displayedRoe >= 0 ? '+' : ''}${displayedRoe.toFixed(2)}% · ${displayedPnl >= 0 ? '+' : ''}${displayedPnl.toFixed(4)} USDT`].forEach(value => { const cell = row.insertCell(); cell.textContent = value; });
     });
     scroll.appendChild(table);
     tablePanel.appendChild(scroll);
