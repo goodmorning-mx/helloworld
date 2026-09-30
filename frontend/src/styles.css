@@ -253,6 +253,18 @@
 .tracker-stats-head h2 { margin: .3rem 0; font-size: 1rem; }.tracker-stats-head p { margin: 0; color: #89909b; font: .62rem 'DM Mono', monospace; }.tracker-equity-positive { color: #00ff87; font: 900 .85rem 'DM Mono', monospace; }.tracker-equity-negative { color: #ff1744; font: 900 .85rem 'DM Mono', monospace; }
 .tracker-stats-grid { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: 1px; margin-top: .8rem; overflow: hidden; border: 1px solid #263746; border-radius: 8px; background: #263746; }.tracker-stats-grid div { min-width: 0; padding: .65rem; background: #111a23; }.tracker-stats-grid small, .tracker-stats-grid strong { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }.tracker-stats-grid small { color: #718096; font: .55rem 'DM Mono', monospace; }.tracker-stats-grid strong { margin-top: .25rem; color: #f5c45e; font: 800 .82rem 'DM Mono', monospace; }.tracker-stat-win { color: #00ff87 !important; }.tracker-stat-loss { color: #ff1744 !important; }
 .tracker-stat-average { white-space: normal !important; line-height: 1.35; }.tracker-stat-average span { display: block; font-size: .68rem; }
+
+/* Temporary testing layout: keep the preview between the charts and Tracker. */
+@media (min-width: 651px) {
+  .trading-shell:not(.pwa-shell) { display: flex; flex-direction: column; }
+  .trading-shell:not(.pwa-shell) > * { order: 5; }
+  .trading-shell:not(.pwa-shell) > .symbol-bar { order: 0; }
+  .trading-shell:not(.pwa-shell) > .market-overview { display: contents; }
+  .trading-shell:not(.pwa-shell) .market-overview .market-scanner-training { order: 1; width: 100%; }
+  .trading-shell:not(.pwa-shell) > .charts-row { order: 2; }
+  .trading-shell:not(.pwa-shell) .market-overview .market-preview-slot { order: 3; width: 100%; margin: .9rem 0 0; }
+  .trading-shell:not(.pwa-shell) > .tracker-stats-panel { order: 4; }
+}
 .tracker-stats-grid div:nth-child(5) strong, .tracker-stats-grid div:nth-child(6) strong { white-space: normal; font-size: .68rem; }
 .tracker-equity-wrap { margin-top: .8rem; padding: .7rem; border: 1px solid #263746; border-radius: 8px; background: #101923; }.tracker-equity-title { display: flex; justify-content: space-between; gap: .8rem; color: #b9dcff; font: 700 .65rem 'DM Mono', monospace; }.tracker-equity-title small { color: #718096; font-weight: 400; }.tracker-equity-chart { display: block; width: 100%; height: 170px; margin-top: .35rem; overflow: visible; }.tracker-equity-baseline { stroke: #687789; stroke-width: 1; stroke-dasharray: 5 4; opacity: .7; }.tracker-equity-line { fill: none; stroke-width: 3; stroke-linecap: round; stroke-linejoin: round; vector-effect: non-scaling-stroke; }.tracker-equity-line-positive { stroke: #00ff87; }.tracker-equity-line-negative { stroke: #ff1744; }.tracker-equity-dot { fill: #f5c45e; stroke: #fff3c4; stroke-width: 2; }.tracker-equity-empty { margin: 2.2rem 0; color: #718096; text-align: center; font: .65rem 'DM Mono', monospace; }
 @media (max-width: 760px) { .tracker-stats-head { flex-direction: column; }.tracker-stats-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }.tracker-stats-grid div:last-child { grid-column: 1 / -1; } }
