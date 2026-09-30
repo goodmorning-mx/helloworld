@@ -3321,6 +3321,19 @@ function Workspace() {
   const trackerDisplayedAverageLossRoe = trackerLosses ? trackerClosedOperations.reduce((sum, operation, index) => operation.status === 'CLOSED - FAILED' ? sum + (trackerLossLimitEnabled ? Math.max(operation.resultRoePercent, -trackerLossLimitAnalysis.limit) : operation.resultRoePercent) : sum, 0) / trackerLosses : 0;
   let trackerAdjustedEquity = paperInitialBalance;
   const trackerAdjustedEquityPoints = [{ equity: trackerAdjustedEquity }, ...trackerAdjustedPnls.map(pnl => { trackerAdjustedEquity += pnl; return { equity: trackerAdjustedEquity }; })];
+  const trackerDisplayedEquity = trackerLossLimitEnabled ? trackerAdjustedEquity : trackerEquity;
+  const trackerDisplayedPnl = trackerDisplayedEquity - paperInitialBalance;
+  useEffect(() => {
+    const panel = document.querySelector<HTMLElement>('.tracker-stats-panel');
+    if (!panel) return;
+    const headValue = panel.querySelector<HTMLElement>('.tracker-stats-head > strong');
+    const equityValue = panel.querySelector<HTMLElement>('.tracker-stats-grid div:last-child strong');
+    if (headValue) {
+      headValue.className = trackerDisplayedPnl >= 0 ? 'tracker-equity-positive' : 'tracker-equity-negative';
+      headValue.textContent = `${trackerDisplayedPnl >= 0 ? '+' : ''}${trackerDisplayedPnl.toFixed(4)} USDT`;
+    }
+    if (equityValue) equityValue.textContent = `${trackerDisplayedEquity.toFixed(4)} USDT`;
+  }, [trackerLossLimitEnabled, trackerDisplayedEquity, trackerDisplayedPnl]);
   const trackerAdjustedEquityCoordinates = trackerAdjustedEquityPoints.map((point, index) => {
     const x = trackerChartPadding.left + (index / Math.max(1, trackerAdjustedEquityPoints.length - 1)) * (trackerChartWidth - trackerChartPadding.left - trackerChartPadding.right);
     const y = trackerChartPadding.top + (1 - (point.equity - trackerChartMin) / Math.max(.000001, trackerChartMax - trackerChartMin)) * (trackerChartHeight - trackerChartPadding.top - trackerChartPadding.bottom);
