@@ -3323,38 +3323,33 @@ function Workspace() {
   const trackerAdjustedEquityPoints = [{ equity: trackerAdjustedEquity }, ...trackerAdjustedPnls.map(pnl => { trackerAdjustedEquity += pnl; return { equity: trackerAdjustedEquity }; })];
   const trackerDisplayedEquity = trackerLossLimitEnabled ? trackerAdjustedEquity : trackerEquity;
   const trackerDisplayedPnl = trackerDisplayedEquity - paperInitialBalance;
-  useEffect(() => {
-    const panel = document.querySelector<HTMLElement>('.tracker-stats-panel');
-    if (!panel) return;
-    const headValue = panel.querySelector<HTMLElement>('.tracker-stats-head > strong');
-    const equityValue = panel.querySelector<HTMLElement>('.tracker-stats-grid div:last-child strong');
-    if (headValue) {
-      headValue.className = trackerDisplayedPnl >= 0 ? 'tracker-equity-positive' : 'tracker-equity-negative';
-      headValue.textContent = `${trackerDisplayedPnl >= 0 ? '+' : ''}${trackerDisplayedPnl.toFixed(4)} USDT`;
-    }
-    if (equityValue) equityValue.textContent = `${trackerDisplayedEquity.toFixed(4)} USDT`;
-  }, [trackerLossLimitEnabled, trackerDisplayedEquity, trackerDisplayedPnl]);
   const trackerAdjustedEquityCoordinates = trackerAdjustedEquityPoints.map((point, index) => {
     const x = trackerChartPadding.left + (index / Math.max(1, trackerAdjustedEquityPoints.length - 1)) * (trackerChartWidth - trackerChartPadding.left - trackerChartPadding.right);
     const y = trackerChartPadding.top + (1 - (point.equity - trackerChartMin) / Math.max(.000001, trackerChartMax - trackerChartMin)) * (trackerChartHeight - trackerChartPadding.top - trackerChartPadding.bottom);
     return { ...point, x, y };
   });
   const trackerAdjustedEquityPointsSvg = trackerAdjustedEquityCoordinates.map(point => `${point.x.toFixed(2)},${point.y.toFixed(2)}`).join(' ');
+  const trackerSortValue = (operation: TrackerVirtualOperation): string | number => {
+    if (trackerSummarySort.key === 'side') return operation.side;
+    if (trackerSummarySort.key === 'level') return operation.level;
+    if (trackerSummarySort.key === 'maxroe') return operation.maxRoe.roePercent;
+    if (trackerSummarySort.key === 'realmaxroe') return operation.realMaxRoe.roePercent;
+    if (trackerSummarySort.key === 'minroe') return operation.minRoe.roePercent;
+    if (trackerSummarySort.key === 'realminroe') return operation.realMinRoe.roePercent;
+    if (trackerSummarySort.key === 'result') return operation.resultRoePercent;
+    return trackerClosedOperations.indexOf(operation);
+  };
+  const trackerSortedOperations = [...trackerClosedOperations].sort((left, right) => {
+    const leftValue = trackerSortValue(left);
+    const rightValue = trackerSortValue(right);
+    const comparison = typeof leftValue === 'number' && typeof rightValue === 'number' ? leftValue - rightValue : String(leftValue).localeCompare(String(rightValue));
+    return (trackerSummarySort.direction === 'desc' ? -1 : 1) * comparison;
+  });
+  const trackerTableHeaders = [['index', '#'], ['side', 'Lado'], ['level', 'Nivel'], ['maxroe', 'MAXROE'], ['realmaxroe', 'REALMAXROE'], ['minroe', 'MINROE'], ['realminroe', 'REALMINROE'], ['result', 'WIN/FAIL · RESULTADO']] as const;
+  const trackerSummaryHost = useRef<HTMLDivElement>(null);
   useEffect(() => {
-    const chart = document.querySelector<SVGElement>('.tracker-equity-chart');
-    if (!chart) return;
-    const previous = chart.querySelector('.tracker-adjusted-equity-line');
-    previous?.remove();
-    if (!trackerLossLimitEnabled || !trackerClosedOperations.length) return;
-    const line = document.createElementNS('http://www.w3.org/2000/svg', 'polyline');
-    line.setAttribute('points', trackerAdjustedEquityPointsSvg);
-    line.setAttribute('class', 'tracker-adjusted-equity-line');
-    chart.appendChild(line);
-    return () => line.remove();
-  }, [trackerLossLimitEnabled, trackerAdjustedEquityPointsSvg, trackerClosedOperations.length]);
-  useEffect(() => {
-    const equityWrap = document.querySelector<HTMLElement>('.tracker-equity-wrap');
-    if (!showTracker || !equityWrap) return;
+    const host = trackerSummaryHost.current;
+    if (!showTracker || !host) return;
     const tablePanel = document.createElement('div');
     tablePanel.className = 'tracker-operations-summary';
     const title = document.createElement('div');
@@ -3372,41 +3367,41 @@ function Workspace() {
     controls.appendChild(limitButton);
     const analysis = document.createElement('small');
     analysis.className = 'tracker-loss-limit-analysis';
-    analysis.textContent = `Umbral MINROE ${trackerLossLimitAnalysis.limit >= 0 ? '-' : ''}${Math.abs(trackerLossLimitAnalysis.limit).toFixed(2)}% · WIN ${ (trackerLossLimitAnalysis.winCoverage * 100).toFixed(1)}% · FAIL limitadas ${(trackerLossLimitAnalysis.lossCoverage * 100).toFixed(1)}% · Equity limitada ${trackerAdjustedEquity.toFixed(4)} USDT`;
+    analysis.textContent = `Umbral MINROE ${trackerLossLimitAnalysis.limit >= 0 ? '-' : ''}${Math.abs(trackerLossLimitAnalysis.limit).toFixed(2)}% · WIN ${(trackerLossLimitAnalysis.winCoverage * 100).toFixed(1)}% · FAIL limitadas ${(trackerLossLimitAnalysis.lossCoverage * 100).toFixed(1)}% · Equity limitada ${trackerAdjustedEquity.toFixed(4)} USDT`;
     controls.appendChild(analysis);
     tablePanel.appendChild(controls);
     const scroll = document.createElement('div');
     scroll.className = 'tracker-operations-table-scroll';
     const table = document.createElement('table');
     table.className = 'tracker-operations-table';
-    const headers = [['index', '#'], ['side', 'Lado'], ['level', 'Nivel'], ['maxroe', 'MAXROE'], ['realmaxroe', 'REALMAXROE'], ['minroe', 'MINROE'], ['realminroe', 'REALMINROE'], ['result', 'WIN/FAIL · RESULTADO']] as const;
     const head = table.createTHead().insertRow();
-    headers.forEach(([key, label]) => { const cell = document.createElement('th'); const button = document.createElement('button'); button.type = 'button'; button.className = 'tracker-sort-button'; button.textContent = `${label}${trackerSummarySort.key === key ? trackerSummarySort.direction === 'desc' ? ' ↓' : ' ↑' : ' ↕'}`; button.title = `Ordenar ${label} ${trackerSummarySort.key === key && trackerSummarySort.direction === 'desc' ? 'de menor a mayor' : 'de mayor a menor'}`; button.addEventListener('click', () => setTrackerSummarySort(current => current.key === key ? { key, direction: current.direction === 'desc' ? 'asc' : 'desc' } : { key, direction: 'desc' })); cell.appendChild(button); head.appendChild(cell); });
-    const sortedOperations = [...trackerClosedOperations].sort((left, right) => {
-      const pointValue = (point: TrackerExtremePoint) => point.roePercent;
-      const value = (operation: TrackerVirtualOperation, index: number): string | number => keyValue(operation, index);
-      const keyValue = (operation: TrackerVirtualOperation, index: number): string | number => trackerSummarySort.key === 'index' ? index : trackerSummarySort.key === 'side' ? operation.side : trackerSummarySort.key === 'level' ? operation.level : trackerSummarySort.key === 'maxroe' ? pointValue(operation.maxRoe) : trackerSummarySort.key === 'realmaxroe' ? pointValue(operation.realMaxRoe) : trackerSummarySort.key === 'minroe' ? pointValue(operation.minRoe) : trackerSummarySort.key === 'realminroe' ? pointValue(operation.realMinRoe) : operation.resultRoePercent;
-      const leftValue = value(left, trackerClosedOperations.indexOf(left));
-      const rightValue = value(right, trackerClosedOperations.indexOf(right));
-      const comparison = typeof leftValue === 'number' && typeof rightValue === 'number' ? leftValue - rightValue : String(leftValue).localeCompare(String(rightValue));
-      return (trackerSummarySort.direction === 'desc' ? -1 : 1) * comparison;
+    trackerTableHeaders.forEach(([key, label]) => {
+      const cell = document.createElement('th');
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.className = 'tracker-sort-button';
+      button.textContent = `${label}${trackerSummarySort.key === key ? trackerSummarySort.direction === 'desc' ? ' ↓' : ' ↑' : ' ↕'}`;
+      button.title = `Ordenar ${label} ${trackerSummarySort.key === key && trackerSummarySort.direction === 'desc' ? 'de menor a mayor' : 'de mayor a menor'}`;
+      button.addEventListener('click', () => setTrackerSummarySort(current => current.key === key ? { key, direction: current.direction === 'desc' ? 'asc' : 'desc' } : { key, direction: 'desc' }));
+      cell.appendChild(button);
+      head.appendChild(cell);
     });
     const body = table.createTBody();
-    sortedOperations.forEach((operation, index) => {
-      const row = body.insertRow();
-      row.className = operation.status === 'CLOSED - WIN' ? 'tracker-operation-row-win' : 'tracker-operation-row-failed';
+    trackerSortedOperations.forEach((operation, index) => {
       const originalIndex = trackerClosedOperations.indexOf(operation);
       const displayedPnl = trackerLossLimitEnabled ? trackerAdjustedPnls[originalIndex] : operation.pnl;
       const displayedRoe = trackerLossLimitEnabled && operation.status === 'CLOSED - FAILED' ? Math.max(operation.resultRoePercent, -trackerLossLimitAnalysis.limit) : operation.resultRoePercent;
       const pointLabel = (point: TrackerExtremePoint) => `${point.roePercent >= 0 ? '+' : ''}${point.roePercent.toFixed(2)}% · ${point.pnlUsd >= 0 ? '+' : ''}${point.pnlUsd.toFixed(4)} USDT`;
-      [String(index + 1), operation.side.toUpperCase(), operation.level, pointLabel(operation.maxRoe), pointLabel(operation.realMaxRoe), pointLabel(operation.minRoe), pointLabel(operation.realMinRoe), `${operation.status === 'CLOSED - WIN' ? 'WIN' : 'FAIL'}${trackerLossLimitEnabled && displayedPnl !== operation.pnl ? ' · LIMITADA' : ''} · ${displayedRoe >= 0 ? '+' : ''}${displayedRoe.toFixed(2)}% · ${displayedPnl >= 0 ? '+' : ''}${displayedPnl.toFixed(4)} USDT`].forEach(value => { const cell = row.insertCell(); cell.textContent = value; });
+      const row = body.insertRow();
+      row.className = operation.status === 'CLOSED - WIN' ? 'tracker-operation-row-win' : 'tracker-operation-row-failed';
+      [String(index + 1), operation.side.toUpperCase(), operation.level, pointLabel(operation.maxRoe), pointLabel(operation.realMaxRoe), pointLabel(operation.minRoe), pointLabel(operation.realMinRoe), `${operation.status === 'CLOSED - WIN' ? 'WIN' : 'FAIL'}${trackerLossLimitEnabled && displayedPnl !== operation.pnl ? ' · LIMITADA' : ''} · ${displayedRoe >= 0 ? '+' : ''}${displayedRoe.toFixed(2)}% · ${displayedPnl >= 0 ? '+' : ''}${displayedPnl.toFixed(4)} USDT`].forEach(value => { row.insertCell().textContent = value; });
     });
     scroll.appendChild(table);
     tablePanel.appendChild(scroll);
-    equityWrap.appendChild(tablePanel);
+    host.appendChild(tablePanel);
     return () => tablePanel.remove();
   }, [showTracker, trackerClosedOperations, timezone, trackerSummarySort, trackerLossLimitEnabled, trackerLossLimitAnalysis.limit, trackerLossLimitAnalysis.winCoverage, trackerLossLimitAnalysis.lossCoverage, trackerAdjustedEquity]);
-  const trackerEquityPanel = showTracker ? <section className="tracker-stats-panel" aria-label="Estadísticas del indicador Tracker"><div className="tracker-stats-head"><div><span className="positions-kicker">TRACKER · 1M · SIMULACIÓN</span><h2>Estadísticas Tracker</h2><p>Operaciones virtuales del indicador · balance inicial {paperInitialBalance.toFixed(2)} USDT</p></div><strong className={trackerEquity >= paperInitialBalance ? 'tracker-equity-positive' : 'tracker-equity-negative'}>{trackerEquity >= paperInitialBalance ? '+' : ''}{(trackerEquity - paperInitialBalance).toFixed(4)} USDT</strong></div><div className="tracker-stats-grid"><div><small>Total operaciones</small><strong>{trackerVirtualOperations.length}</strong></div><div><small>Wins</small><strong className="tracker-stat-win">{trackerWins}</strong></div><div><small>Losses</small><strong className="tracker-stat-loss">{trackerLosses}</strong></div><div><small>Win rate</small><strong>{trackerSettled ? `${trackerWinRate.toFixed(1)}%` : '—'}</strong></div><div><small>Avg win</small><strong className="tracker-stat-win">{trackerWins ? "+" + trackerAverageWin.toFixed(4) + " USDT" : "—"}</strong></div><div><small>Avg loss</small><strong className="tracker-stat-loss">{trackerLosses ? trackerAverageLoss.toFixed(4) + " USDT" : "—"}</strong></div><div><small>Equity final</small><strong>{trackerEquity.toFixed(4)} USDT</strong></div></div><div className="tracker-equity-wrap"><div className="tracker-equity-title"><span>Curva de equity simulada</span><small>{trackerClosedOperations.length} operaciones liquidadas</small></div>{trackerClosedOperations.length ? <svg className="tracker-equity-chart" viewBox={`0 0 ${trackerChartWidth} ${trackerChartHeight}`} role="img" aria-label="Curva de equity simulada"><line x1={trackerChartPadding.left} y1={trackerChartPadding.top + (1 - (paperInitialBalance - trackerChartMin) / Math.max(.000001, trackerChartMax - trackerChartMin)) * (trackerChartHeight - trackerChartPadding.top - trackerChartPadding.bottom)} x2={trackerChartWidth - trackerChartPadding.right} y2={trackerChartPadding.top + (1 - (paperInitialBalance - trackerChartMin) / Math.max(.000001, trackerChartMax - trackerChartMin)) * (trackerChartHeight - trackerChartPadding.top - trackerChartPadding.bottom)} className="tracker-equity-baseline" /><polyline points={trackerEquityPointsSvg} className={trackerEquity >= paperInitialBalance ? 'tracker-equity-line tracker-equity-line-positive' : 'tracker-equity-line tracker-equity-line-negative'} />{trackerEquityCoordinates.map((point, index) => index === 0 ? <circle key="tracker-equity-start" cx={point.x} cy={point.y} r="5" className="tracker-equity-dot" /> : <circle key={`tracker-equity-${point.time}-${index}`} cx={point.x} cy={point.y} r="7" className="tracker-equity-hover-point" onPointerEnter={() => setTrackerEquityHover({ x: point.x, y: point.y, equity: point.equity, time: point.time, side: point.side, status: point.status })} onPointerLeave={() => setTrackerEquityHover(null)}><title>{new Date(point.time * 1000).toLocaleString('es-MX', { timeZone: timezone })} · Balance {point.equity.toFixed(4)} USDT</title></circle>)}{trackerEquityHover && <g className="tracker-equity-tooltip" pointerEvents="none"><rect x={Math.max(6, Math.min(trackerChartWidth - 196, trackerEquityHover.x + 10))} y={Math.max(6, trackerEquityHover.y - 62)} width="190" height="52" rx="5" /><text x={Math.max(16, Math.min(trackerChartWidth - 186, trackerEquityHover.x + 20))} y={Math.max(21, trackerEquityHover.y - 43)}>Cierre {new Date(trackerEquityHover.time * 1000).toLocaleString('es-MX', { timeZone: timezone, dateStyle: 'short', timeStyle: 'short' })}</text><text x={Math.max(16, Math.min(trackerChartWidth - 186, trackerEquityHover.x + 20))} y={Math.max(38, trackerEquityHover.y - 26)}>Balance {trackerEquityHover.equity.toFixed(4)} USDT · {trackerEquityHover.side}</text><text x={Math.max(16, Math.min(trackerChartWidth - 186, trackerEquityHover.x + 20))} y={Math.max(55, trackerEquityHover.y - 9)}>{trackerEquityHover.status}</text></g>}</svg> : <p className="tracker-equity-empty">Aún no hay operaciones cerradas para graficar.</p>}</div></section> : null;
+  const trackerEquityPanel = showTracker ? <section className="tracker-stats-panel" aria-label="Estadísticas del indicador Tracker"><div className="tracker-stats-head"><div><span className="positions-kicker">TRACKER · 1M · SIMULACIÓN</span><h2>Estadísticas Tracker</h2><p>Operaciones virtuales del indicador · balance inicial {paperInitialBalance.toFixed(2)} USDT</p></div><strong className={trackerDisplayedPnl >= 0 ? 'tracker-equity-positive' : 'tracker-equity-negative'}>{trackerDisplayedPnl >= 0 ? '+' : ''}{trackerDisplayedPnl.toFixed(4)} USDT</strong></div><div className="tracker-stats-grid"><div><small>Total operaciones</small><strong>{trackerVirtualOperations.length}</strong></div><div><small>Wins</small><strong className="tracker-stat-win">{trackerWins}</strong></div><div><small>Losses</small><strong className="tracker-stat-loss">{trackerLosses}</strong></div><div><small>Win rate</small><strong>{trackerSettled ? `${trackerWinRate.toFixed(1)}%` : '—'}</strong></div><div><small>Avg win</small><strong className="tracker-stat-win">{trackerWins ? "+" + trackerAverageWin.toFixed(4) + " USDT" : "—"}</strong></div><div><small>Avg loss</small><strong className="tracker-stat-loss">{trackerLosses ? trackerAverageLoss.toFixed(4) + " USDT" : "—"}</strong></div><div><small>Equity final</small><strong>{trackerDisplayedEquity.toFixed(4)} USDT</strong></div></div><div className="tracker-equity-wrap"><div className="tracker-equity-title"><span>Curva de equity simulada</span><small>{trackerClosedOperations.length} operaciones liquidadas</small></div>{trackerClosedOperations.length ? <svg className="tracker-equity-chart" viewBox={`0 0 ${trackerChartWidth} ${trackerChartHeight}`} role="img" aria-label="Curva de equity simulada"><line x1={trackerChartPadding.left} y1={trackerChartPadding.top + (1 - (paperInitialBalance - trackerChartMin) / Math.max(.000001, trackerChartMax - trackerChartMin)) * (trackerChartHeight - trackerChartPadding.top - trackerChartPadding.bottom)} x2={trackerChartWidth - trackerChartPadding.right} y2={trackerChartPadding.top + (1 - (paperInitialBalance - trackerChartMin) / Math.max(.000001, trackerChartMax - trackerChartMin)) * (trackerChartHeight - trackerChartPadding.top - trackerChartPadding.bottom)} className="tracker-equity-baseline" /><polyline points={trackerEquityPointsSvg} className={trackerEquity >= paperInitialBalance ? 'tracker-equity-line tracker-equity-line-positive' : 'tracker-equity-line tracker-equity-line-negative'} />{trackerLossLimitEnabled && <polyline points={trackerAdjustedEquityPointsSvg} className="tracker-adjusted-equity-line" />}{trackerEquityCoordinates.map((point, index) => index === 0 ? <circle key="tracker-equity-start" cx={point.x} cy={point.y} r="5" className="tracker-equity-dot" /> : <circle key={`tracker-equity-${point.time}-${index}`} cx={point.x} cy={point.y} r="7" className="tracker-equity-hover-point" onPointerEnter={() => setTrackerEquityHover({ x: point.x, y: point.y, equity: point.equity, time: point.time, side: point.side, status: point.status })} onPointerLeave={() => setTrackerEquityHover(null)}><title>{new Date(point.time * 1000).toLocaleString('es-MX', { timeZone: timezone })} · Balance {point.equity.toFixed(4)} USDT</title></circle>)}{trackerEquityHover && <g className="tracker-equity-tooltip" pointerEvents="none"><rect x={Math.max(6, Math.min(trackerChartWidth - 196, trackerEquityHover.x + 10))} y={Math.max(6, trackerEquityHover.y - 62)} width="190" height="52" rx="5" /><text x={Math.max(16, Math.min(trackerChartWidth - 186, trackerEquityHover.x + 20))} y={Math.max(21, trackerEquityHover.y - 43)}>Cierre {new Date(trackerEquityHover.time * 1000).toLocaleString('es-MX', { timeZone: timezone, dateStyle: 'short', timeStyle: 'short' })}</text><text x={Math.max(16, Math.min(trackerChartWidth - 186, trackerEquityHover.x + 20))} y={Math.max(38, trackerEquityHover.y - 26)}>Balance {trackerEquityHover.equity.toFixed(4)} USDT · {trackerEquityHover.side}</text><text x={Math.max(16, Math.min(trackerChartWidth - 186, trackerEquityHover.x + 20))} y={Math.max(55, trackerEquityHover.y - 9)}>{trackerEquityHover.status}</text></g>}</svg> : <p className="tracker-equity-empty">Aún no hay operaciones cerradas para graficar.</p>}<div ref={trackerSummaryHost} /></div></section> : null;
   const chartsRow = <div className="charts-row"><section ref={overviewStage} className={`secondary-chart ${tool ? 'drawing-mode' : ''}`} onPointerDownCapture={event => startDrawing(event, 'context')} onPointerMoveCapture={updateDrawing} onPointerUpCapture={event => finishDrawingAndCapture(event, 'context')} onPointerCancelCapture={() => { setDrawingStart(null); setDrawingEnd(null); setMoveStart(null); panStartRef.current = null; setResizeStart(null); setLassoStart(null); setLassoEnd(null); }}><div className="chart-panel-label">{interval.toUpperCase()} · CONTEXTO · {symbol}</div><div className="chart-viewport-snapshot" aria-label="Snapshot del viewport de contexto">X {overviewViewportSnapshot.bars} · Futuro {overviewViewportSnapshot.futureBars} · Y− {overviewViewportSnapshot.yBelow}% · Y+ {overviewViewportSnapshot.yAbove}%</div><div ref={overviewChartContainer} className="overview-chart" />{renderOhlcOverlay(overviewOhlcHover)}<svg className="overview-overlay" viewBox={`0 0 ${overviewSize.width} ${overviewSize.height}`} preserveAspectRatio="none" aria-hidden="true">{renderOverviewSessions()}{renderOverviewInterestMarkers()}{renderPriceLineHitAreas('context')}{[...drawings, ...productionDrawings, ...backtestVisualDrawings].map((drawing, index) => (!drawing.paper || !drawing.closed || drawing.id === visibleClosedId) && (!drawing.paper || !drawing.symbol || drawing.symbol === symbol) && (drawing.chart === 'context' || drawing.paper) ? renderDrawing(drawing, index, 'context') : null)}{tool && tool !== 'pan' && drawingStart && drawingEnd && drawingCanvas === 'context' && renderDrawing({ type: tool, chart: 'context', start: drawingStart, end: drawingEnd }, 'preview', 'context')}{lassoStart && lassoEnd && drawingCanvas === 'context' && <rect x={Math.min(lassoStart.x, lassoEnd.x)} y={Math.min(lassoStart.y, lassoEnd.y)} width={Math.abs(lassoStart.x - lassoEnd.x)} height={Math.abs(lassoStart.y - lassoEnd.y)} className="selection-lasso" />}</svg></section><section className="primary-chart"><div className="chart-panel-label">{entryInterval.toUpperCase()} · AJUSTE DE ENTRADA</div>{chartStageView}</section></div>;
 
   return mobilePwa ? <main className="trading-shell pwa-shell">
