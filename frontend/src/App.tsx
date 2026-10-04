@@ -84,7 +84,7 @@ function findBestTrackerLossLimit(operations: TrackerVirtualOperation[]): Tracke
 
 function applyTrackerLossLimit(operations: TrackerVirtualOperation[], summary: TrackerLossLimitSummary): number[] {
   return operations.map(operation => {
-    if (operation.status !== 'CLOSED - FAILED' || operation.minRoe.roePercent > -summary.limit) return operation.pnl;
+    if (operation.minRoe.roePercent > -summary.limit) return operation.pnl;
     const grossLimitedPnl = -(summary.limit / 100 / Math.max(1, operation.leverage)) * operation.notional;
     return Math.max(operation.pnl, grossLimitedPnl - tradingCosts('binance', operation.notional).total);
   });
@@ -3311,14 +3311,24 @@ function Workspace() {
 
   const toolOptions = [['line', '╱', 'Línea'], ['ruler', '▥', 'Medir'], ['long', 'L', 'Long'], ['short', 'S', 'Short'], ['zoom', '⌗', 'Zoom lazo'], ['pan', '✋', 'Pan']] as const;
   const trackerClosedOperations = trackerVirtualOperations.filter(operation => operation.closed);
-  const trackerWins = trackerClosedOperations.filter(operation => operation.status === 'CLOSED - WIN').length;
-  const trackerLosses = trackerClosedOperations.filter(operation => operation.status === 'CLOSED - FAILED').length;
+  const [trackerLossLimitEnabled, setTrackerLossLimitEnabled] = useState(false);
+  const trackerLossLimitAnalysis = findBestTrackerLossLimit(trackerClosedOperations);
+  const trackerAdjustedOutcome = (operation: TrackerVirtualOperation) => {
+    const crossedLimitedStop = trackerLossLimitEnabled && operation.minRoe.roePercent <= -trackerLossLimitAnalysis.limit;
+    if (!crossedLimitedStop) return { status: operation.status, pnl: operation.pnl, resultRoePercent: operation.resultRoePercent, limited: false };
+    const grossLimitedPnl = -(trackerLossLimitAnalysis.limit / 100 / Math.max(1, operation.leverage)) * operation.notional;
+    const pnl = Math.max(operation.pnl, grossLimitedPnl - tradingCosts('binance', operation.notional).total);
+    return { status: 'CLOSED - FAILED' as const, pnl, resultRoePercent: -trackerLossLimitAnalysis.limit, limited: true };
+  };
+  const trackerDisplayedOutcomes = trackerClosedOperations.map(trackerAdjustedOutcome);
+  const trackerWins = trackerDisplayedOutcomes.filter(outcome => outcome.status === 'CLOSED - WIN').length;
+  const trackerLosses = trackerDisplayedOutcomes.filter(outcome => outcome.status === 'CLOSED - FAILED').length;
   const trackerSettled = trackerWins + trackerLosses;
   const trackerWinRate = trackerSettled > 0 ? trackerWins / trackerSettled * 100 : 0;
-  const trackerAverageWinRoe = trackerWins > 0 ? trackerClosedOperations.filter(operation => operation.status === 'CLOSED - WIN').reduce((sum, operation) => sum + operation.resultRoePercent, 0) / trackerWins : 0;
-  const trackerAverageLossRoe = trackerLosses > 0 ? trackerClosedOperations.filter(operation => operation.status === 'CLOSED - FAILED').reduce((sum, operation) => sum + operation.resultRoePercent, 0) / trackerLosses : 0;
-  const trackerAverageWinValue = trackerWins > 0 ? trackerClosedOperations.filter(operation => operation.status === 'CLOSED - WIN').reduce((sum, operation) => sum + operation.pnl, 0) / trackerWins : 0;
-  const trackerAverageLossValue = trackerLosses > 0 ? trackerClosedOperations.filter(operation => operation.status === 'CLOSED - FAILED').reduce((sum, operation) => sum + operation.pnl, 0) / trackerLosses : 0;
+  const trackerAverageWinRoe = trackerWins > 0 ? trackerDisplayedOutcomes.filter(outcome => outcome.status === 'CLOSED - WIN').reduce((sum, outcome) => sum + outcome.resultRoePercent, 0) / trackerWins : 0;
+  const trackerAverageLossRoe = trackerLosses > 0 ? trackerDisplayedOutcomes.filter(outcome => outcome.status === 'CLOSED - FAILED').reduce((sum, outcome) => sum + outcome.resultRoePercent, 0) / trackerLosses : 0;
+  const trackerAverageWinValue = trackerWins > 0 ? trackerDisplayedOutcomes.filter(outcome => outcome.status === 'CLOSED - WIN').reduce((sum, outcome) => sum + outcome.pnl, 0) / trackerWins : 0;
+  const trackerAverageLossValue = trackerLosses > 0 ? trackerDisplayedOutcomes.filter(outcome => outcome.status === 'CLOSED - FAILED').reduce((sum, outcome) => sum + outcome.pnl, 0) / trackerLosses : 0;
   const trackerStepBars = candleBarsRef.current.slice(-(trackerPeriod + 1));
   const trackerStepPercent = trackerStepBars.length > trackerPeriod ? trackerStepBars.slice(1).reduce((sum, bar, index) => {
     const previousClose = trackerStepBars[index].close;
@@ -3348,29 +3358,11 @@ function Workspace() {
   });
   const trackerEquityPointsSvg = trackerEquityCoordinates.map(point => `${point.x.toFixed(2)},${point.y.toFixed(2)}`).join(' ');
   const [trackerSummarySort, setTrackerSummarySort] = useState<{ key: string; direction: 'asc' | 'desc' }>({ key: 'index', direction: 'asc' });
-  const [trackerLossLimitEnabled, setTrackerLossLimitEnabled] = useState(false);
-  const trackerLossLimitAnalysis = (() => {
-    const wins = trackerClosedOperations.filter(operation => operation.status === 'CLOSED - WIN');
-    const losses = trackerClosedOperations.filter(operation => operation.status === 'CLOSED - FAILED');
-    const candidates = [...new Set([0, ...trackerClosedOperations.map(operation => Math.max(0, -operation.minRoe.roePercent))])].sort((a, b) => a - b);
-    const evaluated = candidates.map(limit => {
-      const winsKept = wins.filter(operation => operation.minRoe.roePercent >= -limit).length;
-      const lossesLimited = losses.filter(operation => operation.minRoe.roePercent <= -limit).length;
-      const winCoverage = wins.length ? winsKept / wins.length : 0;
-      const lossCoverage = losses.length ? lossesLimited / losses.length : 0;
-      const targetDistance = Math.abs(winCoverage - .8) + Math.abs(lossCoverage - .8);
-      return { limit, winsKept, lossesLimited, winCoverage, lossCoverage, targetDistance };
-    });
-    const feasible = evaluated.filter(item => item.winCoverage >= .8 && item.lossCoverage >= .8);
-    return [...(feasible.length ? feasible : evaluated)].sort((a, b) => a.targetDistance - b.targetDistance || a.limit - b.limit)[0] ?? { limit: 0, winsKept: 0, lossesLimited: 0, winCoverage: 0, lossCoverage: 0, targetDistance: 0 };
-  })();
   const trackerAdjustedPnls = trackerClosedOperations.map(operation => {
-    if (operation.status !== 'CLOSED - FAILED' || operation.minRoe.roePercent > -trackerLossLimitAnalysis.limit) return operation.pnl;
-    const grossLimitedPnl = -(trackerLossLimitAnalysis.limit / 100 / Math.max(1, operation.leverage)) * operation.notional;
-    return Math.max(operation.pnl, grossLimitedPnl - tradingCosts('binance', operation.notional).total);
+    return trackerLossLimitEnabled ? trackerAdjustedOutcome(operation).pnl : operation.pnl;
   });
-  const trackerDisplayedAverageLossValue = trackerLosses ? trackerClosedOperations.reduce((sum, operation, index) => operation.status === 'CLOSED - FAILED' ? sum + (trackerLossLimitEnabled ? trackerAdjustedPnls[index] : operation.pnl) : sum, 0) / trackerLosses : 0;
-  const trackerDisplayedAverageLossRoe = trackerLosses ? trackerClosedOperations.reduce((sum, operation, index) => operation.status === 'CLOSED - FAILED' ? sum + (trackerLossLimitEnabled ? Math.max(operation.resultRoePercent, -trackerLossLimitAnalysis.limit) : operation.resultRoePercent) : sum, 0) / trackerLosses : 0;
+  const trackerDisplayedAverageLossValue = trackerLosses ? trackerDisplayedOutcomes.reduce((sum, outcome) => outcome.status === 'CLOSED - FAILED' ? sum + outcome.pnl : sum, 0) / trackerLosses : 0;
+  const trackerDisplayedAverageLossRoe = trackerLosses ? trackerDisplayedOutcomes.reduce((sum, outcome) => outcome.status === 'CLOSED - FAILED' ? sum + outcome.resultRoePercent : sum, 0) / trackerLosses : 0;
   let trackerAdjustedEquity = paperInitialBalance;
   const trackerAdjustedEquityPoints = [{ equity: trackerAdjustedEquity }, ...trackerAdjustedPnls.map(pnl => { trackerAdjustedEquity += pnl; return { equity: trackerAdjustedEquity }; })];
   const trackerDisplayedEquity = trackerLossLimitEnabled ? trackerAdjustedEquity : trackerEquity;
@@ -3391,7 +3383,7 @@ function Workspace() {
     if (trackerSummarySort.key === 'realmaxroe') return operation.realMaxRoe.roePercent;
     if (trackerSummarySort.key === 'minroe') return operation.minRoe.roePercent;
     if (trackerSummarySort.key === 'realminroe') return operation.realMinRoe.roePercent;
-    if (trackerSummarySort.key === 'result') return operation.resultRoePercent;
+    if (trackerSummarySort.key === 'result') return trackerAdjustedOutcome(operation).resultRoePercent;
     return trackerClosedOperations.indexOf(operation);
   };
   const trackerSortedOperations = [...trackerClosedOperations].sort((left, right) => {
@@ -3444,12 +3436,13 @@ function Workspace() {
     const body = table.createTBody();
     trackerSortedOperations.forEach((operation, index) => {
       const originalIndex = trackerClosedOperations.indexOf(operation);
-      const displayedPnl = trackerLossLimitEnabled ? trackerAdjustedPnls[originalIndex] : operation.pnl;
-      const displayedRoe = trackerLossLimitEnabled && operation.status === 'CLOSED - FAILED' ? Math.max(operation.resultRoePercent, -trackerLossLimitAnalysis.limit) : operation.resultRoePercent;
+      const displayedOutcome = trackerDisplayedOutcomes[originalIndex];
+      const displayedPnl = displayedOutcome.pnl;
+      const displayedRoe = displayedOutcome.resultRoePercent;
       const pointLabel = (point: TrackerExtremePoint) => `${point.roePercent >= 0 ? '+' : ''}${point.roePercent.toFixed(2)}% · ${point.pnlUsd >= 0 ? '+' : ''}${point.pnlUsd.toFixed(4)} USDT`;
       const row = body.insertRow();
-      row.className = operation.status === 'CLOSED - WIN' ? 'tracker-operation-row-win' : 'tracker-operation-row-failed';
-      [String(index + 1), operation.side.toUpperCase(), operation.level, pointLabel(operation.maxRoe), pointLabel(operation.realMaxRoe), pointLabel(operation.minRoe), pointLabel(operation.realMinRoe), `${operation.status === 'CLOSED - WIN' ? 'WIN' : 'FAIL'}${trackerLossLimitEnabled && displayedPnl !== operation.pnl ? ' · LIMITADA' : ''} · ${displayedRoe >= 0 ? '+' : ''}${displayedRoe.toFixed(2)}% · ${displayedPnl >= 0 ? '+' : ''}${displayedPnl.toFixed(4)} USDT`].forEach(value => { row.insertCell().textContent = value; });
+      row.className = displayedOutcome.status === 'CLOSED - WIN' ? 'tracker-operation-row-win' : 'tracker-operation-row-failed';
+      [String(index + 1), operation.side.toUpperCase(), operation.level, pointLabel(operation.maxRoe), pointLabel(operation.realMaxRoe), pointLabel(operation.minRoe), pointLabel(operation.realMinRoe), `${displayedOutcome.status === 'CLOSED - WIN' ? 'WIN' : 'FAIL'}${displayedOutcome.limited ? ' · LIMITADA' : ''} · ${displayedRoe >= 0 ? '+' : ''}${displayedRoe.toFixed(2)}% · ${displayedPnl >= 0 ? '+' : ''}${displayedPnl.toFixed(4)} USDT`].forEach(value => { row.insertCell().textContent = value; });
     });
     scroll.appendChild(table);
     tablePanel.appendChild(scroll);
