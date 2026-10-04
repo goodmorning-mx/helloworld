@@ -3181,7 +3181,7 @@ function Workspace() {
     target: { time: trade.exitTime as UTCTimestamp, price: trade.targetPrice },
     pnl: trade.pnl,
     notional: trade.notional,
-  })).concat(trackerVirtualOperations.filter(operation => operation.status === 'CLOSED - WIN').map(operation => ({
+  })).concat(trackerVirtualOperations.filter(operation => operation.closed).map(operation => ({
     id: operation.id,
     symbol,
     type: operation.side,
