@@ -170,7 +170,7 @@ function runTrackerVisualSimulation(
         const grossPnl = ((exitPrice - openOperation.start.price) / openOperation.start.price) * direction * openOperation.notional;
         const pnl = grossPnl - tradingCosts('binance', openOperation.notional).total;
         balance = Math.max(0, balance + pnl);
-        openOperation = { ...openOperation, end: { time: Number(bar.time), price: exitPrice }, closed: true, closeReason: reason, status: reason === 'TP' ? 'CLOSED - WIN' : 'CLOSED - FAILED', pnl, resultRoePercent: closeRoe * Math.max(1, leverage) * 100, bodyAveragePercentAtClose: bodyAveragePercent(index) };
+        openOperation = { ...openOperation, end: { time: Number(bar.time), price: exitPrice }, closed: true, closeReason: reason, status: reason === 'TP' ? 'CLOSED - WIN' : 'CLOSED - FAILED', pnl, resultRoePercent: closeRoe * Math.max(1, leverage) * 100, bodyAveragePercentAtClose: bodyAveragePercent(index), finalTargetPercent: Math.abs(closeRoe * Math.max(1, leverage) * 100) };
         operations.push(openOperation);
         if (reason === 'TP') {
           // A WIN reverses immediately at this candle's closing price. The
