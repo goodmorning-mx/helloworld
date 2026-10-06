@@ -5,7 +5,7 @@ import json
 import logging
 import time
 from collections import defaultdict
-from typing import Any
+from typing import Any, Awaitable, Callable
 
 from fastapi import WebSocket, WebSocketDisconnect
 from websockets.asyncio.client import connect
@@ -23,6 +23,7 @@ class BinanceMarketGateway:
         self._clients: dict[str, set[WebSocket]] = defaultdict(set)
         self._tasks: dict[str, asyncio.Task[None]] = {}
         self._last_event_ms: dict[str, int] = {}
+        self._listeners: dict[str, set[Callable[[dict[str, Any]], Awaitable[None]]]] = defaultdict(set)
         self._lock = asyncio.Lock()
 
     @staticmethod
@@ -47,6 +48,9 @@ class BinanceMarketGateway:
         self._bars[symbol][interval] = [by_time[key] for key in sorted(by_time)][-1500:]
 
     async def _broadcast(self, symbol: str, payload: dict[str, Any]) -> None:
+        listeners = list(self._listeners[symbol])
+        if listeners:
+            await asyncio.gather(*(listener(payload) for listener in listeners), return_exceptions=True)
         clients = list(self._clients[symbol])
         if not clients:
             return
@@ -59,7 +63,7 @@ class BinanceMarketGateway:
     async def _rest_fallback(self, symbol: str) -> None:
         """Recover a silent upstream socket without polling while it is live."""
         async with httpx.AsyncClient(timeout=5) as client:
-            while self._clients[symbol]:
+            while self._clients[symbol] or self._listeners[symbol]:
                 await asyncio.sleep(3)
                 last_event = self._last_event_ms.get(symbol, 0)
                 if last_event and int(time.time() * 1000) - last_event < 8_000:
@@ -84,7 +88,7 @@ class BinanceMarketGateway:
         delay = 1.0
         fallback_task = asyncio.create_task(self._rest_fallback(symbol), name=f"binance-fallback-{symbol}")
         try:
-            while self._clients[symbol]:
+            while self._clients[symbol] or self._listeners[symbol]:
                 try:
                     logger.info("binance_stream_connect symbol=%s", symbol)
                     async with connect(self._stream_url(symbol), ping_interval=20, ping_timeout=20, close_timeout=5) as socket:
@@ -143,13 +147,29 @@ class BinanceMarketGateway:
             pass
         finally:
             self._clients[symbol].discard(websocket)
-            if not self._clients[symbol]:
+            if not self._clients[symbol] and not self._listeners[symbol]:
                 task = self._tasks.pop(symbol, None)
                 if task and not task.done():
                     task.cancel()
             logger.info("binance_stream_client_disconnected symbol=%s clients=%d", symbol, len(self._clients[symbol]))
 
+    def add_listener(self, symbol: str, listener: Callable[[dict[str, Any]], Awaitable[None]]) -> None:
+        symbol = self._symbol(symbol)
+        self._listeners[symbol].add(listener)
+        task = self._tasks.get(symbol)
+        if task is None or task.done():
+            self._tasks[symbol] = asyncio.create_task(self._consume(symbol), name=f"binance-worker-stream-{symbol}")
+
+    def remove_listener(self, symbol: str, listener: Callable[[dict[str, Any]], Awaitable[None]]) -> None:
+        symbol = self._symbol(symbol)
+        self._listeners[symbol].discard(listener)
+        if not self._clients[symbol] and not self._listeners[symbol]:
+            task = self._tasks.pop(symbol, None)
+            if task and not task.done():
+                task.cancel()
+
     async def close(self) -> None:
+        self._listeners.clear()
         tasks = list(self._tasks.values())
         self._tasks.clear()
         for task in tasks:

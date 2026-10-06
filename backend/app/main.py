@@ -38,6 +38,8 @@ from app.market_gateway import BinanceMarketGateway, SUPPORTED_INTERVALS
 from app.binance_execution import BinanceExecutionStore, BinanceExecutionSupervisor
 from app.binance_tp_worker import BinanceTakeProfitWorker
 from app.backtest_engine import MAX_BACKTEST_DAYS, fetch_binance_history, run_storycard_backtest, _bar_context
+from app.production_worker import ProductionWorkerConfigStore, ProductionWorkerManager
+from app.telegram_service import BackendEventBus, TelegramSink, telegram_event_sink
 
 settings = get_settings()
 logger = logging.getLogger(__name__)
@@ -58,6 +60,11 @@ binance_market_gateway = BinanceMarketGateway()
 binance_execution_store = BinanceExecutionStore(engine)
 binance_execution_supervisor = BinanceExecutionSupervisor(settings, binance_credentials, binance_manager, binance_execution_store)
 binance_tp_worker = BinanceTakeProfitWorker(binance_manager, binance_execution_store, settings.binance_base_url)
+telegram_sink = TelegramSink(settings.telegram_bot_token, settings.telegram_chat_id, settings.telegram_min_delay)
+backend_events = BackendEventBus()
+backend_events.add_sink(telegram_event_sink(telegram_sink))
+production_worker_config_store = ProductionWorkerConfigStore(engine)
+production_workers = ProductionWorkerManager(binance_market_gateway, paper_operation_store, backend_events, binance_manager, binance_execution_store, production_worker_config_store)
 _binance_exchange_info_cache: tuple[float, dict[str, object]] | None = None
 _binance_exchange_info_lock = Lock()
 
@@ -279,6 +286,17 @@ class BinanceTakeProfitUpdateInput(BaseModel):
     confirmed: bool = False
 
 
+class ProductionWorkerInput(BaseModel):
+    symbol: str = Field(min_length=3, max_length=32)
+    mode: Literal["paper", "live"] = "paper"
+    interval: Literal["1m", "3m", "5m", "15m"] = "1m"
+    tracker_period: int = Field(default=5, ge=1, le=300)
+    stop_percent: float = Field(default=0.2, gt=0, le=100)
+    target_percent: float = Field(default=1.0, gt=0, le=1_000)
+    quantity: float = Field(default=0, ge=0)
+    confirmed: bool = False
+
+
 def _binance_public_execution_rules(symbol: str) -> tuple[float, float, float, float, int, int]:
     """Return live price and the current public exchange filters for a symbol."""
     base = settings.binance_base_url.rstrip("/")
@@ -355,8 +373,21 @@ def initialize_auth_schema() -> None:
     # execution supervisor still reconciles their state through User Stream.
 
 
+@app.on_event("startup")
+async def start_backend_services() -> None:
+    if settings.telegram_enabled and telegram_sink.configured:
+        await telegram_sink.start()
+    if settings.production_worker_enabled:
+        await production_workers.restore(resume_live=settings.production_worker_resume_live and settings.binance_real_trading_enabled)
+
+
 @app.on_event("shutdown")
 def stop_binance_monitor() -> None:
+    for user_id, symbol in list(production_workers.workers):
+        # Workers are paper/live process-local sessions; stop their market listeners
+        # before closing the shared gateway.
+        production_workers.workers[(user_id, symbol)].running = False
+    production_workers.workers.clear()
     binance_execution_supervisor.stop()
     binance_tp_worker.stop()
     binance_manager.stop_all()
@@ -365,6 +396,7 @@ def stop_binance_monitor() -> None:
 
 @app.on_event("shutdown")
 async def stop_market_gateway() -> None:
+    await telegram_sink.stop()
     await binance_market_gateway.close()
 
 
@@ -466,6 +498,33 @@ def binance_runtime(identity: AuthIdentity = Depends(identity_dependency(auth_se
     """Expose backend worker health without exposing credentials or secrets."""
     snapshot = binance_manager.snapshot(identity.user_id)
     return {"real_trading_enabled": settings.binance_real_trading_enabled, "worker": binance_execution_supervisor.status(), "account": snapshot}
+
+
+@app.get("/trading/production/workers")
+def list_production_workers(identity: AuthIdentity = Depends(identity_dependency(auth_service))) -> list[dict[str, object]]:
+    """Return strategy worker status without exposing credentials."""
+    return production_workers.list(identity.user_id)
+
+
+@app.post("/trading/production/workers")
+async def start_production_worker(payload: ProductionWorkerInput, identity: AuthIdentity = Depends(identity_dependency(auth_service))) -> dict[str, object]:
+    """Start one per-symbol strategy session; live mode is explicitly gated."""
+    if not settings.production_worker_enabled:
+        raise HTTPException(status_code=503, detail="Los workers de producción están deshabilitados.")
+    if payload.mode == "live":
+        if not settings.binance_real_trading_enabled:
+            raise HTTPException(status_code=503, detail="El trading real está bloqueado en este entorno.")
+        if not payload.confirmed:
+            raise HTTPException(status_code=409, detail="Confirma explícitamente el modo live.")
+    try:
+        return await production_workers.start(identity.user_id, payload.symbol, mode=payload.mode, interval=payload.interval, tracker_period=payload.tracker_period, stop_percent=payload.stop_percent, target_percent=payload.target_percent, quantity=payload.quantity)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@app.delete("/trading/production/workers/{symbol}")
+async def stop_production_worker(symbol: str, identity: AuthIdentity = Depends(identity_dependency(auth_service))) -> dict[str, object]:
+    return await production_workers.stop(identity.user_id, symbol)
 
 
 @app.get("/trading/binance/execution-intents")

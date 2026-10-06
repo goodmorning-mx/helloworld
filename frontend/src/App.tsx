@@ -210,6 +210,7 @@ const BINANCE_MARGIN_RESERVE_USDT = 1;
 type BinanceSizingMode = 'minimum' | 'maximum';
 type ViewportSnapshot = { bars: number; futureBars: number; yBelow: number; yAbove: number };
 type OhlcHover = { time: UTCTimestamp; open: number; high: number; low: number; close: number; x: number; y: number };
+type ReplayState = { active: boolean; running: boolean; cursor: number; total: number; start: number };
 const ENTRY_VIEWPORT_DEFAULTS: ViewportSnapshot = { bars: 100, futureBars: 0, yBelow: 14, yAbove: 11 };
 function renderBars(bars: Array<{ time: UTCTimestamp; open: number; high: number; low: number; close: number }>, max: number) {
   return bars.slice(-max);
@@ -985,6 +986,9 @@ function Workspace() {
   const chartRef = useRef<ReturnType<typeof createChart> | null>(null);
   const candlesRef = useRef<ReturnType<ReturnType<typeof createChart>['addSeries']> | null>(null);
   const candleBarsRef = useRef<Array<{ time: UTCTimestamp; open: number; high: number; low: number; close: number }>>([]);
+  const replayAllBarsRef = useRef<Array<{ time: UTCTimestamp; open: number; high: number; low: number; close: number }>>([]);
+  const replayRef = useRef<ReplayState>({ active: false, running: false, cursor: -1, total: 0, start: -1 });
+  const [replayState, setReplayState] = useState<ReplayState>({ active: false, running: false, cursor: -1, total: 0, start: -1 });
   const [entryOhlcHover, setEntryOhlcHover] = useState<OhlcHover | null>(null);
   const [overviewOhlcHover, setOverviewOhlcHover] = useState<OhlcHover | null>(null);
   const binanceLivePriceRef = useRef<BinanceLivePrice | null>(null);
@@ -1002,6 +1006,7 @@ function Workspace() {
   const [pendingBinanceTp, setPendingBinanceTp] = useState<{ symbol: string; price: number } | null>(null);
   const pendingBinanceTpRef = useRef<{ symbol: string; price: number } | null>(null);
   const [binanceProductionAvailable, setBinanceProductionAvailable] = useState(false);
+  const [productionWorkerRunning, setProductionWorkerRunning] = useState(false);
   const [executionMode, setExecutionMode] = useState<'paper' | 'production'>('paper');
   const [binanceSizingMode, setBinanceSizingMode] = useState<BinanceSizingMode>(() => localStorage.getItem('helloworld-binance-sizing-mode') === 'maximum' ? 'maximum' : 'minimum');
   const [binanceStopPercent, setBinanceStopPercent] = useState(() => Number(localStorage.getItem('helloworld-binance-stop-percent') ?? FIXED_BINANCE_STOP_PERCENT) || FIXED_BINANCE_STOP_PERCENT);
@@ -1100,6 +1105,57 @@ function Workspace() {
       setOverviewRevision(value => value + 1);
     });
   };
+  const setReplaySnapshot = (next: ReplayState) => {
+    replayRef.current = next;
+    setReplayState(next);
+  };
+  const renderReplayPrefix = (cursor: number) => {
+    const all = replayAllBarsRef.current;
+    if (!all.length || cursor < 0) return;
+    const prefix = all.slice(0, cursor + 1);
+    candleBarsRef.current = prefix;
+    candleDataRef.current = prefix.map(({ time, close }) => ({ time, close }));
+    const visible = renderBars(prefix, MAX_ENTRY_RENDER_BARS);
+    candlesRef.current?.setData(showHeikinAshi ? calculateHeikinAshi(visible) : visible);
+    setTrackerRevision(value => value + 1);
+    setViewportRevision(value => value + 1);
+  };
+  const startReplayAt = (index: number) => {
+    const all = replayAllBarsRef.current.length ? replayAllBarsRef.current : candleBarsRef.current;
+    const start = Math.max(0, Math.min(Math.round(index), all.length - 1));
+    if (all.length === 0 || start < 0) return;
+    replayAllBarsRef.current = [...all];
+    const next = { active: true, running: false, cursor: start, total: all.length, start };
+    setReplaySnapshot(next);
+    renderReplayPrefix(start);
+  };
+  const advanceReplay = (delta = 1) => {
+    const current = replayRef.current;
+    if (!current.active) return;
+    const nextCursor = Math.max(current.start, Math.min(current.total - 1, current.cursor + delta));
+    const next = { ...current, cursor: nextCursor, running: delta > 0 && nextCursor < current.total - 1 ? current.running : false };
+    setReplaySnapshot(next);
+    renderReplayPrefix(nextCursor);
+  };
+  const stopReplay = () => {
+    const all = replayAllBarsRef.current;
+    replayRef.current = { active: false, running: false, cursor: -1, total: 0, start: -1 };
+    setReplayState(replayRef.current);
+    if (all.length) {
+      candleBarsRef.current = all;
+      candleDataRef.current = all.map(({ time, close }) => ({ time, close }));
+      const visible = renderBars(all, MAX_ENTRY_RENDER_BARS);
+      candlesRef.current?.setData(showHeikinAshi ? calculateHeikinAshi(visible) : visible);
+      setTrackerRevision(value => value + 1);
+      setViewportRevision(value => value + 1);
+    }
+    replayAllBarsRef.current = [];
+  };
+  useEffect(() => {
+    if (!replayState.active || !replayState.running) return;
+    const timer = window.setInterval(() => advanceReplay(1), 700);
+    return () => window.clearInterval(timer);
+  }, [replayState.active, replayState.running]);
   type ChartPoint = { time: UTCTimestamp; price: number };
   type ChartCanvas = 'entry' | 'context';
   type Drawing = { id?: string; symbol?: string; type: 'line' | 'ruler' | 'long' | 'short' | 'zoom'; start: ChartPoint; end: ChartPoint; stop?: ChartPoint; target?: ChartPoint; chart?: ChartCanvas; paper?: boolean; real?: boolean; backtest?: boolean; closed?: boolean; closeReason?: 'TP' | 'SL' | 'MANUAL'; status?: 'OPEN' | 'CLOSED - WIN' | 'CLOSED - FAILED'; riskPercent?: number; quantity?: number; notional?: number; margin?: number; pnl?: number; resultRoePercent?: number; leverage?: number; bodyAveragePercentAtOpen?: number; bodyAveragePercentAtClose?: number; finalTargetPercent?: number; finalTargetRoePercent?: number; maxRoe?: TrackerExtremePoint; realMaxRoe?: TrackerExtremePoint; minRoe?: TrackerExtremePoint; realMinRoe?: TrackerExtremePoint };
@@ -1170,6 +1226,7 @@ function Workspace() {
   const [marketReviewClock, setMarketReviewClock] = useState(() => Date.now());
   const [activeMarketLoading, setActiveMarketLoading] = useState(false);
   const [activeMarketError, setActiveMarketError] = useState('');
+  const [productionWorkerError, setProductionWorkerError] = useState('');
   const selectableSymbols = [...new Set([...brokerSymbols, ...activeMarketSymbols.map(candidate => candidate.symbol)])];
 
   useEffect(() => {
@@ -1579,7 +1636,13 @@ function Workspace() {
     const wheelHandler = (event: WheelEvent) => zoomChartOnWheel(chart, event);
     chartContainer.current.addEventListener('wheel', wheelHandler, { passive: false });
     const crosshairHandler = (param: any) => setEntryOhlcHover(resolveOhlcHover(param, candles, candleBarsRef.current));
+    const clickHandler = (param: any) => {
+      if (replayRef.current.active || !param?.time) return;
+      const index = candleBarsRef.current.findIndex(bar => Number(bar.time) === Number(param.time));
+      if (index >= 0) startReplayAt(index);
+    };
     chart.subscribeCrosshairMove(crosshairHandler);
+    chart.subscribeClick(clickHandler);
     let hasChartData = false;
     let initializingViewport = false;
     const setDataPreservingRange = (data: Array<{ time: UTCTimestamp; open: number; high: number; low: number; close: number }>) => {
@@ -1661,7 +1724,7 @@ function Workspace() {
       const pollTick = () => fetch(`${apiUrl}/trading/ctrader/tick/${encodeURIComponent(symbol)}`, { headers: auth.accessToken ? { Authorization: `Bearer ${auth.accessToken}` } : {}, credentials: 'include' })
         .then(response => response.ok ? response.json() as Promise<{ tick?: { price?: number; time?: number } }> : Promise.reject(new Error('tick unavailable')))
         .then(payload => {
-          if (!active || !payload.tick?.price || !payload.tick.time) return;
+          if (!active || replayRef.current.active || !payload.tick?.price || !payload.tick.time) return;
           const previousBarTime = candleBarsRef.current[candleBarsRef.current.length - 1]?.time;
           candleBarsRef.current = mergeTickBar(candleBarsRef.current, Number(payload.tick.time), Number(payload.tick.price), 60);
           const liveBar = candleBarsRef.current[candleBarsRef.current.length - 1];
@@ -1677,7 +1740,7 @@ function Workspace() {
       const candleTimer = window.setInterval(() => void loadCTrader(), 30_000);
       const tickTimer = window.setInterval(pollTick, 1_000);
       void pollTick();
-      return () => { active = false; window.clearInterval(candleTimer); window.clearInterval(tickTimer); chart.timeScale().unsubscribeVisibleTimeRangeChange(refreshDrawings); chart.timeScale().unsubscribeVisibleLogicalRangeChange(refreshDrawings); chart.unsubscribeCrosshairMove(crosshairHandler); chartContainer.current?.removeEventListener('wheel', wheelHandler); setEntryOhlcHover(null); chartRef.current = null; candlesRef.current = null; candleDataRef.current = []; candleBarsRef.current = []; loadingOlderRef.current = false; chart.remove(); };
+      return () => { active = false; window.clearInterval(candleTimer); window.clearInterval(tickTimer); chart.timeScale().unsubscribeVisibleTimeRangeChange(refreshDrawings); chart.timeScale().unsubscribeVisibleLogicalRangeChange(refreshDrawings); chart.unsubscribeCrosshairMove(crosshairHandler); chart.unsubscribeClick(clickHandler); chartContainer.current?.removeEventListener('wheel', wheelHandler); setEntryOhlcHover(null); chartRef.current = null; candlesRef.current = null; candleDataRef.current = []; candleBarsRef.current = []; loadingOlderRef.current = false; chart.remove(); };
     }
     // The chart/history uses Binance Futures, so the live stream must use the
     // Futures WebSocket too. Spot streams can silently stop for Futures-only
@@ -1705,6 +1768,7 @@ function Workspace() {
       .catch(() => undefined);
     stream.onmessage = event => {
       if (!active) return;
+      if (replayRef.current.active) return;
       const message = JSON.parse(event.data) as { type?: string; symbol?: string; price?: number; time?: number; interval?: string; bar?: { time: number; open: number; high: number; low: number; close: number } };
       if (message.type === 'mark_price' && message.price && message.time) {
         queueBinancePnlUpdate({ symbol, price: Number(message.price), time: Number(message.time) });
@@ -1809,6 +1873,7 @@ function Workspace() {
       chart.timeScale().unsubscribeVisibleLogicalRangeChange(refreshDrawings);
       chartContainer.current?.removeEventListener('wheel', wheelHandler);
       chart.unsubscribeCrosshairMove(crosshairHandler);
+      chart.unsubscribeClick(clickHandler);
       setEntryOhlcHover(null);
       chartRef.current = null;
       candlesRef.current = null;
@@ -1855,7 +1920,15 @@ function Workspace() {
     const wheelHandler = (event: WheelEvent) => zoomChartOnWheel(chart, event);
     overviewChartContainer.current.addEventListener('wheel', wheelHandler, { passive: false });
     const crosshairHandler = (param: any) => setOverviewOhlcHover(resolveOhlcHover(param, candles, overviewBarsRef.current));
+    const clickHandler = (param: any) => {
+      if (replayRef.current.active || !param?.time || !candleBarsRef.current.length) return;
+      const clickedTime = Number(param.time);
+      let nearest = 0;
+      candleBarsRef.current.forEach((bar, index) => { if (Math.abs(Number(bar.time) - clickedTime) < Math.abs(Number(candleBarsRef.current[nearest].time) - clickedTime)) nearest = index; });
+      startReplayAt(nearest);
+    };
     chart.subscribeCrosshairMove(crosshairHandler);
+    chart.subscribeClick(clickHandler);
     let hasChartData = false;
     let initializingViewport = false;
     const setDataPreservingRange = (data: Array<{ time: UTCTimestamp; open: number; high: number; low: number; close: number }>) => {
@@ -1954,7 +2027,7 @@ function Workspace() {
       const candleTimer = window.setInterval(() => void loadCTrader(), 30_000);
       const tickTimer = window.setInterval(pollTick, 1_000);
       void pollTick();
-      return () => { active = false; window.clearInterval(candleTimer); window.clearInterval(tickTimer); chart.timeScale().unsubscribeVisibleTimeRangeChange(refreshOverview); chart.timeScale().unsubscribeVisibleLogicalRangeChange(refreshOverview); chart.unsubscribeCrosshairMove(crosshairHandler); overviewChartContainer.current?.removeEventListener('wheel', wheelHandler); setOverviewOhlcHover(null); overviewChartRef.current = null; overviewCandlesRef.current = null; overviewCandleDataRef.current = []; overviewBarsRef.current = []; overviewLoadingOlderRef.current = false; chart.remove(); };
+      return () => { active = false; window.clearInterval(candleTimer); window.clearInterval(tickTimer); chart.timeScale().unsubscribeVisibleTimeRangeChange(refreshOverview); chart.timeScale().unsubscribeVisibleLogicalRangeChange(refreshOverview); chart.unsubscribeCrosshairMove(crosshairHandler); chart.unsubscribeClick(clickHandler); overviewChartContainer.current?.removeEventListener('wheel', wheelHandler); setOverviewOhlcHover(null); overviewChartRef.current = null; overviewCandlesRef.current = null; overviewCandleDataRef.current = []; overviewBarsRef.current = []; overviewLoadingOlderRef.current = false; chart.remove(); };
     }
     const stream = createBinanceKlineStream(symbol, interval);
     const gatewayInterval = interval === '1s' ? '1m' : interval;
@@ -1978,6 +2051,7 @@ function Workspace() {
       }).catch(() => undefined);
     stream.onmessage = event => {
       if (!active) return;
+      if (replayRef.current.active) return;
       const message = JSON.parse(event.data) as { type?: string; symbol?: string; price?: number; time?: number; interval?: string; bar?: { time: number; open: number; high: number; low: number; close: number } };
       if (message.type === 'trade' && message.price && message.time) {
         binanceLivePriceRef.current = { symbol, price: Number(message.price), time: Number(message.time), receivedAt: Date.now() };
@@ -2007,7 +2081,7 @@ function Workspace() {
       scheduleOverviewRefresh();
       if (isNewBar) setTrackerRevision(value => value + 1);
     };
-    return () => { active = false; stream.close(); chart.timeScale().unsubscribeVisibleTimeRangeChange(refreshOverview); chart.timeScale().unsubscribeVisibleLogicalRangeChange(refreshOverview); chart.unsubscribeCrosshairMove(crosshairHandler); overviewChartContainer.current?.removeEventListener('wheel', wheelHandler); setOverviewOhlcHover(null); overviewChartRef.current = null; overviewCandlesRef.current = null; overviewCandleDataRef.current = []; overviewBarsRef.current = []; overviewLoadingOlderRef.current = false; chart.remove(); };
+    return () => { active = false; stream.close(); chart.timeScale().unsubscribeVisibleTimeRangeChange(refreshOverview); chart.timeScale().unsubscribeVisibleLogicalRangeChange(refreshOverview); chart.unsubscribeCrosshairMove(crosshairHandler); chart.unsubscribeClick(clickHandler); overviewChartContainer.current?.removeEventListener('wheel', wheelHandler); setOverviewOhlcHover(null); overviewChartRef.current = null; overviewCandlesRef.current = null; overviewCandleDataRef.current = []; overviewBarsRef.current = []; overviewLoadingOlderRef.current = false; chart.remove(); };
   }, [auth.accessToken, broker, symbol, interval, timezone, mobilePwa, showHeikinAshi]);
 
   useEffect(() => {
@@ -3232,6 +3306,27 @@ function Workspace() {
   const riskPreviewUsd = riskPreviewBalance * activeRiskPercent / 100;
   const targetSlUsd = riskPreviewUsd;
   const targetTpUsd = binanceStopPercent > 0 ? riskPreviewUsd * binanceTargetPercent / binanceStopPercent : 0;
+  const toggleProductionWorker = async () => {
+    setProductionWorkerError('');
+    const headers = { ...(auth.accessToken ? { Authorization: `Bearer ${auth.accessToken}` } : {}), 'Content-Type': 'application/json' };
+    try {
+      if (productionWorkerRunning) {
+        const response = await fetch(`${apiUrl}/trading/production/workers/${encodeURIComponent(symbol)}`, { method: 'DELETE', headers, credentials: 'include' });
+        if (!response.ok) throw new Error((await response.json() as { detail?: string }).detail ?? 'No se pudo detener el worker.');
+        setProductionWorkerRunning(false);
+        setExecutionMode('paper');
+        return;
+      }
+      const mode = binanceProductionAvailable ? 'live' : 'paper';
+      if (mode === 'live' && !window.confirm('Producción enviará órdenes reales a Binance. ¿Continuar?')) return;
+      const response = await fetch(`${apiUrl}/trading/production/workers`, { method: 'POST', headers, credentials: 'include', body: JSON.stringify({ symbol, mode, interval: '1m', tracker_period: trackerPeriod, stop_percent: binanceStopPercent, target_percent: binanceTargetPercent, quantity: productionPreviewData?.quantity ?? 0, confirmed: mode === 'live' }) });
+      if (!response.ok) throw new Error((await response.json() as { detail?: string }).detail ?? 'No se pudo iniciar el worker de producción.');
+      setProductionWorkerRunning(true);
+      setExecutionMode(mode === 'live' ? 'production' : 'paper');
+    } catch (error) {
+      setProductionWorkerError(error instanceof Error ? error.message : 'No se pudo cambiar el modo de ejecución.');
+    }
+  };
   const adjustRiskBalance = (delta: number) => setRiskBalancePreview(Math.max(.01, Number((riskPreviewBalance + delta).toFixed(4))));
   const adjustRiskPercent = (delta: number) => {
     const next = Math.max(.05, Math.min(100, Number((activeRiskPercent + delta).toFixed(2))));
@@ -3277,7 +3372,7 @@ function Workspace() {
   const productionOrderPreview = broker === 'binance'
     ? <span className={`production-order-preview ${productionPositions.length > 0 ? 'production-preview-active' : ''}`} aria-label="Preview de la próxima operación Binance"><span className="preview-mode"><small>MODO</small><strong>{binanceSizingMode === 'minimum' ? 'MÍNIMO' : 'MÁXIMO'}</strong></span><span className="preview-risk"><small>BALANCE <button type="button" className="preview-adjust-button" onClick={() => adjustRiskBalance(.1)} aria-label="Aumentar balance">↑</button><button type="button" className="preview-adjust-button" onClick={() => adjustRiskBalance(-.1)} aria-label="Disminuir balance">↓</button></small><strong>{riskPreviewBalance.toFixed(4)} USDT</strong></span><span className="preview-risk"><small>RISK % <button type="button" className="preview-adjust-button" onClick={() => adjustRiskPercent(.1)} aria-label="Aumentar riesgo porcentual">↑</button><button type="button" className="preview-adjust-button" onClick={() => adjustRiskPercent(-.1)} aria-label="Disminuir riesgo porcentual">↓</button></small><strong>{activeRiskPercent.toFixed(2)}%</strong></span><span className="preview-risk"><small>RISK $ <button type="button" className="preview-adjust-button" onClick={() => adjustRiskUsd(.01)} aria-label="Aumentar riesgo en dólares">↑</button><button type="button" className="preview-adjust-button" onClick={() => adjustRiskUsd(-.01)} aria-label="Disminuir riesgo en dólares">↓</button></small><strong>{riskPreviewUsd.toFixed(4)} USDT</strong></span><span><small>MARGIN</small><strong>{productionPreviewData ? `${productionPreviewData.margin.toFixed(4)} USDT` : '—'}</strong></span><span><small>MULTIPLICADOR</small><strong>{productionPreviewData ? `×${productionPreviewData.marginMultiplier.toFixed(2)}` : '—'}</strong></span><span><small>NOTIONAL</small><strong>{productionPreviewData ? `${productionPreviewData.notional.toFixed(4)} USDT` : '—'}</strong></span><span><small>LEVERAGE</small><strong>{productionPreviewData ? `${productionPreviewData.leverage}x` : '—'}</strong></span><span><small>FEE</small><strong>{productionPreviewData ? `${productionPreviewData.fees.toFixed(4)} USDT` : '—'}</strong></span><span className="preview-sl"><small>SL <button type="button" className="preview-adjust-button" onClick={() => adjustProtectionPercent('sl', .05)} aria-label="Aumentar SL">↑</button><button type="button" className="preview-adjust-button" onClick={() => adjustProtectionPercent('sl', -.05)} aria-label="Disminuir SL">↓</button></small><strong>−{binanceStopPercent.toFixed(2)}% · REAL −{productionPreviewData ? productionPreviewData.slAmount.toFixed(4) : '—'} $</strong><em>OBJ −{targetSlUsd.toFixed(4)} $</em></span><span className="preview-tp"><small>TP <button type="button" className="preview-adjust-button" onClick={() => adjustProtectionPercent('tp', .05)} aria-label="Aumentar TP">↑</button><button type="button" className="preview-adjust-button" onClick={() => adjustProtectionPercent('tp', -.05)} aria-label="Disminuir TP">↓</button><button type="button" className="preview-optimize-button" onClick={optimizeTrackerTarget} disabled={!showTracker} title="Probar TP de 0.10% a 20.00% con límite de pérdidas" aria-label="Optimizar TP">↗</button></small><strong>+{binanceTargetPercent.toFixed(2)}% · REAL +{productionPreviewData ? productionPreviewData.tpAmount.toFixed(4) : '—'} $</strong><em>OBJ +{targetTpUsd.toFixed(4)} $</em>{tpOptimizationResult && <i className="tp-optimizer-result">BEST {tpOptimizationResult.targetPercent.toFixed(2)}% · EQ {tpOptimizationResult.equity.toFixed(2)} · LIM −{tpOptimizationResult.lossLimit.toFixed(2)}%</i>}</span><span className="preview-pnl"><small>PNL</small><strong>{productionPositions.length > 0 ? `${productionPnl >= 0 ? '+' : ''}${productionPnl.toFixed(4)} USDT` : '—'}</strong></span></span>
     : null;
-  const previewControls = <div className="preview-controls"><button type="button" className={`binance-sizing-toggle ${binanceSizingMode === 'maximum' ? 'binance-sizing-maximum' : ''}`} onClick={() => setBinanceSizingMode(current => { const next = current === 'minimum' ? 'maximum' : 'minimum'; localStorage.setItem('helloworld-binance-sizing-mode', next); return next; })} aria-label="Cambiar modo de sizing Binance" title="Alternar modo mínimo/máximo">{binanceSizingMode === 'minimum' ? 'MÍN' : 'MÁX'}</button><button type="button" className={`production-mode-icon ${executionMode === 'production' ? 'production-mode-active' : ''}`} disabled={!binanceProductionAvailable} onClick={() => { if (executionMode === 'paper' && window.confirm('Producción enviará órdenes reales a Binance. ¿Continuar?')) setExecutionMode('production'); else if (executionMode === 'production') setExecutionMode('paper'); }} aria-label="Cambiar Paper/Producción" title={binanceProductionAvailable ? 'Cambiar Paper/Producción' : 'Producción deshabilitada'}>◉</button></div>;
+  const previewControls = <div className="preview-controls"><button type="button" className={`binance-sizing-toggle ${binanceSizingMode === 'maximum' ? 'binance-sizing-maximum' : ''}`} onClick={() => setBinanceSizingMode(current => { const next = current === 'minimum' ? 'maximum' : 'minimum'; localStorage.setItem('helloworld-binance-sizing-mode', next); return next; })} aria-label="Cambiar modo de sizing Binance" title="Alternar modo mínimo/máximo">{binanceSizingMode === 'minimum' ? 'MÍN' : 'MÁX'}</button><button type="button" className={`production-mode-icon ${productionWorkerRunning ? 'production-mode-active' : ''}`} onClick={() => void toggleProductionWorker()} aria-label="Iniciar o detener worker Paper/Producción" title={productionWorkerRunning ? 'Detener worker' : binanceProductionAvailable ? 'Iniciar Producción' : 'Iniciar Paper'}>◉</button></div>;
   const productionPositionLabel = productionPositions.length > 0
     ? productionPositions.map(position => {
       const pnl = Number(position.unrealized_pnl ?? 0);
@@ -3286,7 +3381,7 @@ function Workspace() {
     }).join(' · ')
     : '';
   const scannerStatusBar = broker === 'binance' ? <div className="header-market-scanner" aria-label="Market scanner Binance">{[...activeMarketSymbols].sort((a, b) => { const priority = { due: 0, overdue: 1, waiting: 2, '': 3 }; const stateA = getMarketReviewState(marketReviewTimes[a.symbol] ?? ''); const stateB = getMarketReviewState(marketReviewTimes[b.symbol] ?? ''); return priority[stateA as keyof typeof priority] - priority[stateB as keyof typeof priority] || b.variation_sum_pct - a.variation_sum_pct; }).map(candidate => { const variation = candidate.variation_sum_pct; const reviewTime = marketReviewTimes[candidate.symbol] ?? ''; const reviewState = getMarketReviewState(reviewTime); return <article key={candidate.symbol} className={`header-market-item ${candidate.symbol === symbol ? 'active' : ''} ${reviewTime ? `has-review-time review-${reviewState}` : ''}`}><button type="button" className="header-market-main" onClick={() => { setLabRecommendations(null); setSymbol(candidate.symbol); }}><b>{candidate.symbol}</b><span className={variation >= 0 ? 'ticker-up' : 'ticker-down'}>{variation >= 0 ? '▲' : '▼'} {Math.abs(variation).toFixed(2)}%</span></button><label className="header-market-review" title="Próxima revisión"><input type="time" value={reviewTime} onChange={event => updateMarketReviewTime(candidate.symbol, event.target.value)} aria-label={`Próxima revisión de ${candidate.symbol}`} />{reviewState === 'overdue' && <button type="button" className="header-market-reset" onClick={event => { event.stopPropagation(); updateMarketReviewTime(candidate.symbol, ''); }} aria-label={`Eliminar revisión de ${candidate.symbol}`} title="Eliminar revisión vencida">↻</button>}</label></article>; })}</div> : null;
-  const statusBarMessage = paperSyncError || binanceLeverageError || activeMarketError;
+  const statusBarMessage = paperSyncError || binanceLeverageError || activeMarketError || productionWorkerError;
   const binanceReady = binanceOnline;
   const binanceStatusClass = binanceReady
     ? executionMode === 'production' ? 'broker-production-connected' : 'broker-paper-ready'
@@ -3306,12 +3401,13 @@ function Workspace() {
   const adjustSslRegimeWindow = (delta: number) => setSslRegimeWindow(current => { const next = Math.max(2, Math.min(20, current + delta)); localStorage.setItem('helloworld-ssl-regime-window', String(next)); return next; });
   const adjustSslPeriod = (delta: number) => setSslPeriod(current => { const next = Math.max(2, Math.min(200, current + delta)); localStorage.setItem('helloworld-ssl-period', String(next)); return next; });
   const levelAdjustControls = <div className="level-adjust-controls" aria-label="Ajustar niveles e indicadores">{quickArrows('LEVELS N', trackerPeriod, () => adjustTrackerPeriod(1), () => adjustTrackerPeriod(-1), 'período de niveles')}{quickArrows('SSL P', sslPeriod, () => adjustSslPeriod(1), () => adjustSslPeriod(-1), 'período del indicador SSL')}{quickArrows('SSL N', sslRegimeWindow, () => adjustSslRegimeWindow(1), () => adjustSslRegimeWindow(-1), 'ventana de régimen SSL')}{quickArrows('WICK N', wickPeriod, () => adjustWickPeriod(1), () => adjustWickPeriod(-1), 'período de mechazos')}{quickArrows('SHOW', wickDisplayPeriod, () => adjustWickDisplayPeriod(1), () => adjustWickDisplayPeriod(-1), 'velas visibles')}{quickArrows('×', wickMultiplier.toFixed(1), () => adjustWickMultiplier(.1), () => adjustWickMultiplier(-.1), 'multiplicador de mechazos')}</div>;
+  const replayControls = <div className={`replay-controls ${replayState.active ? 'replay-active' : ''}`} aria-label="Repetición vela a vela"><button type="button" onClick={() => replayState.active ? setReplaySnapshot({ ...replayState, running: !replayState.running }) : undefined} disabled={!replayState.active} title="Reproducir o pausar la repetición">{replayState.running ? 'Ⅱ' : '▶'}</button><button type="button" onClick={() => advanceReplay(-1)} disabled={!replayState.active || replayState.cursor <= replayState.start} title="Vela anterior">‹</button><button type="button" onClick={() => advanceReplay(1)} disabled={!replayState.active || replayState.cursor >= replayState.total - 1} title="Siguiente vela">›</button><button type="button" onClick={stopReplay} disabled={!replayState.active} title="Salir de repetición">×</button><small>{replayState.active ? `REPLAY ${replayState.cursor + 1}/${replayState.total}` : 'CLICK EN VELA · REPLAY'}</small></div>;
   const desktopHeader = <div className="symbol-bar"><select className={`broker-select ${broker === 'binance' ? binanceStatusClass : ''}`} value={broker} onChange={event => { const next = event.target.value as 'binance' | 'ctrader'; setBroker(next); setSymbol(next === 'ctrader' ? 'AUDUSD' : 'BTCUSDT'); }} aria-label="Broker"><option value="binance">Binance</option><option value="ctrader">cTrader</option></select><select className="symbol-select" value={symbol} onChange={event => setSymbol(event.target.value)} aria-label="Símbolo">
     {selectableSymbols.map(option => <option key={option}>{option}</option>)}
   </select><select className="interval-select" value={interval} onChange={event => setInterval(event.target.value as typeof interval)} aria-label="Intervalo de contexto">{(['1s', '1m', '3m', '5m', '15m'] as const).map(value => <option key={value} value={value}>{value}</option>)}</select>{scannerStatusBar}{broker === 'binance' && <>{productionPositionLabel && <span className={`production-position-summary ${productionPositions.some(position => Number(position.unrealized_pnl ?? 0) >= 0) ? 'production-profit' : 'production-loss'}`}>{productionPositionLabel}</span>}</>}{statusBarMessage && <span className="header-status-error" role="status" title={statusBarMessage}>⚠ {statusBarMessage}</span>}<div className="chart-tools" aria-label="Herramientas del gráfico">
     {labButton}{riskEngineButton}{pnlCalendarButton}{eventMarkersButton}<button className={`indicator-bar-button ${showHeikinAshi ? 'indicator-toggle-active' : ''}`} onClick={() => setShowHeikinAshi(value => !value)} aria-pressed={showHeikinAshi} aria-label="Alternar Heikin Ashi" title="Heikin Ashi">HA</button><button className={!tool ? 'tool-active' : ''} onClick={() => setTool(null)} aria-label="Seleccionar y navegar" title="Seleccionar y navegar">↖</button>
     {([['line', '╱', 'Línea'], ['ruler', '▥', 'Regla'], ['long', 'L', 'Long'], ['short', 'S', 'Short'], ['zoom', '⌗', 'Zoom lazo'], ['pan', '✋', 'Pan']] as const).map(([key, icon, label]) => <button key={key} className={tool === key ? 'tool-active' : ''} onClick={() => chooseTool(key)} aria-label={label} title={label}>{icon}</button>)}
-    <button onClick={() => setDrawings(current => current.filter(drawing => drawing.paper))} aria-label="Borrar dibujos" title="Borrar dibujos">×</button>{levelAdjustControls}
+    <button onClick={() => setDrawings(current => current.filter(drawing => drawing.paper))} aria-label="Borrar dibujos" title="Borrar dibujos">×</button>{replayControls}{levelAdjustControls}
   </div>{profileButton}{showRiskEngine && <RiskEngineModal onClose={() => setShowRiskEngine(false)} />}{showEventMarkers && <EventMarkersPanel activeSymbol={symbol} apiUrl={apiUrl} accessToken={auth.accessToken} rules={chartEventRules} occurrences={chartEventOccurrences} onChange={setChartEventRules} onDeleteOccurrence={id => setChartEventOccurrences(current => current.filter(event => event.id !== id))} onClose={() => setShowEventMarkers(false)} />}<button className="logout-button" onClick={() => void auth.logout()} aria-label="Cerrar sesión">Salir</button></div>;
 
     const scannerStatus = (candidateSymbol: string) => {

@@ -23,8 +23,15 @@ class Settings(BaseSettings):
     binance_account_monitor_enabled: bool = Field(default=True, alias="BINANCE_ACCOUNT_MONITOR_ENABLED")
     # Safety gate: account monitoring may run in production, but real order
     # placement must be enabled explicitly in the deployment environment.
-    binance_real_trading_enabled: bool = Field(default=True, alias="BINANCE_REAL_TRADING_ENABLED")
+    # Real order placement is opt-in per deployment; Paper remains the safe default.
+    binance_real_trading_enabled: bool = Field(default=False, alias="BINANCE_REAL_TRADING_ENABLED")
     binance_execution_worker_enabled: bool = Field(default=True, alias="BINANCE_EXECUTION_WORKER_ENABLED")
+    production_worker_enabled: bool = Field(default=True, alias="PRODUCTION_WORKER_ENABLED")
+    production_worker_resume_live: bool = Field(default=False, alias="PRODUCTION_WORKER_RESUME_LIVE")
+    telegram_bot_token: str = Field(default="", alias="TELEGRAM_BOT_TOKEN")
+    telegram_chat_id: str = Field(default="", alias="TELEGRAM_CHAT_ID")
+    telegram_enabled: bool = Field(default=True, alias="TELEGRAM_ENABLED")
+    telegram_min_delay: float = Field(default=0.25, alias="TELEGRAM_MIN_DELAY")
     binance_execution_poll_seconds: int = Field(default=15, alias="BINANCE_EXECUTION_POLL_SECONDS")
     binance_credentials_encryption_key: str = Field(default="", alias="BINANCE_CREDENTIALS_ENCRYPTION_KEY")
     ctrader_enabled: bool = Field(default=False, alias="CTRADER_ENABLED")
