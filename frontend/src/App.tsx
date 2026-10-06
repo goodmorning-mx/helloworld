@@ -1112,11 +1112,33 @@ function Workspace() {
   const renderReplayPrefix = (cursor: number) => {
     const all = replayAllBarsRef.current;
     if (!all.length || cursor < 0) return;
+    const chart = chartRef.current;
+    const previousLogicalRange = chart?.timeScale().getVisibleLogicalRange() ?? null;
+    const previousPriceRange = chart?.priceScale('right').getVisibleRange() ?? null;
+    const previousRenderedBars = renderBars(all, MAX_ENTRY_RENDER_BARS);
+    const previousLastIndex = previousRenderedBars.length - 1;
+    const logicalSpan = previousLogicalRange
+      ? Math.max(2, Number(previousLogicalRange.to) - Number(previousLogicalRange.from))
+      : null;
+    const futureBars = previousLogicalRange
+      ? Math.max(0, Number(previousLogicalRange.to) - previousLastIndex)
+      : 0;
     const prefix = all.slice(0, cursor + 1);
     candleBarsRef.current = prefix;
     candleDataRef.current = prefix.map(({ time, close }) => ({ time, close }));
     const visible = renderBars(prefix, MAX_ENTRY_RENDER_BARS);
     candlesRef.current?.setData(showHeikinAshi ? calculateHeikinAshi(visible) : visible);
+    // setData may let lightweight-charts recalculate the viewport. Keep the
+    // user's zoom instead: the replay cursor becomes the new right edge while
+    // preserving the previous number of visible bars, future space and Y range.
+    if (chart && visible.length && logicalSpan != null) {
+      const nextLastIndex = visible.length - 1;
+      chart.timeScale().setVisibleLogicalRange({
+        from: Math.max(0, nextLastIndex + futureBars - logicalSpan),
+        to: nextLastIndex + futureBars,
+      });
+      if (previousPriceRange) chart.priceScale('right').setVisibleRange(previousPriceRange);
+    }
     setTrackerRevision(value => value + 1);
     setViewportRevision(value => value + 1);
   };
