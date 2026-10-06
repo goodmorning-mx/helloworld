@@ -1040,6 +1040,7 @@ function Workspace() {
   const [showRsi, setShowRsi] = useState(() => localStorage.getItem('helloworld-indicator-rsi') === 'true');
   const [showSsl, setShowSsl] = useState(() => localStorage.getItem('helloworld-indicator-ssl') === 'true');
   const [showTracker, setShowTracker] = useState(() => localStorage.getItem('helloworld-indicator-tracker') === 'true');
+  const [showTrackerFails, setShowTrackerFails] = useState(() => localStorage.getItem('helloworld-tracker-show-fails') === 'true');
   const [showWickExtensions, setShowWickExtensions] = useState(() => localStorage.getItem('helloworld-indicator-wick-extensions') === 'true');
   const [wickBacktestTrades, setWickBacktestTrades] = useState<WickBacktestTrade[]>([]);
   const [trackerVirtualOperations, setTrackerVirtualOperations] = useState<TrackerVirtualOperation[]>([]);
@@ -1392,6 +1393,10 @@ function Workspace() {
     setViewportRevision(value => value + 1);
     setOverviewRevision(value => value + 1);
   }, [showRsi, showSevenAmMarkers, showSsl, showTracker, showWickExtensions, showHeikinAshi, rsiPeriod, rsiLowBand, rsiHighBand, sslPeriod, sslRegimeWindow, trackerPeriod, wickPeriod, wickDisplayPeriod, wickMultiplier]);
+
+  useEffect(() => {
+    localStorage.setItem('helloworld-tracker-show-fails', String(showTrackerFails));
+  }, [showTrackerFails]);
 
   useEffect(() => {
     const syncAssist = () => {
@@ -2372,6 +2377,19 @@ function Workspace() {
       if (!point) return null;
       return <circle key={`tracker-signal-${bar.time}`} cx={point.x} cy={point.y} r="5" className={`tracker-signal tracker-signal-${signal.side.toLowerCase()}`}><title>Tracker {signal.side} · {signal.level} · cierre {formatPaperPrice(bar.close)}</title></circle>;
     }) : [];
+    const trackerStartMarker = canvas === 'entry' && showTracker ? (() => {
+      const startIndex = trackerLevels.findIndex(level => Boolean(level));
+      if (startIndex < 0 || !bars[startIndex]) return null;
+      const point = toPoint(bars[startIndex].close, startIndex);
+      if (!point) return null;
+      const labelX = Math.max(8, Math.min(width - 142, point.x - 58));
+      const arrowY = Math.min(height - 18, Math.max(48, point.y - 10));
+      return <g key={`tracker-start-${bars[startIndex].time}`} className="tracker-start-marker">
+        <text x={labelX} y="20">START HERE · N {trackerPeriod}</text>
+        <line x1={point.x} y1="27" x2={point.x} y2={arrowY} />
+        <polygon points={`${point.x},${arrowY + 7} ${point.x - 5},${arrowY - 2} ${point.x + 5},${arrowY - 2}`} />
+      </g>;
+    })() : null;
     return <g className={`price-indicators price-indicators-${canvas}`}>
       {showSevenAmMarkers && <g className="seven-am-marker-layer">{bars.map((bar, index) => {
         if (!sevenAmWindow[index]) return null;
@@ -2380,7 +2398,7 @@ function Workspace() {
       })}</g>}
       {showSsl && <><path d={path(ssl.up)} className="ssl-channel ssl-channel-up" /><path d={path(ssl.down)} className="ssl-channel ssl-channel-down" /></>}
       {showRsi && <g className="rsi-markers">{rsiMarkers}</g>}
-      {showTracker && <g className="tracker-signal-layer">{trackerMarkers}</g>}
+      {showTracker && <g className="tracker-signal-layer">{trackerStartMarker}{trackerMarkers}</g>}
       {showWickExtensions && <g className="wick-extension-layer">{wickMarkers}</g>}
       {indicatorHover?.canvas === canvas && <g className="indicator-hover-label" pointerEvents="none"><rect x={Math.max(4, Math.min(width - 160, indicatorHover.x + 10))} y={Math.max(8, Math.min(height - 32, indicatorHover.y - 28))} width="150" height="24" rx="4" /><text x={Math.max(14, Math.min(width - 150, indicatorHover.x + 20))} y={Math.max(24, Math.min(height - 16, indicatorHover.y - 12))}>{indicatorHover.label}</text></g>}
     </g>;
@@ -3284,7 +3302,7 @@ function Workspace() {
     target: { time: trade.exitTime as UTCTimestamp, price: trade.targetPrice },
     pnl: trade.pnl,
     notional: trade.notional,
-  })).concat((showTracker ? trackerVirtualOperations : []).filter(operation => operation.status === 'CLOSED - WIN' || (replayState.active && !operation.closed)).map(operation => ({
+  })).concat((showTracker ? trackerVirtualOperations : []).filter(operation => operation.status === 'CLOSED - WIN' || (showTrackerFails && operation.status === 'CLOSED - FAILED') || (replayState.active && !operation.closed)).map(operation => ({
     id: operation.id,
     symbol,
     type: operation.side,
@@ -3429,7 +3447,7 @@ function Workspace() {
   const quickArrows = (label: string, value: string | number, onUp: () => void, onDown: () => void, description: string) => <span className="quick-indicator-control"><span>{label}</span><button type="button" className="level-adjust-button" onClick={onUp} aria-label={`Aumentar ${description}`}>↑</button><b>{value}</b><button type="button" className="level-adjust-button" onClick={onDown} aria-label={`Disminuir ${description}`}>↓</button></span>;
   const adjustSslRegimeWindow = (delta: number) => setSslRegimeWindow(current => { const next = Math.max(2, Math.min(20, current + delta)); localStorage.setItem('helloworld-ssl-regime-window', String(next)); return next; });
   const adjustSslPeriod = (delta: number) => setSslPeriod(current => { const next = Math.max(2, Math.min(200, current + delta)); localStorage.setItem('helloworld-ssl-period', String(next)); return next; });
-  const levelAdjustControls = <div className="level-adjust-controls" aria-label="Ajustar niveles e indicadores">{quickArrows('LEVELS N', trackerPeriod, () => adjustTrackerPeriod(1), () => adjustTrackerPeriod(-1), 'período de niveles')}{quickArrows('SSL P', sslPeriod, () => adjustSslPeriod(1), () => adjustSslPeriod(-1), 'período del indicador SSL')}{quickArrows('SSL N', sslRegimeWindow, () => adjustSslRegimeWindow(1), () => adjustSslRegimeWindow(-1), 'ventana de régimen SSL')}{quickArrows('WICK N', wickPeriod, () => adjustWickPeriod(1), () => adjustWickPeriod(-1), 'período de mechazos')}{quickArrows('SHOW', wickDisplayPeriod, () => adjustWickDisplayPeriod(1), () => adjustWickDisplayPeriod(-1), 'velas visibles')}{quickArrows('×', wickMultiplier.toFixed(1), () => adjustWickMultiplier(.1), () => adjustWickMultiplier(-.1), 'multiplicador de mechazos')}</div>;
+  const levelAdjustControls = <div className="level-adjust-controls" aria-label="Ajustar niveles e indicadores">{quickArrows('LEVELS N', trackerPeriod, () => adjustTrackerPeriod(1), () => adjustTrackerPeriod(-1), 'período de niveles')}{quickArrows('SSL P', sslPeriod, () => adjustSslPeriod(1), () => adjustSslPeriod(-1), 'período del indicador SSL')}{quickArrows('SSL N', sslRegimeWindow, () => adjustSslRegimeWindow(1), () => adjustSslRegimeWindow(-1), 'ventana de régimen SSL')}{quickArrows('WICK N', wickPeriod, () => adjustWickPeriod(1), () => adjustWickPeriod(-1), 'período de mechazos')}{quickArrows('SHOW', wickDisplayPeriod, () => adjustWickDisplayPeriod(1), () => adjustWickDisplayPeriod(-1), 'velas visibles')}{quickArrows('×', wickMultiplier.toFixed(1), () => adjustWickMultiplier(.1), () => adjustWickMultiplier(-.1), 'multiplicador de mechazos')}{showTracker && <button type="button" className={`tracker-visibility-toggle ${showTrackerFails ? 'tracker-visibility-show-fails' : ''}`} onClick={() => setShowTrackerFails(value => !value)} aria-pressed={showTrackerFails} title="Alternar operaciones Tracker visibles">{showTrackerFails ? 'WIN + FAIL' : 'WIN ONLY'}</button>}</div>;
   const replayControls = <div className={`replay-controls ${replayState.active ? 'replay-active' : ''}`} aria-label="Repetición vela a vela"><button type="button" onClick={() => replayState.active ? setReplaySnapshot({ ...replayState, running: !replayState.running }) : undefined} disabled={!replayState.active} title="Reproducir o pausar la repetición">{replayState.running ? 'Ⅱ' : '▶'}</button><button type="button" onClick={() => advanceReplay(-1)} disabled={!replayState.active || replayState.cursor <= replayState.start} title="Vela anterior">‹</button><button type="button" onClick={() => advanceReplay(1)} disabled={!replayState.active || replayState.cursor >= replayState.total - 1} title="Siguiente vela">›</button><button type="button" onClick={stopReplay} disabled={!replayState.active} title="Salir de repetición">×</button><small>{replayState.active ? `REPLAY ${replayState.cursor + 1}/${replayState.total}` : 'CLICK EN VELA · REPLAY'}</small></div>;
   const desktopHeader = <div className="symbol-bar"><select className={`broker-select ${broker === 'binance' ? binanceStatusClass : ''}`} value={broker} onChange={event => { const next = event.target.value as 'binance' | 'ctrader'; setBroker(next); setSymbol(next === 'ctrader' ? 'AUDUSD' : 'BTCUSDT'); }} aria-label="Broker"><option value="binance">Binance</option><option value="ctrader">cTrader</option></select><select className="symbol-select" value={symbol} onChange={event => setSymbol(event.target.value)} aria-label="Símbolo">
     {selectableSymbols.map(option => <option key={option}>{option}</option>)}
