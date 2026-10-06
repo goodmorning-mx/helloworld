@@ -102,8 +102,11 @@ function runTrackerVisualSimulation(
   initialBalance: number,
   riskPercent: number,
   leverage: number,
+  includeLastBar = false,
 ): TrackerVirtualOperation[] {
-  const closedBars = bars.slice(0, -1);
+  // In live mode the last candle can still be forming, so leave it out. During
+  // replay every candle is historical/closed and must be evaluated immediately.
+  const closedBars = includeLastBar ? bars : bars.slice(0, -1);
   const levels = calculateTrackerLevels(closedBars, trackerPeriod);
   const operations: TrackerVirtualOperation[] = [];
   let openOperation: TrackerVirtualOperation | null = null;
@@ -3263,8 +3266,8 @@ function Workspace() {
       return;
     }
     const source = renderBars(candleBarsRef.current, Math.max(300, Math.round(trackerPeriod) + 1));
-    setTrackerVirtualOperations(runTrackerVisualSimulation(source, trackerPeriod, binanceStopPercent, binanceTargetPercent, paperInitialBalance, paperRiskPercent, paperLeverage));
-  }, [showTracker, trackerPeriod, binanceStopPercent, binanceTargetPercent, paperInitialBalance, paperRiskPercent, paperLeverage, symbol, trackerRevision]);
+    setTrackerVirtualOperations(runTrackerVisualSimulation(source, trackerPeriod, binanceStopPercent, binanceTargetPercent, paperInitialBalance, paperRiskPercent, paperLeverage, replayState.active));
+  }, [showTracker, trackerPeriod, binanceStopPercent, binanceTargetPercent, paperInitialBalance, paperRiskPercent, paperLeverage, symbol, trackerRevision, replayState.active]);
   const backtestVisualDrawings: Drawing[] = (showTracker ? [] : wickBacktestTrades).map(trade => ({
     id: trade.id,
     symbol,
@@ -3279,7 +3282,7 @@ function Workspace() {
     target: { time: trade.exitTime as UTCTimestamp, price: trade.targetPrice },
     pnl: trade.pnl,
     notional: trade.notional,
-  })).concat((showTracker ? trackerVirtualOperations : []).filter(operation => operation.status === 'CLOSED - WIN').map(operation => ({
+  })).concat((showTracker ? trackerVirtualOperations : []).filter(operation => operation.status === 'CLOSED - WIN' || (replayState.active && !operation.closed)).map(operation => ({
     id: operation.id,
     symbol,
     type: operation.side,
