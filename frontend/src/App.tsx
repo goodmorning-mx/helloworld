@@ -171,12 +171,13 @@ function runTrackerVisualSimulation(
         const grossPnl = ((exitPrice - openOperation.start.price) / openOperation.start.price) * direction * openOperation.notional;
         const pnl = grossPnl - tradingCosts('binance', openOperation.notional).total;
         balance = Math.max(0, balance + pnl);
-        openOperation = { ...openOperation, end: { time: Number(bar.time), price: exitPrice }, closed: true, closeReason: reason, status: reason === 'TP' ? 'CLOSED - WIN' : 'CLOSED - FAILED', pnl, resultRoePercent: closeRoe * Math.max(1, leverage) * 100, bodyAveragePercentAtClose: bodyAveragePercent(index), finalTargetPercent: Math.abs(closeRoe * 100), finalTargetRoePercent: Math.abs(closeRoe * Math.max(1, leverage) * 100) };
-        operations.push(openOperation);
+        const closedOperation = { ...openOperation, end: { time: Number(bar.time), price: exitPrice }, closed: true, closeReason: reason, status: reason === 'TP' ? 'CLOSED - WIN' as const : 'CLOSED - FAILED' as const, pnl, resultRoePercent: closeRoe * Math.max(1, leverage) * 100, bodyAveragePercentAtClose: bodyAveragePercent(index), finalTargetPercent: Math.abs(closeRoe * 100), finalTargetRoePercent: Math.abs(closeRoe * Math.max(1, leverage) * 100) };
+        operations.push(closedOperation);
+        openOperation = null;
         if (reason === 'TP') {
           // A WIN reverses immediately at this candle's closing price. The
           // next position is still virtual and remains the only open one.
-          openOperation = createOperation(index, Number(bar.time), exitPrice, openOperation.side === 'long' ? 'short' : 'long', openOperation.level);
+          openOperation = createOperation(index, Number(bar.time), exitPrice, closedOperation.side === 'long' ? 'short' : 'long', closedOperation.level);
         } else {
           // After a FAIL, evaluate this same closed candle with Tracker. The
           // replacement is not forced to be opposite; Tracker decides its side.
@@ -3168,7 +3169,7 @@ function Workspace() {
     const source = renderBars(candleBarsRef.current, Math.max(300, Math.round(trackerPeriod) + 1));
     setTrackerVirtualOperations(runTrackerVisualSimulation(source, trackerPeriod, binanceStopPercent, binanceTargetPercent, paperInitialBalance, paperRiskPercent, paperLeverage));
   }, [showTracker, trackerPeriod, binanceStopPercent, binanceTargetPercent, paperInitialBalance, paperRiskPercent, paperLeverage, symbol, trackerRevision]);
-  const backtestVisualDrawings: Drawing[] = wickBacktestTrades.map(trade => ({
+  const backtestVisualDrawings: Drawing[] = (showTracker ? [] : wickBacktestTrades).map(trade => ({
     id: trade.id,
     symbol,
     type: trade.side,
@@ -3182,7 +3183,7 @@ function Workspace() {
     target: { time: trade.exitTime as UTCTimestamp, price: trade.targetPrice },
     pnl: trade.pnl,
     notional: trade.notional,
-  })).concat(trackerVirtualOperations.filter(operation => operation.status === 'CLOSED - WIN').map(operation => ({
+  })).concat((showTracker ? trackerVirtualOperations : []).filter(operation => operation.status === 'CLOSED - WIN').map(operation => ({
     id: operation.id,
     symbol,
     type: operation.side,
