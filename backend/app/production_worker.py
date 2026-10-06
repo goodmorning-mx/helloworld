@@ -17,6 +17,7 @@ from app.binance_execution import BinanceExecutionStore
 from app.market_gateway import BinanceMarketGateway
 from app.paper_operations import PaperOperationStore
 from app.telegram_service import BackendEventBus
+from app.tracker_strategy import tracker_close_reason, tracker_levels, tracker_signal
 
 logger = logging.getLogger(__name__)
 
@@ -92,45 +93,44 @@ class SymbolWorker:
         if len(self.bars) <= self.tracker_period:
             return
         previous = self.bars[-self.tracker_period - 1:-1]
-        highpointer = max(float(item["high"]) for item in previous)
-        lowpointer = min(float(item["low"]) for item in previous)
-        maxpointer = max(max(float(item["open"]), float(item["close"])) for item in previous)
-        minpointer = min(min(float(item["open"]), float(item["close"])) for item in previous)
         close = float(bar["close"])
-        signal: str | None = None
-        level: str | None = None
-        if close >= maxpointer and close >= highpointer:
-            signal, level = "SHORT", "H2"
-        elif close >= maxpointer and close < highpointer:
-            signal, level = "SHORT", "H1"
-        elif close <= minpointer and close > lowpointer:
-            signal, level = "LONG", "L1"
-        elif close <= lowpointer and close <= minpointer:
-            signal, level = "LONG", "L2"
+        signal_data = tracker_signal(close, tracker_levels(previous))
 
         if self.operation is not None:
-            direction = 1 if self.operation["side"] == "LONG" else -1
-            stop_hit = float(bar["low"]) <= self.operation["stop_price"] if direction == 1 else float(bar["high"]) >= self.operation["stop_price"]
-            target_hit = float(bar["high"]) >= self.operation["target_price"] if direction == 1 else float(bar["low"]) <= self.operation["target_price"]
-            if stop_hit or target_hit:
-                await self.adapter.close(self, "SL" if stop_hit else "TP", close, bar)
-        if self.operation is None and signal is not None:
-            await self.adapter.open(self, signal, close, {**bar, "level": level})
+            reason = tracker_close_reason(self.operation["side"], float(self.operation["entry_price"]), close, self.stop_percent, self.target_percent)
+            if reason is not None:
+                closed_side = self.operation["side"]
+                closed_level = self.operation.get("level", "H1")
+                await self.adapter.close(self, reason, close, bar)
+                if reason == "TP":
+                    # Match the visual strategy: a winning operation reverses
+                    # immediately at this candle's close.
+                    await self.adapter.open(self, "SHORT" if closed_side == "LONG" else "LONG", close, {**bar, "level": closed_level})
+                elif signal_data is not None:
+                    # Match the visual strategy: a failed operation retries on
+                    # this same completed candle using Tracker's signal.
+                    side, level = signal_data
+                    await self.adapter.open(self, side, close, {**bar, "level": level})
+                return
+        if self.operation is None and signal_data is not None:
+            side, level = signal_data
+            await self.adapter.open(self, side, close, {**bar, "level": level})
 
 
 class PaperExecutionAdapter:
     mode = "paper"
 
-    def __init__(self, initial_balance: float = 100.0, risk_usdt: float = 1.0) -> None:
+    def __init__(self, initial_balance: float = 100.0, risk_usdt: float = 1.0, fee_rate: float = 0.0014) -> None:
         self.initial_balance = initial_balance
         self.risk_usdt = risk_usdt
+        self.fee_rate = max(0.0, float(fee_rate))
 
     async def open(self, worker: SymbolWorker, side: str, price: float, bar: dict[str, Any]) -> dict[str, Any]:
         direction = 1 if side == "LONG" else -1
         stop = price * (1 - direction * worker.stop_percent / 100)
         target = price * (1 + direction * worker.target_percent / 100)
         notional = self.risk_usdt / (worker.stop_percent / 100)
-        operation = {"id": f"paper-worker-{uuid4().hex[:12]}", "symbol": worker.symbol, "side": side, "entry_time": datetime.fromtimestamp(bar["time"], timezone.utc), "entry_price": price, "current_time": datetime.fromtimestamp(bar["time"], timezone.utc), "current_price": price, "stop_time": None, "stop_price": stop, "target_time": None, "target_price": target, "status": "OPEN", "close_reason": None, "risk_percent": None, "notional": notional, "margin": notional, "pnl": 0.0}
+        operation = {"id": f"paper-worker-{uuid4().hex[:12]}", "symbol": worker.symbol, "side": side, "level": bar.get("level"), "entry_time": datetime.fromtimestamp(bar["time"], timezone.utc), "entry_price": price, "current_time": datetime.fromtimestamp(bar["time"], timezone.utc), "current_price": price, "stop_time": None, "stop_price": stop, "target_time": None, "target_price": target, "status": "OPEN", "close_reason": None, "risk_percent": None, "notional": notional, "margin": notional, "pnl": 0.0}
         worker.operation = _persist_open(worker, operation)
         await worker.events.publish({"type": "PAPER_ENTRY", "symbol": worker.symbol, "side": side, "price": price})
         return worker.operation
@@ -140,7 +140,9 @@ class PaperExecutionAdapter:
             return {}
         operation = worker.operation
         direction = 1 if operation["side"] == "LONG" else -1
-        pnl = (price - float(operation["entry_price"])) * direction * float(operation["notional"]) / float(operation["entry_price"])
+        gross_pnl = (price - float(operation["entry_price"])) * direction * float(operation["notional"]) / float(operation["entry_price"])
+        fees = float(operation["notional"]) * self.fee_rate
+        pnl = gross_pnl - fees
         result = _persist_close(worker, operation, reason, price, bar, pnl)
         worker.operation = None
         await worker.events.publish({"type": "PAPER_EXIT", "symbol": worker.symbol, "side": operation["side"], "reason": reason, "pnl": round(pnl, 6)})
@@ -177,7 +179,7 @@ class BinanceExecutionAdapter:
                     logger.exception("live_worker_emergency_close_failed symbol=%s", worker.symbol)
             self.store.update(intent["id"], worker.user_id, status="ERROR", last_error=str(exc))
             raise
-        worker.operation = {"id": intent["id"], "side": side, "entry_price": average_open, "notional": actual_quantity * average_open, "stop_price": stop, "target_price": target, "status": "PROTECTED"}
+        worker.operation = {"id": intent["id"], "side": side, "level": bar.get("level"), "entry_price": average_open, "notional": actual_quantity * average_open, "stop_price": stop, "target_price": target, "status": "PROTECTED"}
         await worker.events.publish({"type": "LIVE_ENTRY", "symbol": worker.symbol, "side": side, "price": price})
         return intent
 
@@ -194,7 +196,11 @@ class BinanceExecutionAdapter:
 
 
 def _persist_open(worker: SymbolWorker, operation: dict[str, Any]) -> dict[str, Any]:
-    database_operation = {**operation, "side": str(operation["side"]).lower()}
+    # Keep strategy metadata such as Tracker level in the worker memory, but
+    # only send columns that exist in the paper_operations table.
+    database_columns = {"id", "symbol", "side", "entry_time", "entry_price", "current_time", "current_price", "stop_time", "stop_price", "target_time", "target_price", "status", "close_reason", "risk_percent", "notional", "margin", "pnl"}
+    database_operation = {key: value for key, value in operation.items() if key in database_columns}
+    database_operation["side"] = str(operation["side"]).lower()
     saved = worker.paper_store.create(worker.user_id, database_operation)
     return {**operation, "id": saved.get("id", operation["id"])}
 

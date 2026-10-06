@@ -5,7 +5,7 @@ import { CandlestickSeries, createChart, type IPriceLine, type Time, type UTCTim
 import LabWindow, { type LabRecommendations } from './LabWindow';
 import BacktestPanel, { type WickBacktestTrade } from './BacktestPanel';
 import { cacheBars } from './marketData';
-import { calculateDailyTimeWindow, calculateHeikinAshi, calculateRsi, calculateSslChannel, calculateTrackerLevels, calculateWickExtensions } from './indicators';
+import { calculateDailyTimeWindow, calculateHeikinAshi, calculateRsi, calculateSslChannel, calculateTrackerCloseReason, calculateTrackerLevels, calculateTrackerSignal, calculateWickExtensions } from './indicators';
 import { tradingCosts, tradingCostRate } from './tradingCosts';
 import './styles.css';
 
@@ -151,12 +151,7 @@ function runTrackerVisualSimulation(
   const makeSignal = (index: number) => {
     const bar = closedBars[index];
     const level = levels[index];
-    if (!level) return null;
-    if (bar.close >= level.h1 && bar.close >= level.h2) return { side: 'short' as const, level: 'H2' as const };
-    if (bar.close >= level.h1 && bar.close < level.h2) return { side: 'short' as const, level: 'H1' as const };
-    if (bar.close <= level.l1 && bar.close > level.l2) return { side: 'long' as const, level: 'L1' as const };
-    if (bar.close <= level.l2 && bar.close <= level.l1) return { side: 'long' as const, level: 'L2' as const };
-    return null;
+    return calculateTrackerSignal(bar.close, level);
   };
   for (let index = Math.max(1, Math.round(trackerPeriod)); index < closedBars.length; index += 1) {
     const bar = closedBars[index];
@@ -164,10 +159,8 @@ function runTrackerVisualSimulation(
       openOperation = updateExtremes(openOperation, bar);
       const direction = openOperation.side === 'long' ? 1 : -1;
       const closeRoe = ((bar.close - openOperation.start.price) / openOperation.start.price) * direction;
-      const hitTarget = closeRoe >= targetDistance;
-      const hitStop = closeRoe <= -stopDistance;
-      if (hitTarget || hitStop) {
-        const reason: 'TP' | 'SL' = hitStop ? 'SL' : 'TP';
+      const reason = calculateTrackerCloseReason(openOperation.side, openOperation.start.price, bar.close, stopPercent, targetPercent);
+      if (reason) {
         // The operation is filled and closed at the completed candle close,
         // never at the projected intrabar SL/TP level.
         const exitPrice = bar.close;

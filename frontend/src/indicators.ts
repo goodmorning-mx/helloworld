@@ -136,3 +136,27 @@ export function calculateTrackerLevels(bars: OhlcBar[], lookback = 5): Array<Tra
   }
   return levels;
 }
+
+export type TrackerSignal = { side: 'long' | 'short'; level: 'H1' | 'H2' | 'L1' | 'L2' };
+
+/** Canonical exclusive Tracker ladder shared by replay/backtesting and the
+ * backend worker contract. */
+export function calculateTrackerSignal(close: number, levels: TrackerLevel | null): TrackerSignal | null {
+  if (!levels) return null;
+  if (close >= levels.h1 && close >= levels.h2) return { side: 'short', level: 'H2' };
+  if (close >= levels.h1 && close < levels.h2) return { side: 'short', level: 'H1' };
+  if (close <= levels.l1 && close > levels.l2) return { side: 'long', level: 'L1' };
+  if (close <= levels.l2 && close <= levels.l1) return { side: 'long', level: 'L2' };
+  return null;
+}
+
+/** Decide exits from the completed candle close. SL wins if both thresholds
+ * could be satisfied, matching the conservative execution contract. */
+export function calculateTrackerCloseReason(side: 'long' | 'short', entryPrice: number, close: number, stopPercent: number, targetPercent: number): 'TP' | 'SL' | null {
+  if (!(entryPrice > 0)) return null;
+  const direction = side === 'long' ? 1 : -1;
+  const closeRoe = ((close - entryPrice) / entryPrice) * direction;
+  if (closeRoe <= -Math.abs(stopPercent) / 100) return 'SL';
+  if (closeRoe >= Math.abs(targetPercent) / 100) return 'TP';
+  return null;
+}
