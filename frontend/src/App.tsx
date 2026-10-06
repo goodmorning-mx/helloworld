@@ -161,7 +161,11 @@ function runTrackerVisualSimulation(
       openOperation = updateExtremes(openOperation, bar);
       const direction = openOperation.side === 'long' ? 1 : -1;
       const closeRoe = ((bar.close - openOperation.start.price) / openOperation.start.price) * direction;
-      const reason = calculateTrackerCloseReason(openOperation.side, openOperation.start.price, bar.close, stopPercent, targetPercent);
+      const signal = makeSignal(index);
+      const rawReason = calculateTrackerCloseReason(openOperation.side, openOperation.start.price, bar.close, stopPercent, targetPercent);
+      // A TP is only a WIN after the close also reaches the opposite Tracker
+      // side: LONG needs H1/H2, SHORT needs L1/L2.
+      const reason = rawReason === 'TP' && (!signal || (openOperation.side === 'long' ? signal.side !== 'short' : signal.side !== 'long')) ? null : rawReason;
       if (reason) {
         // The operation is filled and closed at the completed candle close,
         // never at the projected intrabar SL/TP level.
@@ -180,7 +184,7 @@ function runTrackerVisualSimulation(
         } else {
           // After a FAIL, evaluate this same closed candle with Tracker. The
           // replacement is not forced to be opposite; Tracker decides its side.
-          const retrySignal = makeSignal(index);
+          const retrySignal = signal;
           openOperation = retrySignal
             ? createOperation(index, Number(bar.time), exitPrice, retrySignal.side, retrySignal.level)
             : null;

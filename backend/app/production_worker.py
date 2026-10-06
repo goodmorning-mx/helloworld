@@ -97,7 +97,12 @@ class SymbolWorker:
         signal_data = tracker_signal(close, tracker_levels(previous))
 
         if self.operation is not None:
-            reason = tracker_close_reason(self.operation["side"], float(self.operation["entry_price"]), close, self.stop_percent, self.target_percent)
+            raw_reason = tracker_close_reason(self.operation["side"], float(self.operation["entry_price"]), close, self.stop_percent, self.target_percent)
+            # A TP becomes a WIN only when this close is also classified on
+            # the opposite Tracker side: LONG -> H1/H2, SHORT -> L1/L2.
+            reason = raw_reason
+            if raw_reason == "TP" and (signal_data is None or (self.operation["side"] == "LONG" and signal_data[0] != "SHORT") or (self.operation["side"] == "SHORT" and signal_data[0] != "LONG")):
+                reason = None
             if reason is not None:
                 closed_side = self.operation["side"]
                 closed_level = self.operation.get("level", "H1")
