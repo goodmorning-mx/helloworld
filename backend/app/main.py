@@ -11,7 +11,7 @@ from uuid import uuid4
 from urllib.parse import urlencode
 from zoneinfo import ZoneInfoNotFoundError
 
-from fastapi import Depends, FastAPI, HTTPException, WebSocket
+from fastapi import Depends, FastAPI, HTTPException, Query, WebSocket
 from fastapi.encoders import jsonable_encoder
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
@@ -40,6 +40,7 @@ from app.binance_tp_worker import BinanceTakeProfitWorker
 from app.backtest_engine import MAX_BACKTEST_DAYS, fetch_binance_history, run_storycard_backtest, _bar_context
 from app.production_worker import ProductionWorkerConfigStore, ProductionWorkerManager
 from app.telegram_service import BackendEventBus, TelegramSink, telegram_event_sink
+from app.scanner_analysis import ScannerAnalysisConfig, activity_state, analyze_tracker
 
 settings = get_settings()
 logger = logging.getLogger(__name__)
@@ -67,6 +68,9 @@ production_worker_config_store = ProductionWorkerConfigStore(engine)
 production_workers = ProductionWorkerManager(binance_market_gateway, paper_operation_store, backend_events, binance_manager, binance_execution_store, production_worker_config_store)
 _binance_exchange_info_cache: tuple[float, dict[str, object]] | None = None
 _binance_exchange_info_lock = Lock()
+_scanner_analysis_cache: dict[str, tuple[float, dict[str, object]]] = {}
+_scanner_analysis_states: dict[str, str] = {}
+_scanner_analysis_lock = asyncio.Lock()
 
 
 class FallbackProvider:
@@ -923,6 +927,78 @@ async def binance_candles(
             continue
     binance_market_gateway.put_bars(requested, interval, bars)
     return {"symbol": requested, "interval": interval, "bars": bars}
+
+
+@app.get("/market/binance/scanner-analysis")
+async def binance_scanner_analysis(
+    symbols: str = Query("", description="Comma-separated symbols currently visible in the scanner."),
+    tracker_period: int = 5,
+    stop_percent: float = 0.2,
+    initial_balance: float = 100.0,
+    risk_percent: float = 1.0,
+    leverage: float = 1.0,
+    limit: int = 1500,
+    movement_averages: str = Query("", description="Optional comma-separated 1m movement averages matching symbols."),
+    identity: AuthIdentity = Depends(identity_dependency(auth_service)),
+) -> dict[str, object]:
+    """Analyze the scanner universe without requiring a chart to be selected.
+
+    The endpoint is intentionally read-only. Results are cached briefly so the
+    browser and future Telegram consumers can poll it without repeating the
+    expensive TP search until a new closed candle is available.
+    """
+    del identity
+    requested = list(dict.fromkeys(value.strip().upper() for value in symbols.split(",") if value.strip()))[:30]
+    if not requested:
+        return {"symbols": [], "updated_at": int(time.time()), "cache_ttl_seconds": 50}
+    config = ScannerAnalysisConfig(
+        tracker_period=max(1, min(int(tracker_period), 50)),
+        stop_percent=max(0.01, min(abs(float(stop_percent)), 20)),
+        initial_balance=max(1.0, min(float(initial_balance), 1_000_000)),
+        risk_percent=max(0.01, min(float(risk_percent), 100)),
+        leverage=max(1.0, min(float(leverage), 125)),
+    )
+    cache_key = "|".join([*requested, str(config)])
+    now = time.monotonic()
+    async with _scanner_analysis_lock:
+        cached = _scanner_analysis_cache.get(cache_key)
+        if cached and now - cached[0] < 50:
+            return cached[1]
+
+        safe_limit = max(100, min(int(limit), 1500))
+        semaphore = asyncio.Semaphore(5)
+
+        async def analyze_symbol(symbol: str) -> dict[str, object]:
+            async with semaphore:
+                try:
+                    async with httpx.AsyncClient(timeout=15) as client:
+                        response = await client.get(f"{settings.binance_base_url.rstrip('/')}/fapi/v1/klines", params={"symbol": symbol, "interval": "1m", "limit": safe_limit})
+                        response.raise_for_status()
+                        payload = response.json()
+                    bars = []
+                    for row in payload if isinstance(payload, list) else []:
+                        if isinstance(row, list) and len(row) >= 5:
+                            bars.append({"time": int(float(row[0]) / 1000), "open": float(row[1]), "high": float(row[2]), "low": float(row[3]), "close": float(row[4])})
+                    result = analyze_tracker(bars, config)
+                    return {"symbol": symbol, **result}
+                except (httpx.HTTPError, ValueError, TypeError) as exc:
+                    return {"symbol": symbol, "error": str(exc), "tp_optimal_percent": None, "average_duration_minutes": None, "operations": 0, "wins": 0, "losses": 0, "equity_final": None, "last_bar_time": None, "bars": 0}
+
+        rows = list(await asyncio.gather(*(analyze_symbol(symbol) for symbol in requested)))
+        average_values = [value.strip() for value in movement_averages.split(",")]
+        for index, row in enumerate(rows):
+            try:
+                movement = float(average_values[index]) if index < len(average_values) else 0.0
+            except ValueError:
+                movement = 0.0
+            row["activity_state"] = activity_state(movement)
+            previous_state = _scanner_analysis_states.get(str(row["symbol"]))
+            if previous_state != row["activity_state"]:
+                _scanner_analysis_states[str(row["symbol"])] = str(row["activity_state"])
+                await backend_events.publish({"type": "SCANNER_STATE_CHANGED", "symbol": row["symbol"], "state": row["activity_state"], "tp_optimal_percent": row["tp_optimal_percent"], "average_duration_minutes": row["average_duration_minutes"], "movement_average_percent": movement})
+        result = {"symbols": rows, "updated_at": int(time.time()), "cache_ttl_seconds": 50, "config": {"tracker_period": config.tracker_period, "stop_percent": config.stop_percent, "initial_balance": config.initial_balance, "risk_percent": config.risk_percent, "leverage": config.leverage}}
+        _scanner_analysis_cache[cache_key] = (now, result)
+        return result
 
 
 @app.websocket("/market/binance/stream/{symbol}")
