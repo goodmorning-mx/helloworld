@@ -146,7 +146,7 @@ def analyze_tracker(bars: Iterable[dict[str, Any]], config: ScannerAnalysisConfi
     equity, optimal_tp, operations = best or (float(config.initial_balance), float(config.min_tp_percent), [])
     durations = [float(operation["duration_minutes"]) for operation in operations]
     average_duration = sum(durations) / len(durations) if durations else None
-    return {"tp_optimal_percent": optimal_tp, "average_duration_minutes": average_duration, "operations": len(operations), "wins": sum(operation["status"] == "WIN" for operation in operations), "losses": sum(operation["status"] == "FAIL" for operation in operations), "equity_final": equity, "last_bar_time": clean[-1]["time"] if clean else None, "bars": len(clean)}
+    return {"tp_optimal_percent": optimal_tp, "average_duration_minutes": average_duration, "operations": len(operations), "wins": sum(operation["status"] == "WIN" for operation in operations), "losses": sum(operation["status"] == "FAIL" for operation in operations), "equity_final": equity, "final_result_usdt": equity - float(config.initial_balance), "last_bar_time": clean[-1]["time"] if clean else None, "bars": len(clean)}
 
 
 def activity_state(variation_average_pct: float, *, waking_threshold: float = 0.25, active_threshold: float = 0.60) -> str:

@@ -982,7 +982,7 @@ async def binance_scanner_analysis(
                     result = analyze_tracker(bars, config)
                     return {"symbol": symbol, **result}
                 except (httpx.HTTPError, ValueError, TypeError) as exc:
-                    return {"symbol": symbol, "error": str(exc), "tp_optimal_percent": None, "average_duration_minutes": None, "operations": 0, "wins": 0, "losses": 0, "equity_final": None, "last_bar_time": None, "bars": 0}
+                    return {"symbol": symbol, "error": str(exc), "tp_optimal_percent": None, "average_duration_minutes": None, "operations": 0, "wins": 0, "losses": 0, "equity_final": None, "final_result_usdt": None, "last_bar_time": None, "bars": 0}
 
         rows = list(await asyncio.gather(*(analyze_symbol(symbol) for symbol in requested)))
         average_values = [value.strip() for value in movement_averages.split(",")]

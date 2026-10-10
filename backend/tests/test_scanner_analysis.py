@@ -16,6 +16,7 @@ def test_tracker_analysis_reports_optimal_tp_and_average_duration() -> None:
     assert result["wins"] == 1
     assert result["losses"] == 0
     assert result["average_duration_minutes"] == 2
+    assert result["final_result_usdt"] > 0
 
 
 def test_activity_state_has_stable_thresholds() -> None:
