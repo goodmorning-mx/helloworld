@@ -103,6 +103,31 @@ function applyTrackerLossLimit(operations: TrackerVirtualOperation[], summary: T
   });
 }
 
+type TrackerOptimizationResult = { targetPercent: number; equity: number; lossLimit: number; wins: number; losses: number };
+
+function optimizeTrackerConfiguration(
+  source: Array<{ time: number; open: number; high: number; low: number; close: number }>,
+  trackerPeriod: number,
+  stopPercent: number,
+  initialBalance: number,
+  riskPercent: number,
+  leverage: number,
+): TrackerOptimizationResult | null {
+  if (source.length <= trackerPeriod) return null;
+  let best: TrackerOptimizationResult | null = null;
+  for (let step = 1; step <= 200; step += 1) {
+    const targetPercent = Number((step / 10).toFixed(2));
+    const operations = runTrackerVisualSimulation(source, trackerPeriod, stopPercent, targetPercent, initialBalance, riskPercent, leverage).filter(operation => operation.closed);
+    const lossLimit = findBestTrackerLossLimit(operations);
+    const adjustedPnls = applyTrackerLossLimit(operations, lossLimit);
+    const equity = initialBalance + adjustedPnls.reduce((sum, pnl) => sum + pnl, 0);
+    const wins = operations.filter(operation => operation.status === 'CLOSED - WIN').length;
+    const losses = operations.filter(operation => operation.status === 'CLOSED - FAILED').length;
+    if (!best || equity > best.equity || (equity === best.equity && targetPercent < best.targetPercent)) best = { targetPercent, equity, lossLimit: lossLimit.limit, wins, losses };
+  }
+  return best;
+}
+
 function runTrackerVisualSimulation(
   bars: Array<{ time: number; open: number; high: number; low: number; close: number }>,
   trackerPeriod: number,
@@ -1051,6 +1076,8 @@ function Workspace() {
   const [showWickExtensions, setShowWickExtensions] = useState(() => localStorage.getItem('helloworld-indicator-wick-extensions') === 'true');
   const [wickBacktestTrades, setWickBacktestTrades] = useState<WickBacktestTrade[]>([]);
   const [trackerVirtualOperations, setTrackerVirtualOperations] = useState<TrackerVirtualOperation[]>([]);
+  const [trackerLossLimitEnabled, setTrackerLossLimitEnabled] = useState(false);
+  const [symbolHistoryReady, setSymbolHistoryReady] = useState(false);
   const [trackerEquityHover, setTrackerEquityHover] = useState<{ x: number; y: number; equity: number; time: number; side: string; status: string } | null>(null);
   const [showHeikinAshi, setShowHeikinAshi] = useState(() => localStorage.getItem('helloworld-heikin-ashi') === 'true');
   const [rsiPeriod, setRsiPeriod] = useState(() => Number(localStorage.getItem('helloworld-rsi-period') ?? 14) || 14);
@@ -1732,7 +1759,10 @@ function Workspace() {
           }
           polling += 1;
           setTrackerRevision(value => value + 1);
-          if (polling === 1) setViewportRevision(value => value + 1);
+          if (polling === 1) {
+            setSymbolHistoryReady(true);
+            setViewportRevision(value => value + 1);
+          }
         })
         .catch(() => undefined);
       void loadCTrader();
@@ -1792,6 +1822,7 @@ function Workspace() {
         requestAnimationFrame(() => { if (active) initializingViewport = false; });
         setTrackerRevision(value => value + 1);
         setViewportRevision(value => value + 1);
+        setSymbolHistoryReady(true);
       })
       .catch(() => undefined);
     stream.onmessage = event => {
@@ -3299,6 +3330,21 @@ function Workspace() {
     const source = renderBars(candleBarsRef.current, Math.max(300, Math.round(trackerPeriod) + 1));
     setTrackerVirtualOperations(runTrackerVisualSimulation(source, trackerPeriod, binanceStopPercent, binanceTargetPercent, paperInitialBalance, paperRiskPercent, paperLeverage, replayState.active));
   }, [showTracker, trackerPeriod, binanceStopPercent, binanceTargetPercent, paperInitialBalance, paperRiskPercent, paperLeverage, symbol, trackerRevision, replayState.active]);
+  useEffect(() => {
+    setSymbolHistoryReady(false);
+    setTrackerLossLimitEnabled(false);
+    setTpOptimizationResult(null);
+  }, [symbol, broker]);
+  useEffect(() => {
+    if (!symbolHistoryReady || !showTracker || broker !== 'binance' || replayState.active) return;
+    const source = renderBars(candleBarsRef.current, Math.max(300, Math.round(trackerPeriod) + 1));
+    const best = optimizeTrackerConfiguration(source, trackerPeriod, binanceStopPercent, paperInitialBalance, paperRiskPercent, paperLeverage);
+    if (!best) return;
+    setBinanceTargetPercent(current => current === best.targetPercent ? current : best.targetPercent);
+    localStorage.setItem('helloworld-binance-target-percent', String(best.targetPercent));
+    setTrackerLossLimitEnabled(true);
+    setTpOptimizationResult(best);
+  }, [symbolHistoryReady, showTracker, broker, symbol, trackerPeriod, binanceStopPercent, paperInitialBalance, paperRiskPercent, paperLeverage, replayState.active]);
   const backtestVisualDrawings: Drawing[] = (showTracker ? [] : wickBacktestTrades).map(trade => ({
     id: trade.id,
     symbol,
@@ -3408,18 +3454,8 @@ function Workspace() {
   };
   const optimizeTrackerTarget = () => {
     const source = renderBars(candleBarsRef.current, Math.max(300, Math.round(trackerPeriod) + 1));
-    if (!showTracker || source.length <= trackerPeriod) return;
-    let best: { targetPercent: number; equity: number; lossLimit: number; wins: number; losses: number } | null = null;
-    for (let step = 1; step <= 200; step += 1) {
-      const targetPercent = Number((step / 10).toFixed(2));
-      const operations = runTrackerVisualSimulation(source, trackerPeriod, binanceStopPercent, targetPercent, paperInitialBalance, paperRiskPercent, paperLeverage).filter(operation => operation.closed);
-      const lossLimit = findBestTrackerLossLimit(operations);
-      const adjustedPnls = applyTrackerLossLimit(operations, lossLimit);
-      const equity = paperInitialBalance + adjustedPnls.reduce((sum, pnl) => sum + pnl, 0);
-      const wins = operations.filter(operation => operation.status === 'CLOSED - WIN').length;
-      const losses = operations.filter(operation => operation.status === 'CLOSED - FAILED').length;
-      if (!best || equity > best.equity || (equity === best.equity && targetPercent < best.targetPercent)) best = { targetPercent, equity, lossLimit: lossLimit.limit, wins, losses };
-    }
+    if (!showTracker) return;
+    const best = optimizeTrackerConfiguration(source, trackerPeriod, binanceStopPercent, paperInitialBalance, paperRiskPercent, paperLeverage);
     if (!best) return;
     setBinanceTargetPercent(best.targetPercent);
     localStorage.setItem('helloworld-binance-target-percent', String(best.targetPercent));
@@ -3479,7 +3515,6 @@ function Workspace() {
 
   const toolOptions = [['line', '╱', 'Línea'], ['ruler', '▥', 'Medir'], ['long', 'L', 'Long'], ['short', 'S', 'Short'], ['zoom', '⌗', 'Zoom lazo'], ['pan', '✋', 'Pan']] as const;
   const trackerClosedOperations = trackerVirtualOperations.filter(operation => operation.closed);
-  const [trackerLossLimitEnabled, setTrackerLossLimitEnabled] = useState(false);
   const trackerLossLimitAnalysis = findBestTrackerLossLimit(trackerClosedOperations);
   const trackerAdjustedOutcome = (operation: TrackerVirtualOperation) => {
     const crossedLimitedStop = trackerLossLimitEnabled && operation.minRoe.roePercent <= -trackerLossLimitAnalysis.limit;
