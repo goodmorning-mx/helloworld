@@ -217,9 +217,6 @@
 .scanner-activity-label, .scanner-metrics { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font: 600 .5rem 'DM Mono', monospace; }
 .scanner-activity-label { color: #aeb6c3 !important; letter-spacing: .04em; }
 .scanner-metrics { color: #f5c45e !important; }
-.scanner-final-result { color: #b9dcff; }
-.scanner-final-result.positive { color: #64d39a; }
-.scanner-final-result.negative { color: #f27e7e; }
 .scanner-activity-activa { border-color: #2e9b68; background: #10221d; }
 .scanner-activity-despertando { border-color: #80601f; background: #1d1a13; }
 .scanner-activity-dormida { opacity: .78; }

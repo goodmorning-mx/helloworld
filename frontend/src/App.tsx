@@ -4,7 +4,7 @@ import { PwaRuntime } from '@goodmorning/gm-pwa';
 import { CandlestickSeries, createChart, type IPriceLine, type Time, type UTCTimestamp } from 'lightweight-charts';
 import LabWindow, { type LabRecommendations } from './LabWindow';
 import BacktestPanel, { type WickBacktestTrade } from './BacktestPanel';
-import { cacheBars, readCachedBars } from './marketData';
+import { cacheBars, preloadRecentBars, readCachedBars, requestRecentBars, type MarketBar } from './marketData';
 import { calculateDailyTimeWindow, calculateHeikinAshi, calculateRsi, calculateSslChannel, calculateTrackerCloseReason, calculateTrackerLevels, calculateTrackerSignal, calculateWickExtensions } from './indicators';
 import { tradingCosts, tradingCostRate } from './tradingCosts';
 import './styles.css';
@@ -43,6 +43,13 @@ async function fetchJson<T>(input: RequestInfo | URL, init?: RequestInit, retrie
 const MAX_ENTRY_RENDER_BARS = 10080;
 const MAX_CONTEXT_RENDER_BARS = 180;
 const INITIAL_ENTRY_BARS = 240;
+
+async function fetchRecentApiBars(apiUrl: string, symbol: string, interval: string, limit: number, accessToken: string | null): Promise<MarketBar[]> {
+  const response = await fetch(`${apiUrl}/market/binance/candles/${encodeURIComponent(symbol)}?interval=${interval}&limit=${limit}`, { headers: accessToken ? { Authorization: `Bearer ${accessToken}` } : {}, credentials: 'include' });
+  if (!response.ok) throw new Error(`No se pudieron cargar las velas (${response.status}).`);
+  const payload = await response.json() as { bars?: Array<{ time: number; open: number; high: number; low: number; close: number }> };
+  return (Array.isArray(payload.bars) ? payload.bars : []).map(row => ({ time: Number(row.time), open: Number(row.open), high: Number(row.high), low: Number(row.low), close: Number(row.close) })).filter(row => Number.isFinite(row.time) && Number.isFinite(row.open) && Number.isFinite(row.high) && Number.isFinite(row.low) && Number.isFinite(row.close));
+}
 
 type TrackerExtremePoint = { time: number; price: number; roePercent: number; pnlUsd: number };
 type TrackerVirtualOperation = {
@@ -1404,6 +1411,16 @@ function Workspace() {
   }, [auth.accessToken, broker, trackerPeriod, binanceStopPercent, paperInitialBalance, paperRiskPercent]);
 
   useEffect(() => {
+    if (broker !== 'binance' || activeMarketSymbols.length === 0) return;
+    const symbols = activeMarketSymbols.map(candidate => candidate.symbol);
+    const requests = [
+      ...symbols.map(candidate => preloadRecentBars(candidate, entryInterval, () => fetchRecentApiBars(apiUrl, candidate, entryInterval, INITIAL_ENTRY_BARS, auth.accessToken))),
+      ...symbols.slice(0, 10).map(candidate => preloadRecentBars(candidate, interval === '1s' ? '1m' : interval, () => fetchRecentApiBars(apiUrl, candidate, interval === '1s' ? '1m' : interval, INITIAL_CONTEXT_BARS, auth.accessToken))),
+    ];
+    void Promise.all(requests).catch(() => undefined);
+  }, [activeMarketSymbols, apiUrl, auth.accessToken, broker, entryInterval, interval]);
+
+  useEffect(() => {
     const removeSelected = (event: KeyboardEvent) => {
       if ((event.key !== 'Delete' && event.key !== 'Backspace') || selectedDrawings.length === 0) return;
       event.preventDefault();
@@ -1758,12 +1775,11 @@ function Workspace() {
       setTrackerRevision(value => value + 1);
       setViewportRevision(value => value + 1);
     }).catch(() => undefined);
-    fetch(`${apiUrl}/market/binance/candles/${encodeURIComponent(symbol)}?interval=${entryInterval}&limit=${INITIAL_ENTRY_BARS}`, { headers: auth.accessToken ? { Authorization: `Bearer ${auth.accessToken}` } : {}, credentials: 'include' })
-      .then(response => response.json())
-      .then(payload => {
-        const rows = (payload as { bars?: Array<{ time: number; open: number; high: number; low: number; close: number }> }).bars;
-        if (!active || !Array.isArray(rows)) return;
-        const parsed = rows.map(row => ({ time: Number(row.time) as UTCTimestamp, open: Number(row.open), high: Number(row.high), low: Number(row.low), close: Number(row.close) }));
+    void requestRecentBars(symbol, entryInterval, () => fetchRecentApiBars(apiUrl, symbol, entryInterval, INITIAL_ENTRY_BARS, auth.accessToken))
+      .then(parsedRows => {
+        if (!active) return;
+        const parsed = parsedRows.map(row => ({ time: Number(row.time) as UTCTimestamp, open: Number(row.open), high: Number(row.high), low: Number(row.low), close: Number(row.close) }));
+        if (parsed.length === 0) return;
         const hadLiveBars = candleBarsRef.current.length > 0;
         candleBarsRef.current = hadLiveBars ? mergeBars(candleBarsRef.current, parsed) : parsed;
         void cacheBars(symbol, entryInterval, parsed);
@@ -2057,12 +2073,11 @@ function Workspace() {
       setTrackerRevision(value => value + 1);
       setOverviewRevision(value => value + 1);
     }).catch(() => undefined);
-    fetch(`${apiUrl}/market/binance/candles/${encodeURIComponent(symbol)}?interval=${gatewayInterval}&limit=${INITIAL_CONTEXT_BARS}`, { headers: auth.accessToken ? { Authorization: `Bearer ${auth.accessToken}` } : {}, credentials: 'include' })
-      .then(response => response.json())
-      .then(payload => {
-        const rows = (payload as { bars?: Array<{ time: number; open: number; high: number; low: number; close: number }> }).bars;
-        if (!active || !Array.isArray(rows)) return;
-        const parsed = rows.map(row => ({ time: Number(row.time) as UTCTimestamp, open: Number(row.open), high: Number(row.high), low: Number(row.low), close: Number(row.close) }));
+    void requestRecentBars(symbol, gatewayInterval, () => fetchRecentApiBars(apiUrl, symbol, gatewayInterval, INITIAL_CONTEXT_BARS, auth.accessToken))
+      .then(parsedRows => {
+        if (!active) return;
+        const parsed = parsedRows.map(row => ({ time: Number(row.time) as UTCTimestamp, open: Number(row.open), high: Number(row.high), low: Number(row.low), close: Number(row.close) }));
+        if (parsed.length === 0) return;
         const hadLiveBars = overviewBarsRef.current.length > 0;
         overviewBarsRef.current = hadLiveBars ? mergeBars(overviewBarsRef.current, parsed) : parsed;
         void cacheBars(symbol, interval, parsed);
@@ -3423,7 +3438,7 @@ function Workspace() {
       return `${position.symbol ?? '—'} ${side} · PNL ${pnl >= 0 ? '+' : ''}${pnl.toFixed(2)} USDT`;
     }).join(' · ')
     : '';
-  const scannerStatusBar = broker === 'binance' ? <div className="header-market-scanner" aria-label="Market scanner Binance">{[...activeMarketSymbols].sort((a, b) => b.variation_sum_pct - a.variation_sum_pct).map(candidate => { const variation = candidate.variation_sum_pct; const analysis = scannerAnalysisBySymbol[candidate.symbol]; const activity = analysis?.activity_state ?? 'ANALIZANDO'; const finalResult = analysis?.final_result_usdt; return <article key={candidate.symbol} className={`header-market-item ${candidate.symbol === symbol ? 'active' : ''} ${analysis ? `scanner-activity-${analysis.activity_state.toLowerCase()}` : ''}`}><button type="button" className="header-market-main" onClick={() => { setLabRecommendations(null); setSymbol(candidate.symbol); }}><b>{candidate.symbol}</b><span className={variation >= 0 ? 'ticker-up' : 'ticker-down'}>{variation >= 0 ? '▲' : '▼'} {Math.abs(variation).toFixed(2)}%</span><em className="scanner-activity-label">{activity}</em><small className="scanner-metrics">TP {analysis?.tp_optimal_percent != null ? `+${analysis.tp_optimal_percent.toFixed(2)}%` : '—'} · ⌀ {analysis?.average_duration_minutes != null ? `${analysis.average_duration_minutes.toFixed(1)}m` : '—'}</small><small className={`scanner-final-result ${finalResult == null ? '' : finalResult >= 0 ? 'positive' : 'negative'}`}>RESULTADO {finalResult == null ? '—' : `${finalResult >= 0 ? '+' : ''}${finalResult.toFixed(2)} USDT`}</small></button></article>; })}</div> : null;
+  const scannerStatusBar = broker === 'binance' ? <div className="header-market-scanner" aria-label="Market scanner Binance">{[...activeMarketSymbols].sort((a, b) => b.variation_sum_pct - a.variation_sum_pct).map(candidate => { const variation = candidate.variation_sum_pct; const analysis = scannerAnalysisBySymbol[candidate.symbol]; const activity = analysis?.activity_state ?? 'ANALIZANDO'; return <article key={candidate.symbol} className={`header-market-item ${candidate.symbol === symbol ? 'active' : ''} ${analysis ? `scanner-activity-${analysis.activity_state.toLowerCase()}` : ''}`}><button type="button" className="header-market-main" onClick={() => { setLabRecommendations(null); setSymbol(candidate.symbol); }}><b>{candidate.symbol}</b><span className={variation >= 0 ? 'ticker-up' : 'ticker-down'}>{variation >= 0 ? '▲' : '▼'} {Math.abs(variation).toFixed(2)}%</span><em className="scanner-activity-label">{activity}</em><small className="scanner-metrics">TP {analysis?.tp_optimal_percent != null ? `+${analysis.tp_optimal_percent.toFixed(2)}%` : '—'} · ⌀ {analysis?.average_duration_minutes != null ? `${analysis.average_duration_minutes.toFixed(1)}m` : '—'}</small></button></article>; })}</div> : null;
   const statusBarMessage = paperSyncError || binanceLeverageError || activeMarketError || productionWorkerError;
   const binanceReady = binanceOnline;
   const binanceStatusClass = binanceReady

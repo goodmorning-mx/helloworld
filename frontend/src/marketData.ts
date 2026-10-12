@@ -11,9 +11,48 @@ const STORE_NAME = 'ohlc';
 const MAX_CACHE_DAYS = 31;
 const memoryCache = new Map<string, MarketBar[]>();
 const persistTimers = new Map<string, number>();
+const recentRequests = new Map<string, Promise<MarketBar[]>>();
+const preloadQueue: Array<() => void> = [];
+let activePreloads = 0;
+const MAX_ACTIVE_PRELOADS = 4;
 
 function cacheKey(symbol: string, interval: string) {
   return `${symbol.toUpperCase()}:${interval}`;
+}
+
+/** Share an in-flight history request so entry/context charts and scanner
+ * preloading never request the same symbol/interval twice. */
+export function requestRecentBars(symbol: string, interval: string, loader: () => Promise<MarketBar[]>): Promise<MarketBar[]> {
+  const key = cacheKey(symbol, interval);
+  const existing = recentRequests.get(key);
+  if (existing) return existing;
+  const request = loader().finally(() => recentRequests.delete(key));
+  recentRequests.set(key, request);
+  return request;
+}
+
+function drainPreloadQueue() {
+  while (activePreloads < MAX_ACTIVE_PRELOADS && preloadQueue.length > 0) {
+    const start = preloadQueue.shift();
+    if (!start) return;
+    activePreloads += 1;
+    start();
+  }
+}
+
+/** Schedule low-priority history warming without competing with a selected
+ * symbol's immediate request. */
+export function preloadRecentBars(symbol: string, interval: string, loader: () => Promise<MarketBar[]>): Promise<MarketBar[]> {
+  return new Promise((resolve, reject) => {
+    preloadQueue.push(() => {
+      void readCachedBars(symbol, interval)
+        .then(cached => cached.length > 0 ? cached : requestRecentBars(symbol, interval, loader))
+        .then(bars => { void cacheBars(symbol, interval, bars); return bars; })
+        .then(resolve, reject)
+        .finally(() => { activePreloads -= 1; drainPreloadQueue(); });
+    });
+    drainPreloadQueue();
+  });
 }
 
 function openDatabase(): Promise<IDBDatabase> {
