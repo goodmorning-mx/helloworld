@@ -313,6 +313,7 @@
 .replay-controls small { margin-left: .2rem; letter-spacing: .04em; }
 
 /* Keep the scanner compact while its symbols are analyzed progressively. */
+.symbol-bar { align-items: center; }
 .header-market-scanner { position: relative; align-items: flex-start; padding: .95rem .2rem .1rem; overflow-x: auto; }
 .header-market-item { align-self: flex-start; min-height: 76px; height: auto; }
 .header-market-main { grid-template-columns: minmax(0, 1fr) auto; align-items: start; }
