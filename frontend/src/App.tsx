@@ -1440,40 +1440,42 @@ function Workspace() {
             setScannerAnalysisProgress({ completed: 0, total: markets.length });
           }
           if (!active) return;
-          const symbols = markets.map(candidate => candidate.symbol);
-          const movements = markets.map(candidate => candidate.variation_average_pct);
-          try {
-            const analysis = await scannerProfilerRef.current.measure('scanner.symbol_analysis', () => fetchJson<{ symbols?: ScannerAnalysis[] }>(`${apiUrl}/market/binance/scanner-analysis?symbols=${encodeURIComponent(symbols.join(','))}&movement_averages=${encodeURIComponent(movements.join(','))}&tracker_period=${trackerPeriod}&stop_percent=${binanceStopPercent}&initial_balance=${paperInitialBalance}&risk_percent=${paperRiskPercent}&limit=1500`, { headers: auth.accessToken ? { Authorization: `Bearer ${auth.accessToken}` } : undefined, credentials: 'include' }));
+          let hadAnalysisErrors = false;
+          for (const [index, candidate] of markets.entries()) {
             if (!active) return;
-            const rows = Array.isArray(analysis.symbols) ? analysis.symbols : [];
-            setScannerAnalysisBySymbol(current => {
-              const next = Object.fromEntries(Object.entries(current).filter(([key]) => marketSymbols.has(key)));
-              for (const row of rows) {
-                const previous = next[row.symbol];
-                next[row.symbol] = row.status === 'ERROR' && previous && previous.status !== 'ERROR'
-                  ? { ...previous, status: 'STALE', error: row.error ?? 'No se pudo actualizar este símbolo.' }
-                  : row;
+            try {
+              const analysis = await scannerProfilerRef.current.measure('scanner.symbol_analysis', () => fetchJson<{ symbols?: ScannerAnalysis[] }>(`${apiUrl}/market/binance/scanner-analysis?symbols=${encodeURIComponent(candidate.symbol)}&movement_averages=${encodeURIComponent(String(candidate.variation_average_pct))}&tracker_period=${trackerPeriod}&stop_percent=${binanceStopPercent}&initial_balance=${paperInitialBalance}&risk_percent=${paperRiskPercent}&limit=1500`, { headers: auth.accessToken ? { Authorization: `Bearer ${auth.accessToken}` } : undefined, credentials: 'include' }));
+              const row = analysis.symbols?.[0];
+              if (row) {
+                hadAnalysisErrors ||= row.status === 'ERROR' || row.status === 'STALE';
+                setScannerAnalysisBySymbol(current => {
+                  const previous = current[row.symbol];
+                  return {
+                    ...current,
+                    [row.symbol]: row.status === 'ERROR' && previous && previous.status !== 'ERROR'
+                      ? { ...previous, status: 'STALE', error: row.error ?? 'No se pudo actualizar este símbolo.' }
+                      : row,
+                  };
+                });
+              } else {
+                hadAnalysisErrors = true;
               }
-              return next;
-            });
-            setScannerAnalysisProgress({ completed: rows.length, total: markets.length });
-            setActiveMarketError(rows.some(row => row.status === 'ERROR' || row.status === 'STALE') ? 'Algunos símbolos conservaron su último resultado y se reintentarán en el siguiente ciclo.' : '');
-          } catch (error) {
-            if (active) {
-              const message = error instanceof Error ? error.message : 'No se pudo actualizar el análisis del scanner.';
+            } catch (error) {
+              hadAnalysisErrors = true;
+              const message = error instanceof Error ? error.message : 'No se pudo actualizar este símbolo.';
               setScannerAnalysisBySymbol(current => {
-                const next = { ...current };
-                for (const candidate of markets) {
-                  const previous = next[candidate.symbol];
-                  next[candidate.symbol] = previous
+                const previous = current[candidate.symbol];
+                return {
+                  ...current,
+                  [candidate.symbol]: previous
                     ? { ...previous, status: 'STALE', error: message }
-                    : { symbol: candidate.symbol, status: 'ERROR', tp_optimal_percent: null, average_duration_minutes: null, operations: 0, wins: 0, losses: 0, equity_final: null, final_result_usdt: null, last_bar_time: null, bars: 0, error: message };
-                }
-                return next;
+                    : { symbol: candidate.symbol, status: 'ERROR', tp_optimal_percent: null, average_duration_minutes: null, operations: 0, wins: 0, losses: 0, equity_final: null, final_result_usdt: null, last_bar_time: null, bars: 0, error: message },
+                };
               });
-              setActiveMarketError(message);
             }
+            if (active) setScannerAnalysisProgress({ completed: index + 1, total: markets.length });
           }
+          if (active) setActiveMarketError(hadAnalysisErrors ? 'Algunos símbolos conservaron su último resultado y se reintentarán en el siguiente ciclo.' : '');
         } else if (active) {
           setScannerAnalysisProgress({ completed: 0, total: 0 });
           setActiveMarketError('');
