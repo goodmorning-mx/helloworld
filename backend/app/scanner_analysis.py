@@ -28,7 +28,12 @@ def _point_roe(side: str, entry: float, price: float, leverage: float) -> float:
     return ((price - entry) / entry * direction * max(1.0, leverage) * 100) if entry else 0.0
 
 
-def _simulate(bars: list[dict[str, Any]], config: ScannerAnalysisConfig, target_percent: float) -> list[dict[str, float | int | str]]:
+def _simulate(
+    bars: list[dict[str, Any]],
+    config: ScannerAnalysisConfig,
+    target_percent: float,
+    signals: list[tuple[str, str] | None] | None = None,
+) -> list[dict[str, float | int | str]]:
     period = max(1, int(config.tracker_period))
     leverage = max(1.0, float(config.leverage))
     stop_percent = abs(float(config.stop_percent))
@@ -41,7 +46,7 @@ def _simulate(bars: list[dict[str, Any]], config: ScannerAnalysisConfig, target_
         bar = bars[index]
         previous = bars[index - period:index]
         close = float(bar["close"])
-        signal = tracker_signal(close, tracker_levels(previous))
+        signal = signals[index] if signals is not None else tracker_signal(close, tracker_levels(previous))
 
         if open_operation is not None:
             side = str(open_operation["side"])
@@ -127,6 +132,14 @@ def _limited_equity(operations: list[dict[str, float | int | str]], config: Scan
     return equity
 
 
+def _build_tracker_signals(bars: list[dict[str, Any]], period: int) -> list[tuple[str, str] | None]:
+    """Build the target-independent Tracker signal series once per analysis."""
+    signals: list[tuple[str, str] | None] = [None] * len(bars)
+    for index in range(max(1, period), len(bars)):
+        signals[index] = tracker_signal(float(bars[index]["close"]), tracker_levels(bars[index - period:index]))
+    return signals
+
+
 def analyze_tracker(bars: Iterable[dict[str, Any]], config: ScannerAnalysisConfig | None = None, profiling: Profiling | None = None) -> dict[str, Any]:
     config = config or ScannerAnalysisConfig()
     clean = []
@@ -140,6 +153,10 @@ def analyze_tracker(bars: Iterable[dict[str, Any]], config: ScannerAnalysisConfi
     clean.sort(key=lambda bar: bar["time"])
     if profiling:
         profiling.mark("bars_parse_end", bars=len(clean))
+    with profiling.measure("build_tracker_signals") if profiling else nullcontext():
+        signals = _build_tracker_signals(clean, max(1, int(config.tracker_period)))
+    if profiling:
+        profiling.mark("tracker_signals_ready", signals=sum(signal is not None for signal in signals))
     best: tuple[float, float, list[dict[str, float | int | str]]] | None = None
     step = max(0.01, float(config.tp_step_percent))
     target = float(config.min_tp_percent)
@@ -151,7 +168,7 @@ def analyze_tracker(bars: Iterable[dict[str, Any]], config: ScannerAnalysisConfi
             if profiling:
                 profiling.mark("tp_target_start", target_percent=target_value, iteration=target_count)
             with profiling.measure("simulate_target") if profiling else nullcontext():
-                operations = _simulate(clean, config, target_value)
+                operations = _simulate(clean, config, target_value, signals)
             with profiling.measure("limited_equity") if profiling else nullcontext():
                 equity = _limited_equity(operations, config)
             if best is None or equity > best[0] or (equity == best[0] and target < best[1]):
