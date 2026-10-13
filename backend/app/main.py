@@ -6,6 +6,7 @@ import logging
 import math
 import json
 import time
+from collections import OrderedDict
 from decimal import Decimal, ROUND_CEILING, ROUND_FLOOR
 from uuid import uuid4
 from urllib.parse import urlencode
@@ -41,6 +42,7 @@ from app.backtest_engine import MAX_BACKTEST_DAYS, fetch_binance_history, run_st
 from app.production_worker import ProductionWorkerConfigStore, ProductionWorkerManager
 from app.telegram_service import BackendEventBus, TelegramSink, telegram_event_sink
 from app.scanner_analysis import ScannerAnalysisConfig, activity_state, analyze_tracker
+from app.scanner_cache import ScannerCache
 from app.profiling import Profiling
 
 settings = get_settings()
@@ -69,9 +71,10 @@ production_worker_config_store = ProductionWorkerConfigStore(engine)
 production_workers = ProductionWorkerManager(binance_market_gateway, paper_operation_store, backend_events, binance_manager, binance_execution_store, production_worker_config_store)
 _binance_exchange_info_cache: tuple[float, dict[str, object]] | None = None
 _binance_exchange_info_lock = Lock()
-_scanner_analysis_cache: dict[str, tuple[float, dict[str, object]]] = {}
+_active_symbols_cache: OrderedDict[tuple[object, ...], tuple[float, dict[str, object]]] = OrderedDict()
+_active_symbols_cache_lock = Lock()
 _scanner_analysis_states: dict[str, str] = {}
-_scanner_analysis_lock = asyncio.Lock()
+_scanner_cache = ScannerCache()
 
 
 class FallbackProvider:
@@ -777,6 +780,14 @@ def binance_active_symbols(
     min_trades = max(0, min(min_trades, 100_000_000))
     min_movement_pct = max(0, min(min_movement_pct, 100))
     horizon = max(1, min(horizon, 240))
+    user_id = getattr(identity, "user_id", None)
+    cache_key = (limit, min_quote_volume, min_trades, min_movement_pct, horizon, interval, user_id)
+    now = time.monotonic()
+    with _active_symbols_cache_lock:
+        cached = _active_symbols_cache.get(cache_key)
+        if cached and now - cached[0] < 30:
+            _active_symbols_cache.move_to_end(cache_key)
+            return cached[1]
     try:
         exchange_response = httpx.get("https://fapi.binance.com/fapi/v1/exchangeInfo", timeout=15)
         ticker_response = httpx.get("https://fapi.binance.com/fapi/v1/ticker/24hr", timeout=15)
@@ -827,7 +838,6 @@ def binance_active_symbols(
     ranked.sort(key=lambda row: (float(row["score"]), float(row["quote_volume"])), reverse=True)
     max_leverages: dict[str, int] = {}
     leverage_source = "no configurado"
-    user_id = getattr(identity, "user_id", None)
     credentials = binance_credentials.get(user_id) if user_id else None
     if credentials:
         try:
@@ -882,7 +892,7 @@ def binance_active_symbols(
         key=lambda row: (float(row.get("variation_sum_pct", 0)), float(row["quote_volume"])),
         reverse=True,
     )
-    return {
+    result = {
         "broker": "binance",
         "interval": "24h",
         "horizon": horizon,
@@ -892,6 +902,12 @@ def binance_active_symbols(
         "leverage_source": leverage_source,
         "symbols": ranked[:limit],
     }
+    with _active_symbols_cache_lock:
+        _active_symbols_cache[cache_key] = (time.monotonic(), result)
+        _active_symbols_cache.move_to_end(cache_key)
+        while len(_active_symbols_cache) > 100:
+            _active_symbols_cache.popitem(last=False)
+    return result
 
 
 @app.get("/market/binance/candles/{symbol}")
@@ -959,62 +975,94 @@ async def binance_scanner_analysis(
         risk_percent=max(0.01, min(float(risk_percent), 100)),
         leverage=max(1.0, min(float(leverage), 125)),
     )
-    cache_key = "|".join([*requested, str(config)])
-    now = time.monotonic()
-    async with _scanner_analysis_lock:
-        cached = _scanner_analysis_cache.get(cache_key)
-        if cached and now - cached[0] < 50:
-            return cached[1]
+    safe_limit = max(100, min(int(limit), 1500))
+    semaphore = asyncio.Semaphore(5)
+    request_profile = Profiling("scanner_analysis")
+    config_key = (*tuple(vars(config).items()), ("limit", safe_limit))
 
-        safe_limit = max(100, min(int(limit), 1500))
-        semaphore = asyncio.Semaphore(5)
-        request_profile = Profiling("scanner_analysis")
+    async def analyze_symbol(symbol: str) -> dict[str, object]:
+        async with semaphore:
+            profile = Profiling(f"scanner_symbol:{symbol}")
+            profile.mark("symbol_start", symbol=symbol)
 
-        async def analyze_symbol(symbol: str) -> dict[str, object]:
-            async with semaphore:
-                profile = Profiling(f"scanner_symbol:{symbol}")
-                profile.mark("symbol_start", symbol=symbol)
+            async def load_new_bars(existing: list[dict[str, object]]) -> list[dict[str, object]]:
+                profile.mark("fetch_klines_start", cached_bars=len(existing), limit=safe_limit)
+                # Re-fetch the most recent cached candle so upstream corrections
+                # are merged, then ask Binance only for the subsequent candles.
+                params: dict[str, object] = {"symbol": symbol, "interval": "1m", "limit": safe_limit}
+                if existing:
+                    params = {"symbol": symbol, "interval": "1m", "startTime": max(0, int(existing[-1]["time"]) * 1000 - 60_000), "limit": 1500}
+                with profile.measure("fetch_klines"):
+                    async with httpx.AsyncClient(timeout=15) as client:
+                        response = await client.get(f"{settings.binance_base_url.rstrip('/')}/fapi/v1/klines", params=params)
+                        response.raise_for_status()
+                        payload = response.json()
+                now_ms = int(time.time() * 1000)
+                bars: list[dict[str, object]] = []
+                with profile.measure("parse_response"):
+                    for row in payload if isinstance(payload, list) else []:
+                        if not isinstance(row, list) or len(row) < 7:
+                            continue
+                        try:
+                            # Ignore Binance's still-forming 1m candle.
+                            if int(row[6]) >= now_ms:
+                                continue
+                            bars.append({"time": int(float(row[0]) / 1000), "open": float(row[1]), "high": float(row[2]), "low": float(row[3]), "close": float(row[4])})
+                        except (TypeError, ValueError):
+                            continue
+                profile.mark("fetch_klines_end", rows=len(payload) if isinstance(payload, list) else 0, closed_bars=len(bars))
+                return bars
+
+            bars, fetch_error, changed = await _scanner_cache.refresh_bars(symbol, load_new_bars)
+            profile.mark("scanner_bars_ready", bars=len(bars), changed=changed, stale=fetch_error is not None)
+            last_bar_time = int(bars[-1]["time"]) if bars else 0
+            cached = await _scanner_cache.cached_analysis(symbol, config_key, last_bar_time) if last_bar_time else None
+            if cached is not None:
+                analysis = cached
+                profile.mark("analysis_cache_hit", last_bar_time=last_bar_time)
+            elif bars:
+                async def calculate() -> dict[str, object]:
+                    return await asyncio.to_thread(analyze_tracker, bars, config, profile)
                 try:
-                    profile.mark("fetch_klines_start", limit=safe_limit)
-                    with profile.measure("fetch_klines"):
-                        async with httpx.AsyncClient(timeout=15) as client:
-                            response = await client.get(f"{settings.binance_base_url.rstrip('/')}/fapi/v1/klines", params={"symbol": symbol, "interval": "1m", "limit": safe_limit})
-                            response.raise_for_status()
-                            payload = response.json()
-                    profile.mark("fetch_klines_end", rows=len(payload) if isinstance(payload, list) else 0)
-                    with profile.measure("parse_response"):
-                        bars = []
-                        for row in payload if isinstance(payload, list) else []:
-                            if isinstance(row, list) and len(row) >= 5:
-                                bars.append({"time": int(float(row[0]) / 1000), "open": float(row[1]), "high": float(row[2]), "low": float(row[3]), "close": float(row[4])})
-                    profile.mark("parse_response_end", bars=len(bars))
-                    result = analyze_tracker(bars, config, profile)
-                    profile.mark("symbol_end", operations=result["operations"], optimal_tp=result["tp_optimal_percent"])
-                    return {"symbol": symbol, **result, "profiling": profile.snapshot()}
-                except (httpx.HTTPError, ValueError, TypeError) as exc:
-                    profile.mark("symbol_error", error=str(exc))
-                    return {"symbol": symbol, "error": str(exc), "tp_optimal_percent": None, "average_duration_minutes": None, "operations": 0, "wins": 0, "losses": 0, "equity_final": None, "final_result_usdt": None, "last_bar_time": None, "bars": 0, "profiling": profile.snapshot()}
+                    with profile.measure("analysis_cache_or_compute"):
+                        analysis = await _scanner_cache.analyze_once(symbol, config_key, last_bar_time, calculate)
+                except Exception as exc:
+                    profile.mark("analysis_error", error=str(exc))
+                    previous = await _scanner_cache.latest_analysis(symbol, config_key)
+                    if previous:
+                        return {"symbol": symbol, **previous[1], "status": "STALE", "error": str(exc), "stale_since_bar_time": previous[0], "profiling": profile.snapshot()}
+                    return {"symbol": symbol, "status": "ERROR", "error": str(exc), "tp_optimal_percent": None, "average_duration_minutes": None, "operations": 0, "wins": 0, "losses": 0, "equity_final": None, "final_result_usdt": None, "last_bar_time": None, "bars": 0, "profiling": profile.snapshot()}
+            else:
+                previous = await _scanner_cache.latest_analysis(symbol, config_key)
+                if previous:
+                    return {"symbol": symbol, **previous[1], "status": "STALE", "error": fetch_error or "Sin velas cerradas disponibles.", "stale_since_bar_time": previous[0], "profiling": profile.snapshot()}
+                return {"symbol": symbol, "status": "ERROR", "error": fetch_error or "Sin velas cerradas disponibles.", "tp_optimal_percent": None, "average_duration_minutes": None, "operations": 0, "wins": 0, "losses": 0, "equity_final": None, "final_result_usdt": None, "last_bar_time": None, "bars": 0, "profiling": profile.snapshot()}
 
-        request_profile.mark("symbol_analysis_start", symbols=len(requested), concurrency=5)
-        with request_profile.measure("analyze_symbols"):
-            rows = list(await asyncio.gather(*(analyze_symbol(symbol) for symbol in requested)))
-        request_profile.mark("symbol_analysis_end", completed=len(rows))
-        average_values = [value.strip() for value in movement_averages.split(",")]
-        request_profile.mark("activity_classification_start")
-        for index, row in enumerate(rows):
-            try:
-                movement = float(average_values[index]) if index < len(average_values) else 0.0
-            except ValueError:
-                movement = 0.0
-            row["activity_state"] = activity_state(movement)
+            status = "STALE" if fetch_error else "VALID"
+            row: dict[str, object] = {"symbol": symbol, **analysis, "status": status, "profiling": profile.snapshot()}
+            if fetch_error:
+                row["error"] = fetch_error
+            return row
+
+    request_profile.mark("symbol_analysis_start", symbols=len(requested), concurrency=5)
+    with request_profile.measure("analyze_symbols"):
+        rows = list(await asyncio.gather(*(analyze_symbol(symbol) for symbol in requested)))
+    request_profile.mark("symbol_analysis_end", completed=len(rows))
+    average_values = [value.strip() for value in movement_averages.split(",")]
+    request_profile.mark("activity_classification_start")
+    for index, row in enumerate(rows):
+        try:
+            movement = float(average_values[index]) if index < len(average_values) else 0.0
+        except ValueError:
+            movement = 0.0
+        row["activity_state"] = activity_state(movement)
+        if row.get("status") == "VALID":
             previous_state = _scanner_analysis_states.get(str(row["symbol"]))
             if previous_state != row["activity_state"]:
                 _scanner_analysis_states[str(row["symbol"])] = str(row["activity_state"])
                 await backend_events.publish({"type": "SCANNER_STATE_CHANGED", "symbol": row["symbol"], "state": row["activity_state"], "tp_optimal_percent": row["tp_optimal_percent"], "average_duration_minutes": row["average_duration_minutes"], "movement_average_percent": movement})
-        request_profile.mark("activity_classification_end", changed_states=sum(1 for row in rows if row.get("activity_state")))
-        result = {"symbols": rows, "updated_at": int(time.time()), "cache_ttl_seconds": 50, "config": {"tracker_period": config.tracker_period, "stop_percent": config.stop_percent, "initial_balance": config.initial_balance, "risk_percent": config.risk_percent, "leverage": config.leverage}, "profiling": request_profile.snapshot()}
-        _scanner_analysis_cache[cache_key] = (now, result)
-        return result
+    request_profile.mark("activity_classification_end", changed_states=sum(1 for row in rows if row.get("activity_state")))
+    return {"symbols": rows, "updated_at": int(time.time()), "cache_ttl_seconds": 5, "config": {"tracker_period": config.tracker_period, "stop_percent": config.stop_percent, "initial_balance": config.initial_balance, "risk_percent": config.risk_percent, "leverage": config.leverage}, "profiling": request_profile.snapshot()}
 
 
 @app.websocket("/market/binance/stream/{symbol}")

@@ -222,6 +222,10 @@
 .scanner-activity-dormida { opacity: .78; }
 .scanner-activity-activa .scanner-activity-label { color: #64d39a !important; }
 .scanner-activity-despertando .scanner-activity-label { color: #f5c45e !important; }
+.scanner-stale { border-color: #a77935; }
+.scanner-stale .scanner-activity-label { color: #f5c45e !important; }
+.scanner-error { border-color: #a34848; }
+.scanner-error .scanner-activity-label { color: #ff8f8f !important; }
 .scanner-profiling { flex: 0 0 auto; align-self: center; color: #71d7ff; font: 600 .5rem 'DM Mono', monospace; writing-mode: vertical-rl; transform: rotate(180deg); letter-spacing: .04em; }
 .symbol-bar { align-items: center; }
 .header-market-scanner { position: relative; align-items: flex-start; align-self: center; padding: .95rem .2rem .1rem; overflow-x: auto; }

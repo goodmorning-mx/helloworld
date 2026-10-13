@@ -54,3 +54,22 @@ def test_active_symbols_ranks_by_accumulated_candle_variation(monkeypatch) -> No
     assert row["horizon"] == 10
     assert row["variation_sum_pct"] > 0
     assert row["variation_average_pct"] == row["variation_sum_pct"] / 10
+
+
+def test_active_symbols_reuses_recent_universe_snapshot(monkeypatch) -> None:
+    main._active_symbols_cache.clear()
+    calls = 0
+
+    def fake_get(url, timeout):
+        nonlocal calls
+        calls += 1
+        if url.endswith("exchangeInfo"):
+            return FakeResponse({"symbols": []})
+        return FakeResponse([])
+
+    monkeypatch.setattr(main.httpx, "get", fake_get)
+    first = main.binance_active_symbols(limit=7, min_movement_pct=0.37)
+    second = main.binance_active_symbols(limit=7, min_movement_pct=0.37)
+
+    assert first == second
+    assert calls == 2
