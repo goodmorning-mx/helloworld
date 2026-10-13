@@ -41,6 +41,7 @@ from app.backtest_engine import MAX_BACKTEST_DAYS, fetch_binance_history, run_st
 from app.production_worker import ProductionWorkerConfigStore, ProductionWorkerManager
 from app.telegram_service import BackendEventBus, TelegramSink, telegram_event_sink
 from app.scanner_analysis import ScannerAnalysisConfig, activity_state, analyze_tracker
+from app.profiling import Profiling
 
 settings = get_settings()
 logger = logging.getLogger(__name__)
@@ -967,24 +968,29 @@ async def binance_scanner_analysis(
 
         safe_limit = max(100, min(int(limit), 1500))
         semaphore = asyncio.Semaphore(5)
+        request_profile = Profiling("scanner_analysis")
 
         async def analyze_symbol(symbol: str) -> dict[str, object]:
             async with semaphore:
+                profile = Profiling(f"scanner_symbol:{symbol}")
                 try:
-                    async with httpx.AsyncClient(timeout=15) as client:
-                        response = await client.get(f"{settings.binance_base_url.rstrip('/')}/fapi/v1/klines", params={"symbol": symbol, "interval": "1m", "limit": safe_limit})
-                        response.raise_for_status()
-                        payload = response.json()
-                    bars = []
-                    for row in payload if isinstance(payload, list) else []:
-                        if isinstance(row, list) and len(row) >= 5:
-                            bars.append({"time": int(float(row[0]) / 1000), "open": float(row[1]), "high": float(row[2]), "low": float(row[3]), "close": float(row[4])})
-                    result = analyze_tracker(bars, config)
-                    return {"symbol": symbol, **result}
+                    with profile.measure("fetch_klines"):
+                        async with httpx.AsyncClient(timeout=15) as client:
+                            response = await client.get(f"{settings.binance_base_url.rstrip('/')}/fapi/v1/klines", params={"symbol": symbol, "interval": "1m", "limit": safe_limit})
+                            response.raise_for_status()
+                            payload = response.json()
+                    with profile.measure("parse_response"):
+                        bars = []
+                        for row in payload if isinstance(payload, list) else []:
+                            if isinstance(row, list) and len(row) >= 5:
+                                bars.append({"time": int(float(row[0]) / 1000), "open": float(row[1]), "high": float(row[2]), "low": float(row[3]), "close": float(row[4])})
+                    result = analyze_tracker(bars, config, profile)
+                    return {"symbol": symbol, **result, "profiling": profile.snapshot()}
                 except (httpx.HTTPError, ValueError, TypeError) as exc:
-                    return {"symbol": symbol, "error": str(exc), "tp_optimal_percent": None, "average_duration_minutes": None, "operations": 0, "wins": 0, "losses": 0, "equity_final": None, "final_result_usdt": None, "last_bar_time": None, "bars": 0}
+                    return {"symbol": symbol, "error": str(exc), "tp_optimal_percent": None, "average_duration_minutes": None, "operations": 0, "wins": 0, "losses": 0, "equity_final": None, "final_result_usdt": None, "last_bar_time": None, "bars": 0, "profiling": profile.snapshot()}
 
-        rows = list(await asyncio.gather(*(analyze_symbol(symbol) for symbol in requested)))
+        with request_profile.measure("analyze_symbols"):
+            rows = list(await asyncio.gather(*(analyze_symbol(symbol) for symbol in requested)))
         average_values = [value.strip() for value in movement_averages.split(",")]
         for index, row in enumerate(rows):
             try:
@@ -996,7 +1002,7 @@ async def binance_scanner_analysis(
             if previous_state != row["activity_state"]:
                 _scanner_analysis_states[str(row["symbol"])] = str(row["activity_state"])
                 await backend_events.publish({"type": "SCANNER_STATE_CHANGED", "symbol": row["symbol"], "state": row["activity_state"], "tp_optimal_percent": row["tp_optimal_percent"], "average_duration_minutes": row["average_duration_minutes"], "movement_average_percent": movement})
-        result = {"symbols": rows, "updated_at": int(time.time()), "cache_ttl_seconds": 50, "config": {"tracker_period": config.tracker_period, "stop_percent": config.stop_percent, "initial_balance": config.initial_balance, "risk_percent": config.risk_percent, "leverage": config.leverage}}
+        result = {"symbols": rows, "updated_at": int(time.time()), "cache_ttl_seconds": 50, "config": {"tracker_period": config.tracker_period, "stop_percent": config.stop_percent, "initial_balance": config.initial_balance, "risk_percent": config.risk_percent, "leverage": config.leverage}, "profiling": request_profile.snapshot()}
         _scanner_analysis_cache[cache_key] = (now, result)
         return result
 
