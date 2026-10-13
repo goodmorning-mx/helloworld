@@ -236,6 +236,22 @@
 .scanner-profiling { position: absolute; top: .08rem; left: .2rem; width: 100%; height: .7rem; color: #71d7ff; font: 600 .48rem 'DM Mono', monospace; letter-spacing: .04em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; writing-mode: horizontal-tb; transform: none; }
 .scanner-metrics { display: grid; gap: .08rem; white-space: normal; line-height: 1.15; }
 .scanner-metrics i { display: block; overflow: hidden; color: #f5c45e !important; font: 600 .48rem 'DM Mono', monospace; font-style: normal; text-overflow: ellipsis; white-space: nowrap; }
+.scanner-results-panel { margin: .35rem 0 .65rem; border: 1px solid #263746; border-radius: 8px; background: #0e141b; color: #c7d2df; font: 600 .65rem 'DM Mono', monospace; }
+.scanner-results-panel > summary { padding: .55rem .7rem; color: #d7eaff; cursor: pointer; }
+.scanner-results-panel[open] > summary { border-bottom: 1px solid #263746; }
+.scanner-results-scroll { max-height: min(52vh, 460px); overflow: auto; }
+.scanner-results-table { width: 100%; min-width: 720px; border-collapse: collapse; text-align: right; }
+.scanner-results-table th, .scanner-results-table td { padding: .48rem .65rem; border-bottom: 1px solid #202b35; white-space: nowrap; }
+.scanner-results-table th:first-child, .scanner-results-table td:first-child, .scanner-results-table th:nth-child(2), .scanner-results-table td:nth-child(2) { text-align: left; }
+.scanner-results-table thead { position: sticky; top: 0; z-index: 1; background: #111a23; color: #91a4b8; }
+.scanner-results-table thead button { padding: 0; border: 0; background: transparent; color: inherit; font: inherit; cursor: pointer; }
+.scanner-results-table thead button:hover { color: #f5c45e; }
+.scanner-results-table tfoot { background: #111a23; color: #f5c45e; }
+.scanner-table-symbol { padding: 0; border: 0; background: transparent; color: #d7eaff; font: inherit; cursor: pointer; }
+.scanner-table-symbol:hover { color: #f5c45e; text-decoration: underline; }
+.scanner-table-active { background: #1d1a13; }
+.scanner-table-positive { color: #64d39a; }
+.scanner-table-negative { color: #ff8f8f; }
 .tracker-factor-panel { margin-top: .8rem; padding: .8rem; border: 1px solid #263746; border-radius: 8px; background: #101923; }.tracker-factor-chart { display: block; width: 100%; min-height: 220px; margin-top: .35rem; overflow: visible; }.tracker-factor-axis { stroke: #405160; stroke-width: 1; }.tracker-factor-tp-line, .tracker-factor-volatility-line { fill: none; stroke-width: 2.5; }.tracker-factor-tp-line { stroke: #f5c45e; }.tracker-factor-volatility-line { stroke: #00d9ff; }.tracker-factor-tp-dot { fill: #f5c45e; }.tracker-factor-volatility-dot { fill: #00d9ff; }.tracker-factor-legend { display: flex; gap: 1rem; color: #a8b7c7; font: 600 .62rem 'DM Mono', monospace; }.tracker-factor-legend span { display: inline-flex; align-items: center; gap: .3rem; }.tracker-factor-legend i { display: inline-block; width: .7rem; height: .16rem; }.tracker-factor-tp-swatch { background: #f5c45e; }.tracker-factor-volatility-swatch { background: #00d9ff; }
 .tracker-factor-open-line { fill: none; stroke: #b98cff; stroke-width: 2.5; }.tracker-factor-open-dot { fill: #b98cff; }.tracker-factor-open-swatch { background: #b98cff; }
 .tracker-factor-table-panel { margin-top: .8rem; padding: .8rem; border: 1px solid #263746; border-radius: 8px; background: #101923; }.tracker-factor-table-scroll { overflow-x: auto; }.tracker-factor-table { width: 100%; min-width: 760px; border-collapse: collapse; color: #c7d2df; font: 600 .62rem 'DM Mono', monospace; }.tracker-factor-table th, .tracker-factor-table td { padding: .48rem .55rem; border-bottom: 1px solid #263746; text-align: right; white-space: nowrap; }.tracker-factor-table th:first-child, .tracker-factor-table td:first-child, .tracker-factor-table th:nth-child(2), .tracker-factor-table td:nth-child(2) { text-align: left; }.tracker-factor-table th { color: #8799ab; font-size: .56rem; letter-spacing: .03em; }.tracker-factor-table td:nth-child(3) { color: #f5c45e; }.tracker-factor-table td:nth-child(4) { color: #b98cff; }.tracker-factor-table td:nth-child(5) { color: #00d9ff; }
