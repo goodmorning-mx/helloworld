@@ -9,3 +9,11 @@ The template contains three services:
 The backend currently does not create product-specific tables. Database connectivity is isolated in `backend/app/database.py` so future products can add migrations deliberately.
 
 Runtime configuration is supplied through environment variables documented in `.env.example`.
+
+## Binance market scanner
+
+The frontend requests the active market universe and scanner analysis as batches. The backend keeps a short-lived, process-local universe snapshot and a bounded candle cache keyed by symbol and interval. On a cold symbol it loads the requested history; later refreshes re-fetch the last cached candle and request only the next candles. Only closed 1m candles enter Tracker analysis.
+
+Analysis results are cached per symbol, strategy configuration, and latest closed candle time. Identical in-flight candle refreshes and analysis calculations are shared. A failed refresh keeps the last good result and reports `STALE`; a symbol without a usable result reports a recoverable `ERROR`. The frontend merges responses by symbol and keeps the previous metrics visible across refresh failures.
+
+These caches hold derived public market data in memory, are bounded, and rebuild after a backend restart. Separate backend replicas have separate caches; shared cache infrastructure should be considered only if the deployment scales horizontally and measurements show the duplicated work matters.
