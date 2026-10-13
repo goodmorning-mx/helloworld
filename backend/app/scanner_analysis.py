@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+from contextlib import nullcontext
 from dataclasses import dataclass
 from typing import Any, Iterable
 
+from app.profiling import Profiling
 from app.tracker_strategy import tracker_close_reason, tracker_levels, tracker_signal
 
 
@@ -125,27 +127,30 @@ def _limited_equity(operations: list[dict[str, float | int | str]], config: Scan
     return equity
 
 
-def analyze_tracker(bars: Iterable[dict[str, Any]], config: ScannerAnalysisConfig | None = None) -> dict[str, Any]:
+def analyze_tracker(bars: Iterable[dict[str, Any]], config: ScannerAnalysisConfig | None = None, profiling: Profiling | None = None) -> dict[str, Any]:
     config = config or ScannerAnalysisConfig()
     clean = []
-    for bar in bars:
-        try:
-            clean.append({"time": int(bar["time"]), "open": float(bar["open"]), "high": float(bar["high"]), "low": float(bar["low"]), "close": float(bar["close"])})
-        except (KeyError, TypeError, ValueError):
-            continue
+    with profiling.measure("parse_bars") if profiling else nullcontext():
+        for bar in bars:
+            try:
+                clean.append({"time": int(bar["time"]), "open": float(bar["open"]), "high": float(bar["high"]), "low": float(bar["low"]), "close": float(bar["close"])})
+            except (KeyError, TypeError, ValueError):
+                continue
     clean.sort(key=lambda bar: bar["time"])
     best: tuple[float, float, list[dict[str, float | int | str]]] | None = None
     step = max(0.01, float(config.tp_step_percent))
     target = float(config.min_tp_percent)
-    while target <= float(config.max_tp_percent) + step / 2:
-        operations = _simulate(clean, config, round(target, 4))
-        equity = _limited_equity(operations, config)
-        if best is None or equity > best[0] or (equity == best[0] and target < best[1]):
-            best = (equity, round(target, 4), operations)
-        target += step
+    with profiling.measure("tp_optimization") if profiling else nullcontext():
+        while target <= float(config.max_tp_percent) + step / 2:
+            operations = _simulate(clean, config, round(target, 4))
+            equity = _limited_equity(operations, config)
+            if best is None or equity > best[0] or (equity == best[0] and target < best[1]):
+                best = (equity, round(target, 4), operations)
+            target += step
     equity, optimal_tp, operations = best or (float(config.initial_balance), float(config.min_tp_percent), [])
-    durations = [float(operation["duration_minutes"]) for operation in operations]
-    average_duration = sum(durations) / len(durations) if durations else None
+    with profiling.measure("aggregate_metrics") if profiling else nullcontext():
+        durations = [float(operation["duration_minutes"]) for operation in operations]
+        average_duration = sum(durations) / len(durations) if durations else None
     return {"tp_optimal_percent": optimal_tp, "average_duration_minutes": average_duration, "operations": len(operations), "wins": sum(operation["status"] == "WIN" for operation in operations), "losses": sum(operation["status"] == "FAIL" for operation in operations), "equity_final": equity, "final_result_usdt": equity - float(config.initial_balance), "last_bar_time": clean[-1]["time"] if clean else None, "bars": len(clean)}
 
 

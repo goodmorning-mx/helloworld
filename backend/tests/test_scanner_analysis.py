@@ -1,4 +1,5 @@
 from app.scanner_analysis import ScannerAnalysisConfig, activity_state, analyze_tracker
+from app.profiling import Profiling
 
 
 def test_tracker_analysis_reports_optimal_tp_and_average_duration() -> None:
@@ -23,3 +24,15 @@ def test_activity_state_has_stable_thresholds() -> None:
     assert activity_state(.1) == "DORMIDA"
     assert activity_state(.25) == "DESPERTANDO"
     assert activity_state(.6) == "ACTIVA"
+
+
+def test_profiling_collects_stage_timings() -> None:
+    profiling = Profiling("test")
+    with profiling.measure("parse"):
+        pass
+
+    snapshot = profiling.snapshot()
+    assert snapshot["name"] == "test"
+    assert snapshot["total_ms"] >= 0
+    assert snapshot["stages"][0]["stage"] == "parse"
+    assert snapshot["stages"][0]["count"] == 1

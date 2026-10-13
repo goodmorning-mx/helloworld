@@ -7,6 +7,7 @@ import BacktestPanel, { type WickBacktestTrade } from './BacktestPanel';
 import { cacheBars, preloadRecentBars, readCachedBars, requestRecentBars, type MarketBar } from './marketData';
 import { calculateDailyTimeWindow, calculateHeikinAshi, calculateRsi, calculateSslChannel, calculateTrackerCloseReason, calculateTrackerLevels, calculateTrackerSignal, calculateWickExtensions } from './indicators';
 import { tradingCosts, tradingCostRate } from './tradingCosts';
+import { Profiling, type ProfilingSnapshot } from './profiling';
 import './styles.css';
 
 const defaultApiUrl = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1'
@@ -1274,13 +1275,18 @@ function Workspace() {
   const [depositAmount, setDepositAmount] = useState('');
   const [paperRiskPercent, setPaperRiskPercent] = useState(() => Number(JSON.parse(localStorage.getItem('helloworld-paper-assist') ?? '{}').riskPercent ?? 1) || 1);
   type ActiveMarketSymbol = { symbol: string; last_price: number; change_pct: number; movement_pct: number; range_pct: number; quote_volume: number; trades: number; score: number; max_leverage: number | null; horizon: number; interval: string; variation_sum_pct: number; variation_average_pct: number };
-  type ScannerAnalysis = { symbol: string; tp_optimal_percent: number | null; average_duration_minutes: number | null; activity_state: 'DORMIDA' | 'DESPERTANDO' | 'ACTIVA'; operations: number; wins: number; losses: number; equity_final: number | null; final_result_usdt: number | null; last_bar_time: number | null; bars: number; error?: string };
+  type ScannerAnalysis = { symbol: string; tp_optimal_percent: number | null; average_duration_minutes: number | null; activity_state: 'DORMIDA' | 'DESPERTANDO' | 'ACTIVA'; operations: number; wins: number; losses: number; equity_final: number | null; final_result_usdt: number | null; last_bar_time: number | null; bars: number; error?: string; profiling?: { total_ms?: number; stages?: Array<{ stage: string; total_ms: number; last_ms: number; max_ms: number; count: number }> } };
   const [activeMarketSymbols, setActiveMarketSymbols] = useState<ActiveMarketSymbol[]>([]);
   const [scannerAnalysisBySymbol, setScannerAnalysisBySymbol] = useState<Record<string, ScannerAnalysis>>({});
+  const scannerProfilerRef = useRef(new Profiling('scanner'));
+  const [scannerProfiling, setScannerProfiling] = useState<ProfilingSnapshot>(() => scannerProfilerRef.current.snapshot());
+  const [scannerAnalysisProgress, setScannerAnalysisProgress] = useState({ completed: 0, total: 0 });
   const [activeMarketLoading, setActiveMarketLoading] = useState(false);
   const [activeMarketError, setActiveMarketError] = useState('');
   const [productionWorkerError, setProductionWorkerError] = useState('');
   const selectableSymbols = [...new Set([...brokerSymbols, ...activeMarketSymbols.map(candidate => candidate.symbol)])];
+
+  useEffect(() => scannerProfilerRef.current.subscribe(setScannerProfiling), []);
 
   useEffect(() => {
     if (broker !== 'binance') { setBinanceProductionAvailable(false); setExecutionMode('paper'); return; }
@@ -1410,21 +1416,39 @@ function Workspace() {
     if (broker !== 'binance') {
       setActiveMarketSymbols([]);
       setActiveMarketError('');
+      setScannerAnalysisProgress({ completed: 0, total: 0 });
       return;
     }
     let active = true;
     const loadActiveMarkets = async () => {
       setActiveMarketLoading(true);
+      scannerProfilerRef.current.reset();
       try {
-        const payload = await fetchJson<{ symbols?: ActiveMarketSymbol[] }>(`${apiUrl}/market/binance/active-symbols?limit=20&min_movement_pct=0.5&horizon=10&interval=5m`, { headers: auth.accessToken ? { Authorization: `Bearer ${auth.accessToken}` } : undefined, credentials: 'include' });
+        const payload = await scannerProfilerRef.current.measure('scanner.active_markets', () => fetchJson<{ symbols?: ActiveMarketSymbol[] }>(`${apiUrl}/market/binance/active-symbols?limit=20&min_movement_pct=0.5&horizon=10&interval=5m`, { headers: auth.accessToken ? { Authorization: `Bearer ${auth.accessToken}` } : undefined, credentials: 'include' }));
         const markets = Array.isArray(payload.symbols) ? payload.symbols : [];
         if (active) setActiveMarketSymbols(markets);
         if (markets.length) {
-          const querySymbols = markets.map(candidate => candidate.symbol).join(',');
-          const movement = markets.map(candidate => candidate.variation_average_pct).join(',');
-          const analysis = await fetchJson<{ symbols?: ScannerAnalysis[] }>(`${apiUrl}/market/binance/scanner-analysis?symbols=${encodeURIComponent(querySymbols)}&movement_averages=${encodeURIComponent(movement)}&tracker_period=${trackerPeriod}&stop_percent=${binanceStopPercent}&initial_balance=${paperInitialBalance}&risk_percent=${paperRiskPercent}&limit=1500`, { headers: auth.accessToken ? { Authorization: `Bearer ${auth.accessToken}` } : undefined, credentials: 'include' });
-          if (active) setScannerAnalysisBySymbol(Object.fromEntries((analysis.symbols ?? []).map(row => [row.symbol, row])));
-        } else if (active) setScannerAnalysisBySymbol({});
+          if (active) {
+            setScannerAnalysisBySymbol({});
+            setScannerAnalysisProgress({ completed: 0, total: markets.length });
+          }
+          for (const [index, candidate] of markets.entries()) {
+            if (!active) return;
+            const movement = candidate.variation_average_pct;
+            try {
+              const analysis = await scannerProfilerRef.current.measure('scanner.symbol_analysis', () => fetchJson<{ symbols?: ScannerAnalysis[] }>(`${apiUrl}/market/binance/scanner-analysis?symbols=${encodeURIComponent(candidate.symbol)}&movement_averages=${encodeURIComponent(String(movement))}&tracker_period=${trackerPeriod}&stop_percent=${binanceStopPercent}&initial_balance=${paperInitialBalance}&risk_percent=${paperRiskPercent}&limit=1500`, { headers: auth.accessToken ? { Authorization: `Bearer ${auth.accessToken}` } : undefined, credentials: 'include' }));
+              const row = analysis.symbols?.[0];
+              if (active && row) setScannerAnalysisBySymbol(current => ({ ...current, [row.symbol]: row }));
+            } catch (error) {
+              if (active) setActiveMarketError(error instanceof Error ? error.message : `No se pudo analizar ${candidate.symbol}.`);
+            } finally {
+              if (active) setScannerAnalysisProgress({ completed: index + 1, total: markets.length });
+            }
+          }
+        } else if (active) {
+          setScannerAnalysisBySymbol({});
+          setScannerAnalysisProgress({ completed: 0, total: 0 });
+        }
         if (active) setActiveMarketError('');
       } catch (error) {
         if (active) setActiveMarketError(error instanceof Error ? error.message : 'No se pudo cargar el ranking de mercado.');
@@ -3474,7 +3498,11 @@ function Workspace() {
       return `${position.symbol ?? '—'} ${side} · PNL ${pnl >= 0 ? '+' : ''}${pnl.toFixed(2)} USDT`;
     }).join(' · ')
     : '';
-  const scannerStatusBar = broker === 'binance' ? <div className="header-market-scanner" aria-label="Market scanner Binance">{[...activeMarketSymbols].sort((a, b) => b.variation_sum_pct - a.variation_sum_pct).map(candidate => { const variation = candidate.variation_sum_pct; const analysis = scannerAnalysisBySymbol[candidate.symbol]; const activity = analysis?.activity_state ?? 'ANALIZANDO'; return <article key={candidate.symbol} className={`header-market-item ${candidate.symbol === symbol ? 'active' : ''} ${analysis ? `scanner-activity-${analysis.activity_state.toLowerCase()}` : ''}`}><button type="button" className="header-market-main" onClick={() => { setLabRecommendations(null); setSymbol(candidate.symbol); }}><b>{candidate.symbol}</b><span className={variation >= 0 ? 'ticker-up' : 'ticker-down'}>{variation >= 0 ? '▲' : '▼'} {Math.abs(variation).toFixed(2)}%</span><em className="scanner-activity-label">{activity}</em><small className="scanner-metrics">TP {analysis?.tp_optimal_percent != null ? `+${analysis.tp_optimal_percent.toFixed(2)}%` : '—'} · ⌀ {analysis?.average_duration_minutes != null ? `${analysis.average_duration_minutes.toFixed(1)}m` : '—'}</small></button></article>; })}</div> : null;
+  const scannerProfileStage = scannerProfiling.stages[0];
+  const scannerProfilingLabel = scannerAnalysisProgress.total > 0
+    ? `ANÁLISIS ${scannerAnalysisProgress.completed}/${scannerAnalysisProgress.total} · ${scannerProfileStage ? `${scannerProfileStage.stage} ${scannerProfileStage.lastMs.toFixed(0)}ms` : 'midiendo…'}`
+    : scannerProfileStage ? `${scannerProfileStage.stage} ${scannerProfileStage.lastMs.toFixed(0)}ms` : 'PROFILING listo';
+  const scannerStatusBar = broker === 'binance' ? <div className="header-market-scanner" aria-label="Market scanner Binance"><small className="scanner-profiling" title={`Tiempo total del ciclo: ${scannerProfiling.totalMs.toFixed(0)}ms`}>{scannerProfilingLabel}</small>{[...activeMarketSymbols].sort((a, b) => b.variation_sum_pct - a.variation_sum_pct).map(candidate => { const variation = candidate.variation_sum_pct; const analysis = scannerAnalysisBySymbol[candidate.symbol]; const activity = analysis?.activity_state ?? 'ANALIZANDO'; return <article key={candidate.symbol} className={`header-market-item ${candidate.symbol === symbol ? 'active' : ''} ${analysis ? `scanner-activity-${analysis.activity_state.toLowerCase()}` : ''}`}><button type="button" className="header-market-main" onClick={() => { setLabRecommendations(null); setSymbol(candidate.symbol); }}><b>{candidate.symbol}</b><span className={variation >= 0 ? 'ticker-up' : 'ticker-down'}>{variation >= 0 ? '▲' : '▼'} {Math.abs(variation).toFixed(2)}%</span><em className="scanner-activity-label">{activity}</em><small className="scanner-metrics">TP {analysis?.tp_optimal_percent != null ? `+${analysis.tp_optimal_percent.toFixed(2)}%` : '—'} · ⌀ {analysis?.average_duration_minutes != null ? `${analysis.average_duration_minutes.toFixed(1)}m` : '—'} · {analysis?.profiling?.total_ms != null ? `${analysis.profiling.total_ms.toFixed(0)}ms` : '…'}</small></button></article>; })}</div> : null;
   const statusBarMessage = paperSyncError || binanceLeverageError || activeMarketError || productionWorkerError;
   const binanceReady = binanceOnline;
   const binanceStatusClass = binanceReady
