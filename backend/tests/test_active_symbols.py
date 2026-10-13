@@ -44,6 +44,7 @@ def test_active_symbols_ranks_by_accumulated_candle_variation(monkeypatch) -> No
             return FakeResponse({"symbols": [{"symbol": "VOLATILEUSDT", "status": "TRADING", "quoteAsset": "USDT", "contractType": "PERPETUAL"}]})
         if "ticker/24hr" in url:
             return FakeResponse([{"symbol": "VOLATILEUSDT", "priceChangePercent": "0.6", "highPrice": "104", "lowPrice": "96", "quoteVolume": "100000000", "count": 200000, "lastPrice": "100"}])
+        assert "limit=11" in url
         return FakeResponse(candles)
 
     monkeypatch.setattr(main.httpx, "get", fake_get)

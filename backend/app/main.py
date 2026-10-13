@@ -7,6 +7,7 @@ import math
 import json
 import time
 from collections import OrderedDict
+from concurrent.futures import ThreadPoolExecutor
 from decimal import Decimal, ROUND_CEILING, ROUND_FLOOR
 from uuid import uuid4
 from urllib.parse import urlencode
@@ -853,7 +854,7 @@ def binance_active_symbols(
     def horizon_variation(symbol: str) -> tuple[float, float] | None:
         try:
             response = httpx.get(
-                f"https://fapi.binance.com/fapi/v1/klines?symbol={symbol}&interval={interval}&limit=500",
+                f"https://fapi.binance.com/fapi/v1/klines?symbol={symbol}&interval={interval}&limit={min(1500, horizon + 1)}",
                 timeout=15,
             )
             response.raise_for_status()
@@ -878,8 +879,15 @@ def binance_active_symbols(
         except (httpx.HTTPError, ValueError):
             return None
 
-    for row in ranked[:limit]:
-        variation = horizon_variation(str(row["symbol"]))
+    ranked_symbols = ranked[:limit]
+    # The latest horizon changes need only horizon + 1 closes. Fetch them with
+    # bounded concurrency instead of serially downloading 500 candles each.
+    with ThreadPoolExecutor(max_workers=min(5, len(ranked_symbols) or 1)) as executor:
+        variations = list(executor.map(
+            lambda row: horizon_variation(str(row["symbol"])),
+            ranked_symbols,
+        ))
+    for row, variation in zip(ranked_symbols, variations):
         variation_sum_pct, variation_average_pct = variation if variation else (0.0, 0.0)
         row.update({
             "horizon": horizon,
