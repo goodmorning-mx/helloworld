@@ -5,7 +5,7 @@ from __future__ import annotations
 from contextlib import contextmanager
 from dataclasses import dataclass
 from time import perf_counter
-from typing import Iterator
+from typing import Any, Iterator
 
 
 @dataclass
@@ -23,6 +23,16 @@ class Profiling:
         self.name = name
         self._started = perf_counter()
         self._entries: dict[str, _ProfileEntry] = {}
+        self._marks: list[dict[str, Any]] = []
+
+    def mark(self, stage: str, **details: Any) -> None:
+        """Record a lightweight chronological checkpoint without timing a block."""
+        mark: dict[str, Any] = {
+            "stage": stage,
+            "elapsed_ms": round((perf_counter() - self._started) * 1000, 2),
+        }
+        mark.update(details)
+        self._marks.append(mark)
 
     @contextmanager
     def measure(self, stage: str) -> Iterator[None]:
@@ -52,4 +62,5 @@ class Profiling:
             "name": self.name,
             "total_ms": round((perf_counter() - self._started) * 1000, 2),
             "stages": stages,
+            "marks": self._marks,
         }

@@ -36,3 +36,14 @@ def test_profiling_collects_stage_timings() -> None:
     assert snapshot["total_ms"] >= 0
     assert snapshot["stages"][0]["stage"] == "parse"
     assert snapshot["stages"][0]["count"] == 1
+
+
+def test_profiling_records_chronological_checkpoints() -> None:
+    profiling = Profiling("test")
+    profiling.mark("start", item=1)
+    profiling.mark("end")
+
+    marks = profiling.snapshot()["marks"]
+    assert [mark["stage"] for mark in marks] == ["start", "end"]
+    assert marks[0]["item"] == 1
+    assert marks[0]["elapsed_ms"] <= marks[1]["elapsed_ms"]
