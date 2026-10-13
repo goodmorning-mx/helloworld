@@ -57,6 +57,60 @@ def test_refresh_bars_returns_cached_snapshot_after_upstream_failure() -> None:
     asyncio.run(scenario())
 
 
+def test_refresh_bars_skips_symbols_with_no_new_closed_bar() -> None:
+    async def scenario() -> None:
+        cache = ScannerCache(refresh_seconds=0)
+        calls = 0
+
+        async def loader(_existing):
+            nonlocal calls
+            calls += 1
+            return [{"time": 120 if not _existing else 180, "close": 2.0}]
+
+        first, error, _changed = await cache.refresh_bars("BTCUSDT", loader)
+        assert error is None
+        assert first[-1]["time"] == 120
+
+        unchanged, error, changed = await cache.refresh_bars(
+            "BTCUSDT", loader, refresh_if=lambda bars: not bars or bars[-1]["time"] < 120
+        )
+        assert error is None
+        assert changed is False
+        assert unchanged == first
+        assert calls == 1
+
+        refreshed, error, changed = await cache.refresh_bars(
+            "BTCUSDT", loader, refresh_if=lambda bars: not bars or bars[-1]["time"] < 180
+        )
+        assert error is None
+        assert changed is True
+        assert refreshed[-1]["time"] == 180
+        assert calls == 2
+
+    asyncio.run(scenario())
+
+
+def test_bar_cache_evicts_least_recently_used_symbols() -> None:
+    async def scenario() -> None:
+        cache = ScannerCache(max_symbols=2, refresh_seconds=0)
+        requested = []
+
+        async def loader_for(symbol):
+            async def loader(existing):
+                requested.append((symbol, bool(existing)))
+                return [{"time": 60, "close": 1.0}]
+            return loader
+
+        for symbol in ("BTCUSDT", "ETHUSDT", "SOLUSDT"):
+            await cache.refresh_bars(symbol, await loader_for(symbol))
+        # BTC was the least recently used entry and has been evicted.
+        await cache.refresh_bars("BTCUSDT", await loader_for("BTCUSDT"))
+
+        assert requested[-1] == ("BTCUSDT", False)
+
+    asyncio.run(scenario())
+
+
 def test_analysis_cache_uses_closed_bar_timestamp_and_deduplicates_work() -> None:
     async def scenario() -> None:
         cache = ScannerCache()
@@ -108,7 +162,7 @@ def test_scanner_endpoint_fetches_only_new_closed_candles(monkeypatch) -> None:
             self.calls.append(dict(params))
             if len(self.calls) == 3:
                 raise RuntimeError("temporary network failure")
-            now_ms = int(time.time() * 1000)
+            now_ms = int(now_seconds[0] * 1000)
             if len(self.calls) == 1:
                 latest = (now_ms // 60_000 - 2) * 60_000
                 rows = [
@@ -125,6 +179,8 @@ def test_scanner_endpoint_fetches_only_new_closed_candles(monkeypatch) -> None:
             ]
             return Response(self.second_rows)
 
+    now_seconds = [int(time.time() // 60 * 60) + 5]
+    monkeypatch.setattr(main.time, "time", lambda: now_seconds[0])
     monkeypatch.setattr(main, "_scanner_cache", ScannerCache(refresh_seconds=0))
     monkeypatch.setattr(main.httpx, "AsyncClient", Client)
     main._scanner_analysis_states.clear()
@@ -132,6 +188,7 @@ def test_scanner_endpoint_fetches_only_new_closed_candles(monkeypatch) -> None:
     async def scenario():
         first = await main.binance_scanner_analysis(symbols="BTCUSDT", tracker_period=2, limit=100, movement_averages="0.5", identity=None)
         second = await main.binance_scanner_analysis(symbols="BTCUSDT", tracker_period=2, limit=100, movement_averages="0.5", identity=None)
+        now_seconds[0] += 60
         third = await main.binance_scanner_analysis(symbols="BTCUSDT", tracker_period=2, limit=100, movement_averages="0.5", identity=None)
         fourth = await main.binance_scanner_analysis(symbols="BTCUSDT", tracker_period=2, limit=100, movement_averages="0.5", identity=None)
         return first, second, third, fourth

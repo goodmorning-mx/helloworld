@@ -31,9 +31,11 @@
 
 ### Current Git/deployment state
 
-- `dev` is clean at merge commit `7892c20`.
-- PR #16 (`perf: reuse tracker signals during tp search`) is merged.
-- PR #16 passed backend, frontend, and Docker checks; its post-merge `dev` CI also passed.
+- PR #18 (`feat: cache scanner candles incrementally`) merged to `dev` at `fb5f4a1`.
+- PR #18 and its post-merge `dev` CI passed backend, frontend, and Docker checks.
+- DEV frontend and API were verified after deployment: both returned HTTP 200, the API reported `environment=dev`, and the frontend bundle contained the scanner `STALE`/`ERROR` states.
+- PR #16 (`perf: reuse tracker signals during tp search`) remains the earlier Tracker-signal optimization.
+- Treat this as the last recorded snapshot; inspect GitHub and DEV before relying on it for later work.
 - Required workflow: branch from `dev` → PR to `dev` → checks → merge → post-merge `dev` CI.
 - Never push directly to `dev` or `main`.
 
@@ -92,20 +94,21 @@ Measured benchmark with 1,500 bars and 200 TP candidates:
 - Reduction: `73.09%`.
 - Operations were identical.
 
-### Outstanding scanner resilience work
+### Scanner cache and resilience
 
-The next scanner goal is persistent incremental analysis for unstable internet:
+The incremental scanner cache was introduced in PR #18 and refined with a closed-candle polling guard; see `docs/architecture.md`:
 
-1. Do not clear `scannerAnalysisBySymbol` when a cycle restarts.
-2. Preserve the last valid result per symbol and update it with append/update.
-3. On a network failure, keep the previous result and mark it stale/retryable instead of restarting all symbols.
-4. Retry only failed symbols or symbols with new candle data.
-5. Reuse cached candles and request only new candles where possible.
-6. Deduplicate in-flight requests for the same symbol/configuration.
-7. Distinguish `ANALIZANDO`, valid, `STALE`, and recoverable error states in the UI.
-8. Add tests for cache, retry, preservation, and incremental updates.
+- The frontend requests the active scanner universe in one batch and retains per-symbol results across refreshes.
+- The backend keeps a bounded process-local cache of active-universe snapshots, closed 1m candles (up to 1,500 per symbol), and analyses keyed by symbol, strategy configuration, and latest closed candle.
+- Candle history is loaded on a cold symbol; later refreshes request only from the last cached candle. The backend skips Binance requests while the latest expected closed candle is already cached and retries symbols whose refresh failed.
+- Identical candle refreshes and analysis calculations share in-flight tasks.
+- Network failures preserve metrics and report `STALE`; symbols with no prior result report a recoverable error. The next scanner cycle retries stale symbols.
+- Tests cover universe caching, candle merging/eviction, closed-candle filtering, cache hits, incremental fetches, stale preservation, retries, and deduplication.
+- DEV deployment and post-merge CI for PR #18 were verified. Preserve the same PR, CI, and DEV verification workflow for scanner follow-ups.
 
-Do not mark this resilience work complete until the timing improvement and incremental behavior are tested, merged, deployed to DEV, and verified by CI.
+Measured local benchmark on 1,500 synthetic bars: a full Tracker TP analysis took about `1,305 ms`; reading the cached analysis for an unchanged candle took about `0.005 ms`. The cache lookup timing excludes HTTP/network overhead. The existing PR #16 benchmark separately records signal-reuse improvements.
+
+Caches are process-local and rebuild after restart; replicas do not share state. The Tracker analysis still recalculates across its bar window when a new closed candle or strategy configuration arrives.
 
 ### Telegram integration
 

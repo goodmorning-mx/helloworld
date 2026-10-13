@@ -1013,7 +1013,12 @@ async def binance_scanner_analysis(
                 profile.mark("fetch_klines_end", rows=len(payload) if isinstance(payload, list) else 0, closed_bars=len(bars))
                 return bars
 
-            bars, fetch_error, changed = await _scanner_cache.refresh_bars(symbol, load_new_bars)
+            expected_latest_closed_bar = (int(time.time()) // 60) * 60 - 60
+            bars, fetch_error, changed = await _scanner_cache.refresh_bars(
+                symbol,
+                load_new_bars,
+                refresh_if=lambda existing: not existing or int(existing[-1]["time"]) < expected_latest_closed_bar,
+            )
             profile.mark("scanner_bars_ready", bars=len(bars), changed=changed, stale=fetch_error is not None)
             last_bar_time = int(bars[-1]["time"]) if bars else 0
             cached = await _scanner_cache.cached_analysis(symbol, config_key, last_bar_time) if last_bar_time else None
