@@ -34,6 +34,8 @@ class ScannerCache:
         self,
         symbol: str,
         loader: BarsLoader,
+        *,
+        refresh_if: Callable[[list[dict[str, Any]]], bool] | None = None,
     ) -> tuple[list[dict[str, Any]], str | None, bool]:
         key = symbol.strip().upper()
         now = time.monotonic()
@@ -41,6 +43,9 @@ class ScannerCache:
             current = self._bars.get(key, [])
             refreshed_at = self._bars_refreshed_at.get(key, 0.0)
             if current and now - refreshed_at < self.refresh_seconds:
+                self._bars.move_to_end(key)
+                return list(current), None, False
+            if refresh_if is not None and not refresh_if(list(current)):
                 self._bars.move_to_end(key)
                 return list(current), None, False
             task = self._bar_tasks.get(key)
