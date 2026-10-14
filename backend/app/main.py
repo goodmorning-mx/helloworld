@@ -998,7 +998,7 @@ async def binance_scanner_analysis(
                 # Re-fetch the most recent cached candle so upstream corrections
                 # are merged, then ask Binance only for the subsequent candles.
                 params: dict[str, object] = {"symbol": symbol, "interval": "1m", "limit": safe_limit}
-                if existing:
+                if existing and int(time.time()) - int(existing[-1]["time"]) < _scanner_cache.retention_seconds:
                     params = {"symbol": symbol, "interval": "1m", "startTime": max(0, int(existing[-1]["time"]) * 1000 - 60_000), "limit": 1500}
                 with profile.measure("fetch_klines"):
                     async with httpx.AsyncClient(timeout=15) as client:

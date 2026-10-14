@@ -196,7 +196,7 @@ export default function LabWindow({ activeSymbol = 'BTCUSDT', broker = 'binance'
 
   useEffect(() => {
     if (loadedThirtyDays) return;
-    void readCachedBars(activeSymbol, studyInterval).then(cached => {
+    void readCachedBars(activeSymbol, studyInterval, 'history').then(cached => {
       const available = initialBars.length > 0 ? initialBars : cached;
       if (available.length > 0) {
         setBars(available);

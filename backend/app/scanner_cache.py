@@ -15,18 +15,28 @@ class ScannerCache:
     """Share candle refreshes and analysis work across scanner requests.
 
     Scanner data is derived from public exchange data, so it can be rebuilt
-    after a process restart. Keeping this cache bounded avoids introducing a
-    database or a separate cache service for disposable market snapshots.
+    after a process restart. A symbol and its analyses expire after the
+    retention window without a successful candle refresh. Keeping this cache
+    bounded avoids a database or separate cache service for disposable data.
     """
 
-    def __init__(self, *, max_symbols: int = 100, max_bars: int = 1500, refresh_seconds: float = 5.0) -> None:
+    def __init__(
+        self,
+        *,
+        max_symbols: int = 100,
+        max_bars: int = 1500,
+        refresh_seconds: float = 5.0,
+        retention_seconds: float = 48 * 60 * 60,
+    ) -> None:
         self.max_symbols = max_symbols
         self.max_bars = max_bars
         self.refresh_seconds = refresh_seconds
+        self.retention_seconds = retention_seconds
         self._bars: OrderedDict[str, list[dict[str, Any]]] = OrderedDict()
         self._bars_refreshed_at: dict[str, float] = {}
         self._bar_tasks: dict[str, asyncio.Task[tuple[list[dict[str, Any]], str | None, bool]]] = {}
         self._analyses: OrderedDict[tuple[str, tuple[Any, ...]], tuple[int, dict[str, Any]]] = OrderedDict()
+        self._analysis_saved_at: dict[tuple[str, tuple[Any, ...]], float] = {}
         self._analysis_tasks: dict[tuple[str, tuple[Any, ...], int], asyncio.Task[dict[str, Any]]] = {}
         self._lock = asyncio.Lock()
 
@@ -40,6 +50,8 @@ class ScannerCache:
         key = symbol.strip().upper()
         now = time.monotonic()
         async with self._lock:
+            self._evict_expired_symbols(now)
+            self._evict_expired_analyses(now)
             current = self._bars.get(key, [])
             refreshed_at = self._bars_refreshed_at.get(key, 0.0)
             if current and now - refreshed_at < self.refresh_seconds:
@@ -84,9 +96,33 @@ class ScannerCache:
     def _evict_symbols(self) -> None:
         while len(self._bars) > self.max_symbols:
             evicted, _ = self._bars.popitem(last=False)
-            self._bars_refreshed_at.pop(evicted, None)
-            for key in [key for key in self._analyses if key[0] == evicted]:
-                self._analyses.pop(key, None)
+            self._evict_symbol_data(evicted)
+
+    def _evict_symbol_data(self, symbol: str) -> None:
+        self._bars_refreshed_at.pop(symbol, None)
+        for key in [key for key in self._analyses if key[0] == symbol]:
+            self._analyses.pop(key, None)
+            self._analysis_saved_at.pop(key, None)
+
+    def _evict_expired_analyses(self, now: float) -> None:
+        expired = [
+            key
+            for key, saved_at in self._analysis_saved_at.items()
+            if now - saved_at >= self.retention_seconds
+        ]
+        for key in expired:
+            self._analyses.pop(key, None)
+            self._analysis_saved_at.pop(key, None)
+
+    def _evict_expired_symbols(self, now: float) -> None:
+        expired = [
+            symbol
+            for symbol, refreshed_at in self._bars_refreshed_at.items()
+            if now - refreshed_at >= self.retention_seconds
+        ]
+        for symbol in expired:
+            self._bars.pop(symbol, None)
+            self._evict_symbol_data(symbol)
 
     async def cached_analysis(
         self,
@@ -96,6 +132,7 @@ class ScannerCache:
     ) -> dict[str, Any] | None:
         key = (symbol.strip().upper(), config_key)
         async with self._lock:
+            self._evict_expired_analyses(time.monotonic())
             cached = self._analyses.get(key)
             if cached and cached[0] == last_bar_time:
                 self._analyses.move_to_end(key)
@@ -111,10 +148,13 @@ class ScannerCache:
     ) -> None:
         key = (symbol.strip().upper(), config_key)
         async with self._lock:
+            self._evict_expired_analyses(time.monotonic())
             self._analyses[key] = (last_bar_time, dict(result))
+            self._analysis_saved_at[key] = time.monotonic()
             self._analyses.move_to_end(key)
             while len(self._analyses) > self.max_symbols * 8:
-                self._analyses.popitem(last=False)
+                evicted, _ = self._analyses.popitem(last=False)
+                self._analysis_saved_at.pop(evicted, None)
 
     async def latest_analysis(
         self,
@@ -123,6 +163,7 @@ class ScannerCache:
     ) -> tuple[int, dict[str, Any]] | None:
         key = (symbol.strip().upper(), config_key)
         async with self._lock:
+            self._evict_expired_analyses(time.monotonic())
             cached = self._analyses.get(key)
             return (cached[0], dict(cached[1])) if cached else None
 

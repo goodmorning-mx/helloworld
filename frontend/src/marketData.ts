@@ -8,16 +8,82 @@ export type MarketBar = {
 
 const DATABASE_NAME = 'helloworld-market-data';
 const STORE_NAME = 'ohlc';
-const MAX_CACHE_DAYS = 31;
+const LIVE_CACHE_DAYS = 2;
+const HISTORY_CACHE_DAYS = 31;
+const HISTORY_CACHE_PREFIX = 'history:';
 const memoryCache = new Map<string, MarketBar[]>();
 const persistTimers = new Map<string, number>();
 const recentRequests = new Map<string, Promise<MarketBar[]>>();
 const preloadQueue: Array<() => void> = [];
 let activePreloads = 0;
 const MAX_ACTIVE_PRELOADS = 4;
+let cacheCleanup: Promise<void> | null = null;
+let cacheCleanupComplete = false;
 
-function cacheKey(symbol: string, interval: string) {
-  return `${symbol.toUpperCase()}:${interval}`;
+export type MarketCacheScope = 'live' | 'history';
+
+function cacheKey(symbol: string, interval: string, scope: MarketCacheScope = 'live') {
+  const key = `${symbol.toUpperCase()}:${interval}`;
+  return scope === 'history' ? `${HISTORY_CACHE_PREFIX}${key}` : key;
+}
+
+function cacheCutoff(scope: MarketCacheScope = 'live') {
+  const days = scope === 'history' ? HISTORY_CACHE_DAYS : LIVE_CACHE_DAYS;
+  return Math.floor(Date.now() / 1000) - days * 86400;
+}
+
+function pruneMemoryCache() {
+  for (const [key, bars] of memoryCache) {
+    const history = key.startsWith(HISTORY_CACHE_PREFIX);
+    const cutoff = cacheCutoff(history ? 'history' : 'live');
+    const retained = bars.filter(bar => bar.time >= cutoff);
+    if (retained.length !== bars.length) memoryCache.set(key, retained);
+  }
+}
+
+function pruneStoredCache(database: IDBDatabase): Promise<void> {
+  if (cacheCleanupComplete) return Promise.resolve();
+  if (cacheCleanup) return cacheCleanup;
+  const cleanup = new Promise<void>((resolve, reject) => {
+    const transaction = database.transaction(STORE_NAME, 'readwrite');
+    const request = transaction.objectStore(STORE_NAME).openCursor();
+    request.onsuccess = () => {
+      const cursor = request.result;
+      if (!cursor) return;
+      const key = String(cursor.key);
+      const scope = key.startsWith(HISTORY_CACHE_PREFIX) ? 'history' : 'live';
+      const cached = Array.isArray(cursor.value) ? cursor.value as MarketBar[] : [];
+      const cutoff = cacheCutoff(scope);
+      const retained = cached.filter(bar => Number.isFinite(bar.time) && bar.time >= cutoff);
+      if (retained.length !== cached.length) {
+        if (retained.length) cursor.update(retained);
+        else cursor.delete();
+      }
+      cursor.continue();
+    };
+    transaction.oncomplete = () => resolve();
+    transaction.onerror = () => reject(transaction.error ?? new Error('No se pudo limpiar el cache OHLC'));
+    transaction.onabort = () => reject(transaction.error ?? new Error('Se canceló la limpieza del cache OHLC'));
+  });
+  cacheCleanup = cleanup.then(() => {
+    cacheCleanupComplete = true;
+    cacheCleanup = null;
+  }, error => {
+    cacheCleanup = null;
+    throw error;
+  });
+  return cacheCleanup;
+}
+
+function hasFreshRecentBar(bars: MarketBar[], interval: string) {
+  const latest = bars[bars.length - 1]?.time;
+  const match = /^(\d+)([smhd])$/.exec(interval);
+  const size = Number(match?.[1] ?? 1);
+  const unit = match?.[2] ?? 'm';
+  const secondsPerUnit = unit === 's' ? 1 : unit === 'm' ? 60 : unit === 'h' ? 3600 : 86400;
+  const seconds = size * secondsPerUnit;
+  const lastExpectedCandle = Math.floor(Date.now() / 1000 / seconds) * seconds - seconds;
+  return Number.isFinite(latest) && latest >= lastExpectedCandle - seconds;
 }
 
 /** Share an in-flight history request so entry/context charts and scanner
@@ -46,7 +112,7 @@ export function preloadRecentBars(symbol: string, interval: string, loader: () =
   return new Promise((resolve, reject) => {
     preloadQueue.push(() => {
       void readCachedBars(symbol, interval)
-        .then(cached => cached.length > 0 ? cached : requestRecentBars(symbol, interval, loader))
+        .then(cached => hasFreshRecentBar(cached, interval) ? cached : requestRecentBars(symbol, interval, loader))
         .then(bars => { void cacheBars(symbol, interval, bars); return bars; })
         .then(resolve, reject)
         .finally(() => { activePreloads -= 1; drainPreloadQueue(); });
@@ -71,18 +137,22 @@ function openDatabase(): Promise<IDBDatabase> {
   });
 }
 
-export async function readCachedBars(symbol: string, interval: string): Promise<MarketBar[]> {
-  const key = cacheKey(symbol, interval);
+export async function readCachedBars(symbol: string, interval: string, scope: MarketCacheScope = 'live'): Promise<MarketBar[]> {
+  const key = cacheKey(symbol, interval, scope);
+  const cutoff = cacheCutoff(scope);
+  pruneMemoryCache();
   const inMemory = memoryCache.get(key);
-  if (inMemory) return inMemory;
+  if (inMemory) return inMemory.filter(bar => bar.time >= cutoff);
   try {
     const database = await openDatabase();
+    await pruneStoredCache(database);
     return await new Promise((resolve, reject) => {
       const request = database.transaction(STORE_NAME, 'readonly').objectStore(STORE_NAME).get(key);
       request.onsuccess = () => {
         const bars = Array.isArray(request.result) ? request.result : [];
-        memoryCache.set(key, bars);
-        resolve(bars);
+        const retained = bars.filter((bar: MarketBar) => Number.isFinite(bar.time) && bar.time >= cutoff);
+        memoryCache.set(key, retained);
+        resolve(retained);
       };
       request.onerror = () => reject(request.error ?? new Error('No se pudo leer el cache OHLC'));
     });
@@ -91,15 +161,15 @@ export async function readCachedBars(symbol: string, interval: string): Promise<
   }
 }
 
-export async function cacheBars(symbol: string, interval: string, incoming: MarketBar[]) {
+export async function cacheBars(symbol: string, interval: string, incoming: MarketBar[], scope: MarketCacheScope = 'live') {
   if (incoming.length === 0) return;
-  const existing = await readCachedBars(symbol, interval);
+  const existing = await readCachedBars(symbol, interval, scope);
   const merged = [...new Map([...existing, ...incoming]
     .filter(bar => Number.isFinite(bar.time))
     .map(bar => [bar.time, bar] as const)).values()]
     .sort((left, right) => left.time - right.time);
-  const cutoff = Math.floor(Date.now() / 1000) - MAX_CACHE_DAYS * 86400;
-  const key = cacheKey(symbol, interval);
+  const cutoff = cacheCutoff(scope);
+  const key = cacheKey(symbol, interval, scope);
   const retained = merged.filter(bar => bar.time >= cutoff);
   memoryCache.set(key, retained);
   if (persistTimers.has(key)) window.clearTimeout(persistTimers.get(key));
@@ -168,7 +238,7 @@ export async function loadThirtyDays(symbol: string, interval = '1m', options: L
     }
     return rows;
   };
-  const cached = await readCachedBars(symbol, interval);
+  const cached = await readCachedBars(symbol, interval, 'history');
   if (cached.length > 0 && cached[0].time <= start + 600 && cached[cached.length - 1].time >= now - 600) return validateCoverage(cached.filter(bar => bar.time >= start && bar.time <= now));
 
   if (options.broker === 'ctrader') {
@@ -180,8 +250,8 @@ export async function loadThirtyDays(symbol: string, interval = '1m', options: L
     if (!response.ok) throw new Error(payload.detail ?? `cTrader respondió ${response.status} al cargar 30 días.`);
     const rows = parseCTraderRows(payload.data ?? []).filter(bar => bar.time >= start && bar.time <= now);
     if (rows.length === 0) throw new Error(`cTrader no devolvió velas de ${symbol} para los últimos 30 días.`);
-    await cacheBars(symbol, interval, rows);
-    return validateCoverage((await readCachedBars(symbol, interval)).filter(bar => bar.time >= start && bar.time <= now));
+    await cacheBars(symbol, interval, rows, 'history');
+    return validateCoverage((await readCachedBars(symbol, interval, 'history')).filter(bar => bar.time >= start && bar.time <= now));
   }
 
   let cursor = now * 1000;
@@ -195,8 +265,8 @@ export async function loadThirtyDays(symbol: string, interval = '1m', options: L
     cursor = batch[0].time * 1000;
     if (batch.length < 1000) break;
   }
-  await cacheBars(symbol, interval, rows);
-  return (await readCachedBars(symbol, interval)).filter(bar => bar.time >= start && bar.time <= now);
+  await cacheBars(symbol, interval, rows, 'history');
+  return (await readCachedBars(symbol, interval, 'history')).filter(bar => bar.time >= start && bar.time <= now);
 }
 
 export function aggregateBars(bars: MarketBar[], minutes: number): MarketBar[] {
