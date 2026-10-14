@@ -111,6 +111,31 @@ def test_bar_cache_evicts_least_recently_used_symbols() -> None:
     asyncio.run(scenario())
 
 
+def test_bar_cache_expires_symbol_and_analyses_after_retention_window() -> None:
+    async def scenario() -> None:
+        cache = ScannerCache(refresh_seconds=0, retention_seconds=0.01)
+
+        async def loader(existing):
+            assert existing == []
+            return [{"time": 120, "close": 2.0}]
+
+        async def calculate():
+            return {"tp_optimal_percent": 1.2}
+
+        await cache.refresh_bars("BTCUSDT", loader)
+        await cache.remember_analysis("BTCUSDT", (5, 0.2), 120, await calculate())
+        await asyncio.sleep(0.02)
+
+        bars, error, changed = await cache.refresh_bars("BTCUSDT", loader)
+
+        assert error is None
+        assert changed is True
+        assert bars == [{"time": 120, "close": 2.0}]
+        assert await cache.latest_analysis("BTCUSDT", (5, 0.2)) is None
+
+    asyncio.run(scenario())
+
+
 def test_analysis_cache_uses_closed_bar_timestamp_and_deduplicates_work() -> None:
     async def scenario() -> None:
         cache = ScannerCache()
