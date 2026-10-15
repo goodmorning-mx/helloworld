@@ -923,16 +923,21 @@ async def binance_candles(
     symbol: str,
     interval: Literal["1m", "3m", "5m", "15m"] = "1m",
     limit: int = 500,
+    start_time: int | None = None,
     identity: AuthIdentity = Depends(identity_dependency(auth_service)),
 ) -> dict[str, object]:
     """Serve historical candles and warm the same cache used by realtime."""
     del identity
     requested = symbol.upper()
     limit = max(1, min(limit, 1500))
+    params: dict[str, int | str] = {"symbol": requested, "interval": interval, "limit": limit}
+    if start_time is not None:
+        params["startTime"] = max(0, start_time)
     try:
         async with httpx.AsyncClient(timeout=15) as client:
             response = await client.get(
-                f"https://fapi.binance.com/fapi/v1/klines?symbol={requested}&interval={interval}&limit={limit}"
+                "https://fapi.binance.com/fapi/v1/klines",
+                params=params,
             )
             response.raise_for_status()
             payload = response.json()

@@ -5,7 +5,7 @@ import { CandlestickSeries, createChart, type IPriceLine, type Time, type UTCTim
 import LabWindow, { type LabRecommendations } from './LabWindow';
 import BacktestPanel, { type WickBacktestTrade } from './BacktestPanel';
 import { cacheBars, preloadRecentBars, readCachedBars, requestRecentBars, type MarketBar } from './marketData';
-import { calculateDailyTimeWindow, calculateHeikinAshi, calculateRsi, calculateSslChannel, calculateTrackerCloseReason, calculateTrackerLevels, calculateTrackerSignal, calculateWickExtensions } from './indicators';
+import { calculateDailyTimeWindow, calculateHeikinAshi, calculateHeikinAshiBar, calculateRsi, calculateSslChannel, calculateTrackerCloseReason, calculateTrackerLevels, calculateTrackerSignal, calculateWickExtensions, IncrementalIndicatorSeries } from './indicators';
 import { tradingCosts, tradingCostRate } from './tradingCosts';
 import { Profiling, type ProfilingSnapshot } from './profiling';
 import './styles.css';
@@ -45,11 +45,32 @@ const MAX_ENTRY_RENDER_BARS = 10080;
 const MAX_CONTEXT_RENDER_BARS = 180;
 const INITIAL_ENTRY_BARS = 240;
 
-async function fetchRecentApiBars(apiUrl: string, symbol: string, interval: string, limit: number, accessToken: string | null): Promise<MarketBar[]> {
-  const response = await fetch(`${apiUrl}/market/binance/candles/${encodeURIComponent(symbol)}?interval=${interval}&limit=${limit}`, { headers: accessToken ? { Authorization: `Bearer ${accessToken}` } : {}, credentials: 'include' });
-  if (!response.ok) throw new Error(`No se pudieron cargar las velas (${response.status}).`);
-  const payload = await response.json() as { bars?: Array<{ time: number; open: number; high: number; low: number; close: number }> };
-  return (Array.isArray(payload.bars) ? payload.bars : []).map(row => ({ time: Number(row.time), open: Number(row.open), high: Number(row.high), low: Number(row.low), close: Number(row.close) })).filter(row => Number.isFinite(row.time) && Number.isFinite(row.open) && Number.isFinite(row.high) && Number.isFinite(row.low) && Number.isFinite(row.close));
+async function fetchRecentApiBars(apiUrl: string, symbol: string, interval: string, limit: number, accessToken: string | null, cachedBars: MarketBar[] = []): Promise<MarketBar[]> {
+  const intervalMatch = /^(\d+)([mhd])$/.exec(interval);
+  const intervalSeconds = Number(intervalMatch?.[1] ?? 1) * (intervalMatch?.[2] === 'h' ? 3600 : intervalMatch?.[2] === 'd' ? 86400 : 60);
+  const latestCachedTime = cachedBars[cachedBars.length - 1]?.time;
+  let startTime = Number.isFinite(latestCachedTime) ? (Number(latestCachedTime) + intervalSeconds) * 1000 : null;
+  const rows: MarketBar[] = [];
+  const fetchPage = async (pageLimit: number, cursor: number | null) => {
+    const query = new URLSearchParams({ interval, limit: String(pageLimit) });
+    if (cursor !== null) query.set('start_time', String(cursor));
+    const response = await fetch(`${apiUrl}/market/binance/candles/${encodeURIComponent(symbol)}?${query}`, { headers: accessToken ? { Authorization: `Bearer ${accessToken}` } : {}, credentials: 'include' });
+    if (!response.ok) throw new Error(`No se pudieron cargar las velas (${response.status}).`);
+    const payload = await response.json() as { bars?: Array<{ time: number; open: number; high: number; low: number; close: number }> };
+    return (Array.isArray(payload.bars) ? payload.bars : []).map(row => ({ time: Number(row.time), open: Number(row.open), high: Number(row.high), low: Number(row.low), close: Number(row.close) })).filter(row => Number.isFinite(row.time) && Number.isFinite(row.open) && Number.isFinite(row.high) && Number.isFinite(row.low) && Number.isFinite(row.close));
+  };
+  if (startTime === null) return fetchPage(limit, null);
+  const now = Date.now();
+  while (startTime <= now) {
+    const page = await fetchPage(1000, startTime);
+    if (!page.length) break;
+    rows.push(...page);
+    const nextStartTime = (page[page.length - 1].time + intervalSeconds) * 1000;
+    if (nextStartTime <= startTime) break;
+    startTime = nextStartTime;
+    if (page.length < 1000) break;
+  }
+  return rows;
 }
 
 type TrackerExtremePoint = { time: number; price: number; roePercent: number; pnlUsd: number };
@@ -317,9 +338,49 @@ function mergeTickBar(bars: Array<{ time: UTCTimestamp; open: number; high: numb
   const bucket = Math.floor(time / intervalSeconds) * intervalSeconds as UTCTimestamp;
   const current = bars[bars.length - 1];
   if (current?.time === bucket) {
-    return [...bars.slice(0, -1), { ...current, high: Math.max(current.high, price), low: Math.min(current.low, price), close: price }];
+    current.high = Math.max(current.high, price);
+    current.low = Math.min(current.low, price);
+    current.close = price;
+    return bars;
   }
-  return [...bars, { time: bucket, open: price, high: price, low: price, close: price }];
+  bars.push({ time: bucket, open: price, high: price, low: price, close: price });
+  return bars;
+}
+
+function upsertLatestClose(points: Array<{ time: UTCTimestamp; close: number }>, bar: LiveBar) {
+  const last = points[points.length - 1];
+  if (last?.time === bar.time) last.close = bar.close;
+  else if (!last || bar.time > last.time) points.push({ time: bar.time, close: bar.close });
+}
+
+function trimRollingBars<T extends { time: number }>(bars: T[]) {
+  const cutoff = Math.floor(Date.now() / 1000) - MAX_CHART_HISTORY_SECONDS;
+  let low = 0;
+  let high = bars.length;
+  while (low < high) {
+    const middle = (low + high) >>> 1;
+    if (Number(bars[middle].time) < cutoff) low = middle + 1;
+    else high = middle;
+  }
+  if (low > 0) bars.splice(0, low);
+}
+
+function updateHeikinAshiTail(rawBars: LiveBar[], transformed: LiveBar[]) {
+  const last = rawBars[rawBars.length - 1];
+  if (!last) return null;
+  const transformedLast = transformed[transformed.length - 1];
+  if (transformedLast?.time === last.time) {
+    transformed[transformed.length - 1] = calculateHeikinAshiBar(last, transformed[transformed.length - 2]);
+    return transformed[transformed.length - 1];
+  }
+  if (rawBars.length === transformed.length + 1 && transformedLast?.time === rawBars[rawBars.length - 2]?.time) {
+    const next = calculateHeikinAshiBar(last, transformedLast);
+    transformed.push(next);
+    return next;
+  }
+  const rebuilt = calculateHeikinAshi(rawBars) as LiveBar[];
+  transformed.splice(0, transformed.length, ...rebuilt);
+  return transformed[transformed.length - 1] ?? null;
 }
 
 type LiveBar = { time: UTCTimestamp; open: number; high: number; low: number; close: number };
@@ -385,6 +446,11 @@ function upsertLiveBar(bars: LiveBar[], next: LiveBar) {
 }
 
 function mergeBars(existing: LiveBar[], incoming: LiveBar[]) {
+  const lastExistingTime = Number(existing[existing.length - 1]?.time ?? -Infinity);
+  if (incoming.length > 0 && Number(incoming[0].time) > lastExistingTime) {
+    for (const bar of incoming) if (Number(bar.time) > lastExistingTime) existing.push(bar);
+    return existing;
+  }
   const byTime = new Map<number, LiveBar>();
   existing.forEach(bar => byTime.set(Number(bar.time), bar));
   incoming.forEach(bar => byTime.set(Number(bar.time), bar));
@@ -1015,6 +1081,7 @@ function Workspace() {
   const overviewCandlesRef = useRef<ReturnType<ReturnType<typeof createChart>['addSeries']> | null>(null);
   const overviewCandleDataRef = useRef<Array<{ time: UTCTimestamp; close: number }>>([]);
   const overviewBarsRef = useRef<Array<{ time: UTCTimestamp; open: number; high: number; low: number; close: number }>>([]);
+  const overviewHeikinAshiBarsRef = useRef<LiveBar[]>([]);
   const overviewLoadingOlderRef = useRef(false);
   const overviewStage = useRef<HTMLDivElement>(null);
   const chartStage = useRef<HTMLDivElement>(null);
@@ -1022,6 +1089,8 @@ function Workspace() {
   const chartRef = useRef<ReturnType<typeof createChart> | null>(null);
   const candlesRef = useRef<ReturnType<ReturnType<typeof createChart>['addSeries']> | null>(null);
   const candleBarsRef = useRef<Array<{ time: UTCTimestamp; open: number; high: number; low: number; close: number }>>([]);
+  const entryHeikinAshiBarsRef = useRef<LiveBar[]>([]);
+  const priceIndicatorSeriesRef = useRef({ entry: new IncrementalIndicatorSeries(), context: new IncrementalIndicatorSeries() });
   const replayAllBarsRef = useRef<Array<{ time: UTCTimestamp; open: number; high: number; low: number; close: number }>>([]);
   const replayRef = useRef<ReplayState>({ active: false, running: false, cursor: -1, total: 0, start: -1 });
   const [replayState, setReplayState] = useState<ReplayState>({ active: false, running: false, cursor: -1, total: 0, start: -1 });
@@ -1230,21 +1299,37 @@ function Workspace() {
   const [chartEventOccurrences, setChartEventOccurrences] = useState<ChartEventOccurrence[]>(() => {
     try { const stored = JSON.parse(localStorage.getItem('helloworld-chart-event-occurrences') ?? '[]') as unknown; return Array.isArray(stored) ? stored as ChartEventOccurrence[] : []; } catch { return []; }
   });
+  const chartEventScanRef = useRef<{ key: string; lastTime: number } | null>(null);
   const [chartEventsPaused, setChartEventsPaused] = useState(() => localStorage.getItem('helloworld-chart-events-paused') === 'true');
   useEffect(() => { localStorage.setItem('helloworld-chart-events-paused', String(chartEventsPaused)); }, [chartEventsPaused]);
   useEffect(() => { localStorage.setItem('helloworld-chart-event-rules', JSON.stringify(chartEventRules)); }, [chartEventRules]);
   useEffect(() => { localStorage.setItem('helloworld-chart-event-occurrences', JSON.stringify(chartEventOccurrences.slice(-200))); }, [chartEventOccurrences]);
   useEffect(() => {
     const bars = candleBarsRef.current; if (chartEventsPaused || bars.length < 3 || !chartEventRules.length) return;
-    const source = renderBars(bars, Math.max(MAX_ENTRY_RENDER_BARS, 300)); const indicatorBars = source.map(({ high, low, close }) => ({ high, low, close }));
-    const ssl = calculateSslChannel(indicatorBars, sslPeriod); const rsi = calculateRsi(indicatorBars, rsiPeriod); const tracker = calculateTrackerLevels(source, trackerPeriod);
+    const source = bars;
+    const key = JSON.stringify({ symbol, rules: chartEventRules, rsiPeriod, sslPeriod, trackerPeriod });
+    const lastTime = Number(source[source.length - 1].time);
+    const previousScan = chartEventScanRef.current;
+    if (previousScan?.key === key && previousScan.lastTime === lastTime) return;
+    const indicatorValues = priceIndicatorSeriesRef.current.entry.update(source, { rsiPeriod, sslPeriod, trackerPeriod, wickPeriod, wickMultiplier, timezone: SESSION_TIMEZONE });
+    const { ssl, rsi, tracker } = { ssl: indicatorValues.ssl, rsi: indicatorValues.rsi, tracker: indicatorValues.tracker };
+    const previousIndex = previousScan?.key === key ? source.findIndex(bar => Number(bar.time) === previousScan.lastTime) : -1;
+    const startIndex = previousIndex >= 1 ? previousIndex + 1 : 1;
     const existing = new Set(chartEventOccurrences.map(event => event.id)); const next: ChartEventOccurrence[] = [];
-    chartEventRules.filter(rule => rule.symbol === symbol && rule.enabled).forEach(rule => source.forEach((bar, index) => {
-      if (index === 0) return; const matches = rule.conditions.map(condition => eventConditionMatches(condition, bar, source[index - 1], ssl, rsi, tracker, index)); const active = rule.logic === 'OR' ? matches.some(Boolean) : matches.every(Boolean); const previousMatches = rule.conditions.map(condition => eventConditionMatches(condition, source[index - 1], source[index - 2], ssl, rsi, tracker, Math.max(0, index - 1))); const previouslyActive = rule.logic === 'OR' ? previousMatches.some(Boolean) : previousMatches.every(Boolean); const id = `${rule.id}-${Number(bar.time)}`;
-      if (active && !previouslyActive && !existing.has(id)) next.push({ id, ruleId: rule.id, symbol, timestamp: Number(bar.time), price: bar.close, title: rule.name, description: rule.conditions.map(condition => `${condition.field} ${condition.operator} ${condition.value}`).join(` ${rule.logic} `), color: rule.color });
-    }));
+    chartEventRules.filter(rule => rule.symbol === symbol && rule.enabled).forEach(rule => {
+      for (let index = startIndex; index < source.length; index += 1) {
+        const bar = source[index];
+        const matches = rule.conditions.map(condition => eventConditionMatches(condition, bar, source[index - 1], ssl, rsi, tracker, index));
+        const active = rule.logic === 'OR' ? matches.some(Boolean) : matches.every(Boolean);
+        const previousMatches = rule.conditions.map(condition => eventConditionMatches(condition, source[index - 1], source[index - 2], ssl, rsi, tracker, index - 1));
+        const previouslyActive = rule.logic === 'OR' ? previousMatches.some(Boolean) : previousMatches.every(Boolean);
+        const id = `${rule.id}-${Number(bar.time)}`;
+        if (active && !previouslyActive && !existing.has(id)) next.push({ id, ruleId: rule.id, symbol, timestamp: Number(bar.time), price: bar.close, title: rule.name, description: rule.conditions.map(condition => `${condition.field} ${condition.operator} ${condition.value}`).join(` ${rule.logic} `), color: rule.color });
+      }
+    });
+    chartEventScanRef.current = { key, lastTime };
     if (next.length) setChartEventOccurrences(current => [...current, ...next].slice(-200));
-  }, [chartEventRules, chartEventsPaused, symbol, rsiPeriod, sslPeriod, trackerPeriod, trackerRevision, viewportRevision]);
+  }, [chartEventRules, chartEventsPaused, symbol, rsiPeriod, sslPeriod, trackerPeriod, trackerRevision, wickPeriod, wickMultiplier]);
   const [showEventMarkers, setShowEventMarkers] = useState(false);
   const [drawingStart, setDrawingStart] = useState<ChartPoint | null>(null);
   const [drawingEnd, setDrawingEnd] = useState<ChartPoint | null>(null);
@@ -1501,8 +1586,8 @@ function Workspace() {
     if (broker !== 'binance' || activeMarketSymbols.length === 0) return;
     const symbols = activeMarketSymbols.map(candidate => candidate.symbol);
     const requests = [
-      ...symbols.map(candidate => preloadRecentBars(candidate, entryInterval, () => fetchRecentApiBars(apiUrl, candidate, entryInterval, INITIAL_ENTRY_BARS, auth.accessToken))),
-      ...symbols.slice(0, 10).map(candidate => preloadRecentBars(candidate, interval === '1s' ? '1m' : interval, () => fetchRecentApiBars(apiUrl, candidate, interval === '1s' ? '1m' : interval, INITIAL_CONTEXT_BARS, auth.accessToken))),
+      ...symbols.map(candidate => preloadRecentBars(candidate, entryInterval, cached => fetchRecentApiBars(apiUrl, candidate, entryInterval, INITIAL_ENTRY_BARS, auth.accessToken, cached))),
+      ...symbols.slice(0, 10).map(candidate => preloadRecentBars(candidate, interval === '1s' ? '1m' : interval, cached => fetchRecentApiBars(apiUrl, candidate, interval === '1s' ? '1m' : interval, INITIAL_CONTEXT_BARS, auth.accessToken, cached))),
     ];
     void Promise.all(requests).catch(() => undefined);
   }, [activeMarketSymbols, apiUrl, auth.accessToken, broker, entryInterval, interval]);
@@ -1777,10 +1862,13 @@ function Workspace() {
               if (!active || older.length === 0) return;
               candleBarsRef.current = [...older, ...candleBarsRef.current].filter((bar, index, all) => index === 0 || bar.time !== all[index - 1].time);
               candleBarsRef.current = candleBarsRef.current.filter(bar => Number(bar.time) >= historyCutoff);
-              void cacheBars(symbol, entryInterval, candleBarsRef.current);
+              void cacheBars(symbol, entryInterval, older);
               candleDataRef.current = candleBarsRef.current.map(({ time, close }) => ({ time, close }));
               const visibleBars = renderBars(candleBarsRef.current, MAX_ENTRY_RENDER_BARS);
-              setDataPreservingRange(showHeikinAshi ? calculateHeikinAshi(visibleBars) : visibleBars);
+              if (showHeikinAshi) {
+                entryHeikinAshiBarsRef.current = calculateHeikinAshi(visibleBars) as LiveBar[];
+                setDataPreservingRange(entryHeikinAshiBarsRef.current);
+              } else setDataPreservingRange(visibleBars);
               chart.timeScale().setVisibleLogicalRange({ from: previousRange.from + older.length, to: previousRange.to + older.length });
               setViewportRevision(value => value + 1);
             })
@@ -1794,6 +1882,7 @@ function Workspace() {
     chart.timeScale().subscribeVisibleLogicalRangeChange(refreshDrawings);
     candleDataRef.current = [];
     candleBarsRef.current = [];
+    entryHeikinAshiBarsRef.current = [];
     if (broker === 'ctrader') {
       let polling = 0;
       // A cTrader weekend can contain no candles in the last 24 hours. Keep
@@ -1811,7 +1900,10 @@ function Workspace() {
           const visibleBars = renderBars(candleBarsRef.current, MAX_ENTRY_RENDER_BARS);
           if (!polling) initializingViewport = true;
           if (hadBars && !showHeikinAshi) candles.update(candleBarsRef.current[candleBarsRef.current.length - 1]);
-          else setDataPreservingRange(showHeikinAshi ? calculateHeikinAshi(visibleBars) : visibleBars);
+          else {
+            if (showHeikinAshi) entryHeikinAshiBarsRef.current = calculateHeikinAshi(visibleBars) as LiveBar[];
+            setDataPreservingRange(showHeikinAshi ? entryHeikinAshiBarsRef.current : visibleBars);
+          }
           if (!polling) {
             applyDefaultChartViewport(chart, visibleBars, ENTRY_VIEWPORT_DEFAULTS.bars, ENTRY_VIEWPORT_DEFAULTS.futureBars, ENTRY_VIEWPORT_DEFAULTS.yBelow, ENTRY_VIEWPORT_DEFAULTS.yAbove);
             syncViewportSnapshot(chart, visibleBars, setEntryViewportSnapshot);
@@ -1833,10 +1925,16 @@ function Workspace() {
           const previousBarTime = candleBarsRef.current[candleBarsRef.current.length - 1]?.time;
           candleBarsRef.current = mergeTickBar(candleBarsRef.current, Number(payload.tick.time), Number(payload.tick.price), 60);
           const liveBar = candleBarsRef.current[candleBarsRef.current.length - 1];
-          const lastCandleData = candleDataRef.current[candleDataRef.current.length - 1];
-          if (lastCandleData?.time === liveBar.time) lastCandleData.close = liveBar.close;
-          else candleDataRef.current.push({ time: liveBar.time, close: liveBar.close });
-          if (showHeikinAshi) setDataPreservingRange(calculateHeikinAshi(renderBars(candleBarsRef.current, MAX_ENTRY_RENDER_BARS)));
+          if (liveBar.time !== previousBarTime) {
+            trimRollingBars(candleBarsRef.current);
+            trimRollingBars(candleDataRef.current);
+            trimRollingBars(entryHeikinAshiBarsRef.current);
+          }
+          upsertLatestClose(candleDataRef.current, liveBar);
+          if (showHeikinAshi) {
+            const heikinBar = updateHeikinAshiTail(candleBarsRef.current, entryHeikinAshiBarsRef.current);
+            if (heikinBar) candles.update(heikinBar);
+          }
           else candles.update(liveBar);
           updateTrackerLabels('entry', liveBar.close);
           scheduleViewportRefresh();
@@ -1845,7 +1943,7 @@ function Workspace() {
       const candleTimer = window.setInterval(() => void loadCTrader(), 30_000);
       const tickTimer = window.setInterval(pollTick, 1_000);
       void pollTick();
-      return () => { active = false; window.clearInterval(candleTimer); window.clearInterval(tickTimer); chart.timeScale().unsubscribeVisibleTimeRangeChange(refreshDrawings); chart.timeScale().unsubscribeVisibleLogicalRangeChange(refreshDrawings); chart.unsubscribeCrosshairMove(crosshairHandler); chart.unsubscribeClick(clickHandler); chartContainer.current?.removeEventListener('wheel', wheelHandler); setEntryOhlcHover(null); chartRef.current = null; candlesRef.current = null; candleDataRef.current = []; candleBarsRef.current = []; loadingOlderRef.current = false; chart.remove(); };
+      return () => { active = false; window.clearInterval(candleTimer); window.clearInterval(tickTimer); chart.timeScale().unsubscribeVisibleTimeRangeChange(refreshDrawings); chart.timeScale().unsubscribeVisibleLogicalRangeChange(refreshDrawings); chart.unsubscribeCrosshairMove(crosshairHandler); chart.unsubscribeClick(clickHandler); chartContainer.current?.removeEventListener('wheel', wheelHandler); setEntryOhlcHover(null); chartRef.current = null; candlesRef.current = null; candleDataRef.current = []; candleBarsRef.current = []; entryHeikinAshiBarsRef.current = []; loadingOlderRef.current = false; chart.remove(); };
     }
     // The chart/history uses Binance Futures, so the live stream must use the
     // Futures WebSocket too. Spot streams can silently stop for Futures-only
@@ -1858,25 +1956,32 @@ function Workspace() {
       candleDataRef.current = parsed.map(({ time, close }) => ({ time, close }));
       const visibleBars = renderBars(parsed, MAX_ENTRY_RENDER_BARS);
       initializingViewport = true;
-      setDataPreservingRange(showHeikinAshi ? calculateHeikinAshi(visibleBars) : visibleBars);
+      if (showHeikinAshi) {
+        entryHeikinAshiBarsRef.current = calculateHeikinAshi(visibleBars) as LiveBar[];
+        setDataPreservingRange(entryHeikinAshiBarsRef.current);
+      } else setDataPreservingRange(visibleBars);
       applyDefaultChartViewport(chart, visibleBars, ENTRY_VIEWPORT_DEFAULTS.bars, ENTRY_VIEWPORT_DEFAULTS.futureBars, ENTRY_VIEWPORT_DEFAULTS.yBelow, ENTRY_VIEWPORT_DEFAULTS.yAbove);
       syncViewportSnapshot(chart, visibleBars, setEntryViewportSnapshot);
       requestAnimationFrame(() => { if (active) initializingViewport = false; });
       setTrackerRevision(value => value + 1);
       setViewportRevision(value => value + 1);
     }).catch(() => undefined);
-    void requestRecentBars(symbol, entryInterval, () => fetchRecentApiBars(apiUrl, symbol, entryInterval, INITIAL_ENTRY_BARS, auth.accessToken))
+    void requestRecentBars(symbol, entryInterval, cached => fetchRecentApiBars(apiUrl, symbol, entryInterval, INITIAL_ENTRY_BARS, auth.accessToken, cached))
       .then(parsedRows => {
         if (!active) return;
         const parsed = parsedRows.map(row => ({ time: Number(row.time) as UTCTimestamp, open: Number(row.open), high: Number(row.high), low: Number(row.low), close: Number(row.close) }));
         if (parsed.length === 0) return;
         const hadLiveBars = candleBarsRef.current.length > 0;
         candleBarsRef.current = hadLiveBars ? mergeBars(candleBarsRef.current, parsed) : parsed;
+        trimRollingBars(candleBarsRef.current);
         void cacheBars(symbol, entryInterval, parsed);
         candleDataRef.current = candleBarsRef.current.map(({ time, close }) => ({ time, close }));
         const visibleBars = renderBars(candleBarsRef.current, MAX_ENTRY_RENDER_BARS);
         initializingViewport = true;
-        setDataPreservingRange(showHeikinAshi ? calculateHeikinAshi(visibleBars) : visibleBars);
+        if (showHeikinAshi) {
+          entryHeikinAshiBarsRef.current = calculateHeikinAshi(visibleBars) as LiveBar[];
+          setDataPreservingRange(entryHeikinAshiBarsRef.current);
+        } else setDataPreservingRange(visibleBars);
         if (!hadLiveBars || !chart.timeScale().getVisibleLogicalRange()) applyDefaultChartViewport(chart, visibleBars, ENTRY_VIEWPORT_DEFAULTS.bars, ENTRY_VIEWPORT_DEFAULTS.futureBars, ENTRY_VIEWPORT_DEFAULTS.yBelow, ENTRY_VIEWPORT_DEFAULTS.yAbove);
         syncViewportSnapshot(chart, visibleBars, setEntryViewportSnapshot);
         requestAnimationFrame(() => { if (active) initializingViewport = false; });
@@ -1895,15 +2000,22 @@ function Workspace() {
       }
       if (message.type === 'trade' && message.price && message.time) {
         binanceLivePriceRef.current = { symbol, price: Number(message.price), time: Number(message.time), receivedAt: Date.now() };
-        const liveBars = mergeTickBar(candleBarsRef.current, Number(message.time), Number(message.price), 60);
-        const liveBar = liveBars[liveBars.length - 1];
+        const previousBarTime = candleBarsRef.current[candleBarsRef.current.length - 1]?.time;
+        candleBarsRef.current = mergeTickBar(candleBarsRef.current, Number(message.time), Number(message.price), 60);
+        const liveBar = candleBarsRef.current[candleBarsRef.current.length - 1];
         if (liveBar) {
-          candleBarsRef.current = mergeTickBar(candleBarsRef.current, Number(message.time), Number(message.price), 60);
-          candleDataRef.current = candleBarsRef.current.map(({ time, close }) => ({ time, close }));
-          if (showHeikinAshi) setDataPreservingRange(calculateHeikinAshi(renderBars(candleBarsRef.current, MAX_ENTRY_RENDER_BARS)));
+          if (liveBar.time !== previousBarTime) {
+            trimRollingBars(candleBarsRef.current);
+            trimRollingBars(candleDataRef.current);
+            trimRollingBars(entryHeikinAshiBarsRef.current);
+          }
+          upsertLatestClose(candleDataRef.current, liveBar);
+          if (showHeikinAshi) {
+            const heikinBar = updateHeikinAshiTail(candleBarsRef.current, entryHeikinAshiBarsRef.current);
+            if (heikinBar) candles.update(heikinBar);
+          }
           else candles.update(liveBar);
           updateTrackerLabels('entry', liveBar.close);
-          scheduleViewportRefresh();
         }
         return;
       }
@@ -1918,7 +2030,15 @@ function Workspace() {
       const lastCandleData = candleDataRef.current[candleDataRef.current.length - 1];
       if (lastCandleData?.time === next.time) lastCandleData.close = next.close;
       else if (isNewBar) candleDataRef.current.push({ time: next.time, close: next.close });
-      if (showHeikinAshi) setDataPreservingRange(calculateHeikinAshi(renderBars(candleBarsRef.current, MAX_ENTRY_RENDER_BARS)));
+      if (isNewBar) {
+        trimRollingBars(candleBarsRef.current);
+        trimRollingBars(candleDataRef.current);
+        trimRollingBars(entryHeikinAshiBarsRef.current);
+      }
+      if (showHeikinAshi) {
+        const heikinBar = updateHeikinAshiTail(candleBarsRef.current, entryHeikinAshiBarsRef.current);
+        if (heikinBar) candles.update(heikinBar);
+      }
       else candles.update(next);
       updateTrackerLabels('entry', next.close);
       // The rolling impulse average follows the active candle in real time;
@@ -1998,6 +2118,7 @@ function Workspace() {
       candlesRef.current = null;
       candleDataRef.current = [];
       candleBarsRef.current = [];
+      entryHeikinAshiBarsRef.current = [];
       loadingOlderRef.current = false;
       chart.remove();
     };
@@ -2036,6 +2157,9 @@ function Workspace() {
     const candles = chart.addSeries(CandlestickSeries, { upColor: '#64d39a', downColor: '#f27e7e', borderVisible: false, wickUpColor: '#64d39a', wickDownColor: '#f27e7e', priceFormat: { type: 'price', precision: binanceRules?.price_precision ?? 8, minMove: binanceRules?.tick_size || 0.00000001 } });
     overviewChartRef.current = chart;
     overviewCandlesRef.current = candles;
+    overviewCandleDataRef.current = [];
+    overviewBarsRef.current = [];
+    overviewHeikinAshiBarsRef.current = [];
     const wheelHandler = (event: WheelEvent) => zoomChartOnWheel(chart, event);
     overviewChartContainer.current.addEventListener('wheel', wheelHandler, { passive: false });
     const crosshairHandler = (param: any) => setOverviewOhlcHover(resolveOhlcHover(param, candles, overviewBarsRef.current));
@@ -2068,10 +2192,10 @@ function Workspace() {
       overviewLoadingOlderRef.current = true;
       const previousRange = { from: logicalRange.from, to: logicalRange.to };
       const previousBarCount = overviewBarsRef.current.length;
-      const secondsPerBar = interval === '1s' ? 1 : interval === '1m' ? 60 : interval === '3m' ? 180 : interval === '5m' ? 300 : 900;
+      const secondsPerBar = gatewayInterval === '1m' ? 60 : gatewayInterval === '3m' ? 180 : gatewayInterval === '5m' ? 300 : 900;
         const dayStart = Math.max(historyCutoff, oldest - 86400);
       const expected = Math.ceil((oldest - dayStart) / secondsPerBar);
-      const fetchChunk = (endTime: number, limit: number) => fetch(`https://fapi.binance.com/fapi/v1/klines?symbol=${symbol}&interval=${interval}&limit=${limit}&endTime=${Math.max(historyCutoff * 1000, endTime * 1000 - 1)}`).then(response => response.json());
+      const fetchChunk = (endTime: number, limit: number) => fetch(`https://fapi.binance.com/fapi/v1/klines?symbol=${symbol}&interval=${gatewayInterval}&limit=${limit}&endTime=${Math.max(historyCutoff * 1000, endTime * 1000 - 1)}`).then(response => response.json());
       const loadDay = async () => {
         const rows: any[] = [];
         let cursor = oldest;
@@ -2087,10 +2211,13 @@ function Workspace() {
       void loadDay().then(older => {
         if (!active || older.length === 0) return;
         overviewBarsRef.current = [...older, ...overviewBarsRef.current].filter((bar, index, all) => index === 0 || bar.time !== all[index - 1].time).filter(bar => Number(bar.time) >= historyCutoff);
-        void cacheBars(symbol, interval, overviewBarsRef.current);
+        void cacheBars(symbol, gatewayInterval, older);
         overviewCandleDataRef.current = overviewBarsRef.current.map(({ time, close }) => ({ time, close }));
         const visibleBars = renderBars(overviewBarsRef.current, MAX_CONTEXT_RENDER_BARS);
-        candles.setData(showHeikinAshi ? calculateHeikinAshi(visibleBars) : visibleBars);
+        if (showHeikinAshi) {
+          overviewHeikinAshiBarsRef.current = calculateHeikinAshi(overviewBarsRef.current) as LiveBar[];
+          candles.setData(renderBars(overviewHeikinAshiBarsRef.current, MAX_CONTEXT_RENDER_BARS));
+        } else candles.setData(visibleBars);
         const previousRenderStart = Math.max(0, previousBarCount - MAX_CONTEXT_RENDER_BARS);
         const nextRenderStart = Math.max(0, overviewBarsRef.current.length - MAX_CONTEXT_RENDER_BARS);
         const renderOffset = previousRenderStart - nextRenderStart;
@@ -2115,7 +2242,10 @@ function Workspace() {
           const visibleBars = renderBars(overviewBarsRef.current, MAX_CONTEXT_RENDER_BARS);
           if (!polling) initializingViewport = true;
           if (hadBars && !showHeikinAshi) candles.update(overviewBarsRef.current[overviewBarsRef.current.length - 1]);
-          else setDataPreservingRange(showHeikinAshi ? calculateHeikinAshi(visibleBars) : visibleBars);
+          else {
+            if (showHeikinAshi) overviewHeikinAshiBarsRef.current = calculateHeikinAshi(overviewBarsRef.current) as LiveBar[];
+            setDataPreservingRange(showHeikinAshi ? renderBars(overviewHeikinAshiBarsRef.current, MAX_CONTEXT_RENDER_BARS) : visibleBars);
+          }
           if (!polling) {
             applyDefaultChartViewport(chart, visibleBars, viewportBars, viewportFutureBars, viewportYBelow, viewportYAbove);
             syncViewportSnapshot(chart, visibleBars, setOverviewViewportSnapshot);
@@ -2134,10 +2264,18 @@ function Workspace() {
           const previousBarTime = overviewBarsRef.current[overviewBarsRef.current.length - 1]?.time;
           overviewBarsRef.current = mergeTickBar(overviewBarsRef.current, Number(payload.tick.time), Number(payload.tick.price), interval === '1s' ? 60 : interval === '1m' ? 60 : interval === '3m' ? 180 : interval === '5m' ? 300 : 900);
           const liveBar = overviewBarsRef.current[overviewBarsRef.current.length - 1];
+          if (liveBar.time !== previousBarTime) {
+            trimRollingBars(overviewBarsRef.current);
+            trimRollingBars(overviewCandleDataRef.current);
+            trimRollingBars(overviewHeikinAshiBarsRef.current);
+          }
           const lastCandleData = overviewCandleDataRef.current[overviewCandleDataRef.current.length - 1];
           if (lastCandleData?.time === liveBar.time) lastCandleData.close = liveBar.close;
           else overviewCandleDataRef.current.push({ time: liveBar.time, close: liveBar.close });
-          if (showHeikinAshi) setDataPreservingRange(calculateHeikinAshi(renderBars(overviewBarsRef.current, MAX_CONTEXT_RENDER_BARS)));
+          if (showHeikinAshi) {
+            const heikinBar = updateHeikinAshiTail(overviewBarsRef.current, overviewHeikinAshiBarsRef.current);
+            if (heikinBar) candles.update(heikinBar);
+          }
           else candles.update(liveBar);
           updateTrackerLabels('context', liveBar.close);
           scheduleOverviewRefresh();
@@ -2146,7 +2284,7 @@ function Workspace() {
       const candleTimer = window.setInterval(() => void loadCTrader(), 30_000);
       const tickTimer = window.setInterval(pollTick, 1_000);
       void pollTick();
-      return () => { active = false; window.clearInterval(candleTimer); window.clearInterval(tickTimer); chart.timeScale().unsubscribeVisibleTimeRangeChange(refreshOverview); chart.timeScale().unsubscribeVisibleLogicalRangeChange(refreshOverview); chart.unsubscribeCrosshairMove(crosshairHandler); chart.unsubscribeClick(clickHandler); overviewChartContainer.current?.removeEventListener('wheel', wheelHandler); setOverviewOhlcHover(null); overviewChartRef.current = null; overviewCandlesRef.current = null; overviewCandleDataRef.current = []; overviewBarsRef.current = []; overviewLoadingOlderRef.current = false; chart.remove(); };
+      return () => { active = false; window.clearInterval(candleTimer); window.clearInterval(tickTimer); chart.timeScale().unsubscribeVisibleTimeRangeChange(refreshOverview); chart.timeScale().unsubscribeVisibleLogicalRangeChange(refreshOverview); chart.unsubscribeCrosshairMove(crosshairHandler); chart.unsubscribeClick(clickHandler); overviewChartContainer.current?.removeEventListener('wheel', wheelHandler); setOverviewOhlcHover(null); overviewChartRef.current = null; overviewCandlesRef.current = null; overviewCandleDataRef.current = []; overviewBarsRef.current = []; overviewHeikinAshiBarsRef.current = []; overviewLoadingOlderRef.current = false; chart.remove(); };
     }
     const stream = createBinanceKlineStream(symbol, interval);
     const gatewayInterval = interval === '1s' ? '1m' : interval;
@@ -2157,25 +2295,32 @@ function Workspace() {
       overviewCandleDataRef.current = parsed.map(({ time, close }) => ({ time, close }));
       const visibleBars = renderBars(parsed, MAX_CONTEXT_RENDER_BARS);
       initializingViewport = true;
-      setDataPreservingRange(showHeikinAshi ? calculateHeikinAshi(visibleBars) : visibleBars);
+      if (showHeikinAshi) {
+        overviewHeikinAshiBarsRef.current = calculateHeikinAshi(overviewBarsRef.current) as LiveBar[];
+        setDataPreservingRange(renderBars(overviewHeikinAshiBarsRef.current, MAX_CONTEXT_RENDER_BARS));
+      } else setDataPreservingRange(visibleBars);
       applyDefaultChartViewport(chart, visibleBars, viewportBars, viewportFutureBars, viewportYBelow, viewportYAbove);
       syncViewportSnapshot(chart, visibleBars, setOverviewViewportSnapshot);
       requestAnimationFrame(() => { if (active) initializingViewport = false; });
       setTrackerRevision(value => value + 1);
       setOverviewRevision(value => value + 1);
     }).catch(() => undefined);
-    void requestRecentBars(symbol, gatewayInterval, () => fetchRecentApiBars(apiUrl, symbol, gatewayInterval, INITIAL_CONTEXT_BARS, auth.accessToken))
+    void requestRecentBars(symbol, gatewayInterval, cached => fetchRecentApiBars(apiUrl, symbol, gatewayInterval, INITIAL_CONTEXT_BARS, auth.accessToken, cached))
       .then(parsedRows => {
         if (!active) return;
         const parsed = parsedRows.map(row => ({ time: Number(row.time) as UTCTimestamp, open: Number(row.open), high: Number(row.high), low: Number(row.low), close: Number(row.close) }));
         if (parsed.length === 0) return;
         const hadLiveBars = overviewBarsRef.current.length > 0;
         overviewBarsRef.current = hadLiveBars ? mergeBars(overviewBarsRef.current, parsed) : parsed;
-        void cacheBars(symbol, interval, parsed);
+        trimRollingBars(overviewBarsRef.current);
+        void cacheBars(symbol, gatewayInterval, parsed);
         overviewCandleDataRef.current = overviewBarsRef.current.map(({ time, close }) => ({ time, close }));
         const visibleBars = renderBars(overviewBarsRef.current, MAX_CONTEXT_RENDER_BARS);
         initializingViewport = true;
-        setDataPreservingRange(showHeikinAshi ? calculateHeikinAshi(visibleBars) : visibleBars);
+        if (showHeikinAshi) {
+          overviewHeikinAshiBarsRef.current = calculateHeikinAshi(overviewBarsRef.current) as LiveBar[];
+          setDataPreservingRange(renderBars(overviewHeikinAshiBarsRef.current, MAX_CONTEXT_RENDER_BARS));
+        } else setDataPreservingRange(visibleBars);
         if (!hadLiveBars || !chart.timeScale().getVisibleLogicalRange()) applyDefaultChartViewport(chart, visibleBars, viewportBars, viewportFutureBars, viewportYBelow, viewportYAbove);
         syncViewportSnapshot(chart, visibleBars, setOverviewViewportSnapshot);
         requestAnimationFrame(() => { if (active) initializingViewport = false; });
@@ -2187,15 +2332,22 @@ function Workspace() {
       const message = JSON.parse(event.data) as { type?: string; symbol?: string; price?: number; time?: number; interval?: string; bar?: { time: number; open: number; high: number; low: number; close: number } };
       if (message.type === 'trade' && message.price && message.time) {
         binanceLivePriceRef.current = { symbol, price: Number(message.price), time: Number(message.time), receivedAt: Date.now() };
-        const liveBars = mergeTickBar(overviewBarsRef.current, Number(message.time), Number(message.price), gatewayInterval === '1m' ? 60 : gatewayInterval === '3m' ? 180 : gatewayInterval === '5m' ? 300 : 900);
-        const liveBar = liveBars[liveBars.length - 1];
+        const previousBarTime = overviewBarsRef.current[overviewBarsRef.current.length - 1]?.time;
+        overviewBarsRef.current = mergeTickBar(overviewBarsRef.current, Number(message.time), Number(message.price), gatewayInterval === '1m' ? 60 : gatewayInterval === '3m' ? 180 : gatewayInterval === '5m' ? 300 : 900);
+        const liveBar = overviewBarsRef.current[overviewBarsRef.current.length - 1];
         if (liveBar) {
-          overviewBarsRef.current = mergeTickBar(overviewBarsRef.current, Number(message.time), Number(message.price), gatewayInterval === '1m' ? 60 : gatewayInterval === '3m' ? 180 : gatewayInterval === '5m' ? 300 : 900);
-          overviewCandleDataRef.current = overviewBarsRef.current.map(({ time, close }) => ({ time, close }));
-          if (showHeikinAshi) setDataPreservingRange(calculateHeikinAshi(renderBars(overviewBarsRef.current, MAX_CONTEXT_RENDER_BARS)));
+          if (liveBar.time !== previousBarTime) {
+            trimRollingBars(overviewBarsRef.current);
+            trimRollingBars(overviewCandleDataRef.current);
+            trimRollingBars(overviewHeikinAshiBarsRef.current);
+          }
+          upsertLatestClose(overviewCandleDataRef.current, liveBar);
+          if (showHeikinAshi) {
+            const heikinBar = updateHeikinAshiTail(overviewBarsRef.current, overviewHeikinAshiBarsRef.current);
+            if (heikinBar) candles.update(heikinBar);
+          }
           else candles.update(liveBar);
           updateTrackerLabels('context', liveBar.close);
-          scheduleOverviewRefresh();
         }
         return;
       }
@@ -2203,17 +2355,23 @@ function Workspace() {
       const candle = message.bar;
       const next = { time: Number(candle.time) as UTCTimestamp, open: Number(candle.open), high: Number(candle.high), low: Number(candle.low), close: Number(candle.close) };
       const isNewBar = upsertLiveBar(overviewBarsRef.current, next);
-      void cacheBars(symbol, interval, [next]);
-      const lastCandleData = overviewCandleDataRef.current[overviewCandleDataRef.current.length - 1];
-      if (lastCandleData?.time === next.time) lastCandleData.close = next.close;
-      else if (isNewBar) overviewCandleDataRef.current.push({ time: next.time, close: next.close });
-      if (showHeikinAshi) setDataPreservingRange(calculateHeikinAshi(renderBars(overviewBarsRef.current, MAX_CONTEXT_RENDER_BARS)));
+      void cacheBars(symbol, gatewayInterval, [next]);
+      upsertLatestClose(overviewCandleDataRef.current, next);
+      if (isNewBar) {
+        trimRollingBars(overviewBarsRef.current);
+        trimRollingBars(overviewCandleDataRef.current);
+        trimRollingBars(overviewHeikinAshiBarsRef.current);
+      }
+      if (showHeikinAshi) {
+        const heikinBar = updateHeikinAshiTail(overviewBarsRef.current, overviewHeikinAshiBarsRef.current);
+        if (heikinBar) candles.update(heikinBar);
+      }
       else candles.update(next);
       updateTrackerLabels('context', next.close);
       scheduleOverviewRefresh();
       if (isNewBar) setTrackerRevision(value => value + 1);
     };
-    return () => { active = false; stream.close(); chart.timeScale().unsubscribeVisibleTimeRangeChange(refreshOverview); chart.timeScale().unsubscribeVisibleLogicalRangeChange(refreshOverview); chart.unsubscribeCrosshairMove(crosshairHandler); chart.unsubscribeClick(clickHandler); overviewChartContainer.current?.removeEventListener('wheel', wheelHandler); setOverviewOhlcHover(null); overviewChartRef.current = null; overviewCandlesRef.current = null; overviewCandleDataRef.current = []; overviewBarsRef.current = []; overviewLoadingOlderRef.current = false; chart.remove(); };
+    return () => { active = false; stream.close(); chart.timeScale().unsubscribeVisibleTimeRangeChange(refreshOverview); chart.timeScale().unsubscribeVisibleLogicalRangeChange(refreshOverview); chart.unsubscribeCrosshairMove(crosshairHandler); chart.unsubscribeClick(clickHandler); overviewChartContainer.current?.removeEventListener('wheel', wheelHandler); setOverviewOhlcHover(null); overviewChartRef.current = null; overviewCandlesRef.current = null; overviewCandleDataRef.current = []; overviewBarsRef.current = []; overviewHeikinAshiBarsRef.current = []; overviewLoadingOlderRef.current = false; chart.remove(); };
   }, [auth.accessToken, broker, symbol, interval, timezone, mobilePwa, showHeikinAshi]);
 
   useEffect(() => {
@@ -2409,23 +2567,24 @@ function Workspace() {
     const chart = canvas === 'entry' ? chartRef.current : overviewChartRef.current;
     const candles = canvas === 'entry' ? candlesRef.current : overviewCandlesRef.current;
     const rawBars = canvas === 'entry' ? candleBarsRef.current : overviewBarsRef.current;
-    const bars = renderBars(rawBars, canvas === 'entry' ? MAX_ENTRY_RENDER_BARS : MAX_CONTEXT_RENDER_BARS);
+    const bars = rawBars;
     const width = canvas === 'entry' ? stageSize.width : overviewSize.width;
     const height = canvas === 'entry' ? stageSize.height : overviewSize.height;
     if (!chart || !candles || !bars.length || (!showRsi && !showSsl && !showTracker && !showWickExtensions && !showSevenAmMarkers)) return null;
-    const rsi = showRsi ? calculateRsi(bars, rsiPeriod) : [];
-    const ssl = showSsl ? calculateSslChannel(bars, sslPeriod) : { up: [], down: [], bullish: [] };
+    const visibleRange = chart.timeScale().getVisibleLogicalRange();
+    const visibleFrom = visibleRange ? Math.max(0, Math.floor(visibleRange.from) - 2) : 0;
+    const visibleTo = visibleRange ? Math.min(bars.length, Math.ceil(visibleRange.to) + 3) : bars.length;
+    const indicatorValues = priceIndicatorSeriesRef.current[canvas].update(bars, { rsiPeriod, sslPeriod, trackerPeriod, wickPeriod, wickMultiplier, timezone: SESSION_TIMEZONE });
+    const rsi = showRsi ? indicatorValues.rsi : [];
+    const ssl = showSsl ? indicatorValues.ssl : { up: [], down: [], bullish: [], regimeAge: [] };
     // Wick direction is always filtered by SSL, even when the SSL lines are
     // hidden. A positive regime permits Long points; a negative regime
     // permits Short points only.
-    const wickSsl = calculateSslChannel(bars, sslPeriod);
-    const wickLookback = wickPeriod;
-    const wickStart = Math.max(0, bars.length - (wickDisplayPeriod + wickLookback));
-    const wickBars = bars.slice(wickStart);
-    const wickExtensions = showWickExtensions ? calculateWickExtensions(wickBars, wickLookback, wickMultiplier) : { long: [], short: [] };
-    const wickVisibleStart = Math.max(0, bars.length - wickDisplayPeriod);
-    const trackerLevels = showTracker ? calculateTrackerLevels(bars, trackerPeriod) : [];
-    const sevenAmWindow = calculateDailyTimeWindow(bars, SESSION_TIMEZONE);
+    const wickSsl = indicatorValues.ssl;
+    const wickExtensions = showWickExtensions ? indicatorValues.wick : { long: [], short: [] };
+    const wickVisibleStart = Math.max(visibleFrom, bars.length - wickDisplayPeriod);
+    const trackerLevels = showTracker ? indicatorValues.tracker : [];
+    const sevenAmWindow = indicatorValues.dailyWindow;
     const toPoint = (value: number | null, index: number) => {
       if (value === null || value === undefined) return null;
       const x = chart.timeScale().timeToCoordinate(bars[index].time);
@@ -2434,7 +2593,8 @@ function Workspace() {
     };
     const path = (values: Array<number | null>) => {
       let started = false;
-      return values.map((value, index) => {
+      return values.slice(visibleFrom, visibleTo).map((value, offset) => {
+      const index = visibleFrom + offset;
       const point = toPoint(value, index);
       if (!point) return '';
       const command = started ? 'L' : 'M';
@@ -2442,26 +2602,28 @@ function Workspace() {
       return `${command} ${point.x} ${point.y}`;
       }).filter(Boolean).join(' ');
     };
-    const rsiMarkers = rsi.map((value, index) => {
+    const rsiMarkers = showRsi ? bars.slice(visibleFrom, visibleTo).map((bar, offset) => {
+      const index = visibleFrom + offset;
+      const value = rsi[index];
       if (value === null || (value > rsiLowBand && value < rsiHighBand)) return null;
-      const point = toPoint(bars[index].close, index);
+      const point = toPoint(bar.close, index);
       if (!point) return null;
-      return <circle key={`rsi-${canvas}-${bars[index].time}`} cx={point.x} cy={point.y} r="5" className="rsi-marker" pointerEvents="all" onPointerEnter={() => setIndicatorHover({ canvas, x: point.x, y: point.y, label: `RSI(${rsiPeriod}) ${value.toFixed(2)}` })} onPointerLeave={() => setIndicatorHover(null)}><title>RSI({rsiPeriod}): {value.toFixed(2)}</title></circle>;
-    });
-    const wickMarkers = bars.slice(wickVisibleStart).map((bar, visibleIndex) => {
+      return <circle key={`rsi-${canvas}-${bar.time}`} cx={point.x} cy={point.y} r="5" className="rsi-marker" pointerEvents="all" onPointerEnter={() => setIndicatorHover({ canvas, x: point.x, y: point.y, label: `RSI(${rsiPeriod}) ${value.toFixed(2)}` })} onPointerLeave={() => setIndicatorHover(null)}><title>RSI({rsiPeriod}): {value.toFixed(2)}</title></circle>;
+    }) : [];
+    const wickMarkers = showWickExtensions ? bars.slice(wickVisibleStart, visibleTo).map((bar, visibleIndex) => {
       const index = wickVisibleStart + visibleIndex;
-      const wickIndex = index - wickStart;
-      const longPoint = toPoint(wickExtensions.long[wickIndex], index);
-      const shortPoint = toPoint(wickExtensions.short[wickIndex], index);
-      const longCrossed = wickExtensions.long[wickIndex] !== null && bar.low <= Number(wickExtensions.long[wickIndex]);
-      const shortCrossed = wickExtensions.short[wickIndex] !== null && bar.high >= Number(wickExtensions.short[wickIndex]);
+      const longPoint = toPoint(wickExtensions.long[index], index);
+      const shortPoint = toPoint(wickExtensions.short[index], index);
+      const longCrossed = wickExtensions.long[index] !== null && bar.low <= Number(wickExtensions.long[index]);
+      const shortCrossed = wickExtensions.short[index] !== null && bar.high >= Number(wickExtensions.short[index]);
       const timeLabel = new Date(Number(bar.time) * 1000).toLocaleString('es-MX', { timeZone: timezone, dateStyle: 'short', timeStyle: 'short' });
       return <g key={`wick-${canvas}-${bar.time}`} className="wick-extension-markers">
         {longPoint && longCrossed && wickSsl.bullish[index] && wickSsl.regimeAge[index] >= 2 && wickSsl.regimeAge[index] <= sslRegimeWindow && <circle cx={longPoint.x} cy={longPoint.y} r="4.5" className="wick-extension-marker wick-extension-long" pointerEvents="all" onPointerEnter={() => setIndicatorHover({ canvas, x: longPoint.x, y: longPoint.y, label: `Long ${wickMultiplier.toFixed(1)}x · SSL N${wickSsl.regimeAge[index]} · ${timeLabel}` })} onPointerLeave={() => setIndicatorHover(null)}><title>Long: mecha cruzó el nivel · SSL positivo · régimen N{wickSsl.regimeAge[index]}</title></circle>}
         {shortPoint && shortCrossed && wickSsl.bullish[index] === false && wickSsl.regimeAge[index] >= 2 && wickSsl.regimeAge[index] <= sslRegimeWindow && <circle cx={shortPoint.x} cy={shortPoint.y} r="4.5" className="wick-extension-marker wick-extension-short" pointerEvents="all" onPointerEnter={() => setIndicatorHover({ canvas, x: shortPoint.x, y: shortPoint.y, label: `Short ${wickMultiplier.toFixed(1)}x · SSL N${wickSsl.regimeAge[index]} · ${timeLabel}` })} onPointerLeave={() => setIndicatorHover(null)}><title>Short: mecha cruzó el nivel · SSL negativo · régimen N{wickSsl.regimeAge[index]}</title></circle>}
       </g>;
-    });
-    const trackerMarkers = canvas === 'entry' && showTracker ? bars.map((bar, index) => {
+    }) : [];
+    const trackerMarkers = canvas === 'entry' && showTracker ? bars.slice(visibleFrom, visibleTo).map((bar, offset) => {
+      const index = visibleFrom + offset;
       if (index >= bars.length - 1) return null;
       const level = trackerLevels[index];
       if (!level) return null;
@@ -2493,7 +2655,8 @@ function Workspace() {
       </g>;
     })() : null;
     return <g className={`price-indicators price-indicators-${canvas}`}>
-      {showSevenAmMarkers && <g className="seven-am-marker-layer">{bars.map((bar, index) => {
+      {showSevenAmMarkers && <g className="seven-am-marker-layer">{bars.slice(visibleFrom, visibleTo).map((bar, offset) => {
+        const index = visibleFrom + offset;
         if (!sevenAmWindow[index]) return null;
         const point = toPoint(bar.close, index);
         return point ? <circle key={`seven-am-${canvas}-${bar.time}`} cx={point.x} cy={point.y} r="6" className="ny-interest-marker"><title>Ventana 7 AM · {chartTimeLabel(bar.time, SESSION_TIMEZONE, true)}</title></circle> : null;
