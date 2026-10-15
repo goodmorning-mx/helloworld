@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import inspect
 import logging
 import time
 from collections import defaultdict
@@ -23,7 +24,8 @@ class BinanceMarketGateway:
         self._clients: dict[str, set[WebSocket]] = defaultdict(set)
         self._tasks: dict[str, asyncio.Task[None]] = {}
         self._last_event_ms: dict[str, int] = {}
-        self._listeners: dict[str, set[Callable[[dict[str, Any]], Awaitable[None]]]] = defaultdict(set)
+        self._listeners: dict[str, set[Callable[[dict[str, Any]], Awaitable[None] | None]]] = defaultdict(set)
+        self._listener_tasks: set[asyncio.Task[None]] = set()
         self._lock = asyncio.Lock()
 
     @staticmethod
@@ -47,10 +49,48 @@ class BinanceMarketGateway:
         by_time.update({int(bar["time"]): bar for bar in bars if "time" in bar})
         self._bars[symbol][interval] = [by_time[key] for key in sorted(by_time)][-1500:]
 
+    async def prime(self, symbol: str, interval: str, base_url: str = "https://fapi.binance.com") -> list[dict[str, Any]]:
+        """Seed the shared candle hub from REST before a worker begins consuming live events."""
+        symbol = self._symbol(symbol)
+        if interval not in SUPPORTED_INTERVALS:
+            raise ValueError(f"unsupported candle interval: {interval}")
+        async with httpx.AsyncClient(timeout=10) as client:
+            response = await client.get(f"{base_url.rstrip('/')}/fapi/v1/klines", params={"symbol": symbol, "interval": interval, "limit": 1500})
+            response.raise_for_status()
+            rows = response.json()
+        now_ms = int(time.time() * 1000)
+        bars = []
+        for row in rows if isinstance(rows, list) else []:
+            if not isinstance(row, list) or len(row) < 7:
+                continue
+            bars.append({"time": int(row[0]) // 1000, "open": float(row[1]), "high": float(row[2]), "low": float(row[3]), "close": float(row[4]), "closed": int(row[6]) < now_ms})
+        self.put_bars(symbol, interval, bars)
+        return self.snapshot(symbol, interval)
+
     async def _broadcast(self, symbol: str, payload: dict[str, Any]) -> None:
         listeners = list(self._listeners[symbol])
         if listeners:
-            await asyncio.gather(*(listener(payload) for listener in listeners), return_exceptions=True)
+            # Synchronous listeners must be fast enqueue-only callbacks. Async
+            # listeners remain supported, but run independently of websocket fanout.
+            pending = []
+            for listener in listeners:
+                try:
+                    result = listener(payload)
+                    if inspect.isawaitable(result):
+                        pending.append(result)
+                except Exception:
+                    logger.exception("market_listener_enqueue_failed symbol=%s", symbol)
+            if pending:
+                if len(self._listener_tasks) < 256:
+                    task = asyncio.create_task(self._notify_async_listeners(symbol, pending), name=f"market-listeners-{symbol}")
+                    self._listener_tasks.add(task)
+                    task.add_done_callback(self._listener_tasks.discard)
+                else:
+                    logger.error("market_listener_task_limit_reached symbol=%s", symbol)
+                    for listener_task in pending:
+                        close = getattr(listener_task, "close", None)
+                        if close is not None:
+                            close()
         clients = list(self._clients[symbol])
         if not clients:
             return
@@ -83,6 +123,12 @@ class BinanceMarketGateway:
                             await self._broadcast(symbol, {"type": "kline", "symbol": symbol, "interval": interval, "bar": bar, "source": "rest-fallback", "server_time": time.time_ns() // 1_000_000})
                     except (httpx.HTTPError, ValueError, TypeError):
                         logger.warning("binance_rest_fallback_error symbol=%s interval=%s", symbol, interval)
+
+    async def _notify_async_listeners(self, symbol: str, listeners: list[Awaitable[None]]) -> None:
+        results = await asyncio.gather(*listeners, return_exceptions=True)
+        for result in results:
+            if isinstance(result, Exception):
+                logger.warning("market_async_listener_failed symbol=%s error=%s", symbol, result)
 
     async def _consume(self, symbol: str) -> None:
         delay = 1.0
@@ -153,14 +199,14 @@ class BinanceMarketGateway:
                     task.cancel()
             logger.info("binance_stream_client_disconnected symbol=%s clients=%d", symbol, len(self._clients[symbol]))
 
-    def add_listener(self, symbol: str, listener: Callable[[dict[str, Any]], Awaitable[None]]) -> None:
+    def add_listener(self, symbol: str, listener: Callable[[dict[str, Any]], Awaitable[None] | None]) -> None:
         symbol = self._symbol(symbol)
         self._listeners[symbol].add(listener)
         task = self._tasks.get(symbol)
         if task is None or task.done():
             self._tasks[symbol] = asyncio.create_task(self._consume(symbol), name=f"binance-worker-stream-{symbol}")
 
-    def remove_listener(self, symbol: str, listener: Callable[[dict[str, Any]], Awaitable[None]]) -> None:
+    def remove_listener(self, symbol: str, listener: Callable[[dict[str, Any]], Awaitable[None] | None]) -> None:
         symbol = self._symbol(symbol)
         self._listeners[symbol].discard(listener)
         if not self._clients[symbol] and not self._listeners[symbol]:
@@ -172,7 +218,11 @@ class BinanceMarketGateway:
         self._listeners.clear()
         tasks = list(self._tasks.values())
         self._tasks.clear()
+        listener_tasks = list(self._listener_tasks)
+        self._listener_tasks.clear()
         for task in tasks:
             task.cancel()
-        if tasks:
-            await asyncio.gather(*tasks, return_exceptions=True)
+        for task in listener_tasks:
+            task.cancel()
+        if tasks or listener_tasks:
+            await asyncio.gather(*tasks, *listener_tasks, return_exceptions=True)

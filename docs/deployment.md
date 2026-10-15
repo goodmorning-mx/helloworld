@@ -30,8 +30,14 @@ This repository is deployed by GoodMorning Factory as three independent Coolify 
   - `APP_ENV=dev`.
   - `CORS_ORIGINS=https://dev.<product>.goodmorning.mx`.
   - `DATABASE_URL` as a secret runtime variable.
+  - `PRODUCTION_WORKER_ENABLED=true` for Paper workers.
+  - `BINANCE_REAL_TRADING_ENABLED=false`, `PRODUCTION_WORKER_LIVE_ENABLED=false`, and `PRODUCTION_WORKER_RESUME_LIVE=false`; leave all three disabled during Paper validation. Engine Live remains blocked until its fill/protection reconciliation is validated.
+  - `TELEGRAM_ENABLED`, `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`, and `TELEGRAM_MIN_DELAY` only when Telegram notifications are configured.
+  - `TELEGRAM_COMMANDS_ENABLED=false` by default. To allow Paper commands, explicitly enable it and set `TELEGRAM_COMMAND_USER_ID` to the internal user whose Paper workers it may control. Incoming commands are accepted only from the configured `TELEGRAM_CHAT_ID`.
 
 The backend uses SQLAlchemy with psycopg 3. Therefore `DATABASE_URL` must use the `postgresql+psycopg://` scheme when the backend starts.
+
+The worker runtime uses PostgreSQL leases to avoid two API instances owning the same user/symbol worker. Candle distribution itself remains process-local; scale API replicas only with awareness that recovery is limited to the owning instance's 1,500-candle gateway snapshot until a shared durable market stream is added.
 
 Coolify may provide an internal native PostgreSQL URL with the initial scheme `postgresql://`. `goodmorning-factory` is responsible for converting only that initial scheme to `postgresql+psycopg://`. The conversion must not alter the username, password, hostname, port, database, query string, or URL-encoded characters. This template intentionally contains no Coolify integration function and must not know Coolify UUIDs, internal hostnames, or credentials.
 

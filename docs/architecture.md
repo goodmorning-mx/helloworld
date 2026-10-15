@@ -1,14 +1,26 @@
 # Architecture
 
-The template contains three services:
+The product contains three local services:
 
-- `frontend`: a React/Vite single-page app that calls the backend health endpoint.
-- `backend`: a FastAPI API exposing `GET /health` and preparing PostgreSQL connectivity.
-- `db`: PostgreSQL for product data when a product adds its own schema.
-
-The backend currently does not create product-specific tables. Database connectivity is isolated in `backend/app/database.py` so future products can add migrations deliberately.
+- `frontend`: the React/Vite trading workspace.
+- `backend`: FastAPI API, shared Binance market gateway, Tracker workers, account services, and scanner.
+- `postgres`: authenticated user data, Paper operations, execution intents, and worker configuration/runtime.
 
 Runtime configuration is supplied through environment variables documented in `.env.example`.
+
+## Realtime Tracker engine
+
+The first realtime execution path is Paper. One `BinanceMarketGateway` owns the public Futures stream per symbol in a backend process. It normalizes and caches candles and fans events to chart clients and strategy workers. A cold worker seeds that same gateway from Binance REST, then uses only completed candles from the selected interval. The Tracker rules and close-at-candle semantics are shared with the existing strategy module.
+
+Market fanout calls a synchronous enqueue-only callback for each worker. Each worker has a bounded 64-candle queue and its own asyncio task; database calls are moved off the event loop. On queue pressure, the worker reports `DEGRADED` and catches up from the gateway's bounded 1,500-candle snapshot. It exposes queue depth, processed/received/duplicate counts, overflows, last processed candle, decision latency, status, and last error through `GET /trading/production/workers`. The frontend reloads this endpoint for the selected symbol, so the run control reflects backend state after a page refresh.
+
+Worker configuration and runtime cursor are durable in PostgreSQL. Each symbol has a 45-second database lease renewed every 15 seconds and before candle processing; a second API instance cannot claim an unexpired lease. The worker persists its candle cursor after successful processing and resumes newer candles from the retained market snapshot. If downtime exceeds the retained candle window, it marks the worker degraded and resumes from the latest closed candle rather than claiming complete replay. Paper engine rows are tagged `source=realtime-engine`, manual Paper rows keep their separate source, and a unique per-user decision key prevents duplicate entry rows after retry. Shutdown drains each queue for up to ten seconds, releases leases, and leaves enabled configuration for startup recovery.
+
+Telegram command polling is opt-in (`TELEGRAM_COMMANDS_ENABLED=false` by default), bound to the configured `TELEGRAM_CHAT_ID` and one `TELEGRAM_COMMAND_USER_ID`. It supports `/workers`, `/startpaper SYMBOL`, `/stoppaper SYMBOL`, and `/help`. It exposes no Live command. Do not configure Telegram webhook delivery at the same time as this `getUpdates` poller.
+
+The production worker Live adapter remains behind three gates: `BINANCE_REAL_TRADING_ENABLED=false`, `PRODUCTION_WORKER_LIVE_ENABLED=false`, and `PRODUCTION_WORKER_RESUME_LIVE=false` by default. The dedicated engine Live gate remains disabled until fill reconciliation, partial fills, protection-order lifecycle, sizing parity, and exchange-side idempotency pass a separate validation. This realtime Paper work does not authorize enabling the gates or sending orders. The existing standalone real-order API has its own Binance gate.
+
+The market cache and stream are process-local. The database lease prevents duplicate ownership across API replicas, but candle delivery is not yet a shared cross-replica event bus: a worker can recover only the gateway snapshot retained by its owning process. For multi-replica deployment with gap-free replay beyond that window, add a durable shared candle log/stream and validate it under failover before increasing replica count.
 
 ## Binance market scanner
 

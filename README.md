@@ -1,6 +1,6 @@
 # helloworld
 
-AI-assisted mobile trading terminal built on GoodMorning Factory standards. Users can talk to the agent about strategies, run paper backtests, and prepare paper orders with explicit confirmation.
+AI-assisted mobile trading terminal built on GoodMorning Factory standards. Users can talk to the agent about strategies, run paper backtests, prepare paper orders with explicit confirmation, and run the supervised realtime Tracker engine in Paper mode.
 
 ## Stack
 - React, TypeScript, and Vite frontend.
