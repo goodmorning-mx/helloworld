@@ -11,6 +11,7 @@ const STORE_NAME = 'ohlc';
 const LIVE_CACHE_DAYS = 2;
 const HISTORY_CACHE_DAYS = 31;
 const HISTORY_CACHE_PREFIX = 'history:';
+const CACHE_CLEANUP_INTERVAL_MS = 60 * 60 * 1000;
 const memoryCache = new Map<string, MarketBar[]>();
 const persistTimers = new Map<string, number>();
 const recentRequests = new Map<string, Promise<MarketBar[]>>();
@@ -18,7 +19,8 @@ const preloadQueue: Array<() => void> = [];
 let activePreloads = 0;
 const MAX_ACTIVE_PRELOADS = 4;
 let cacheCleanup: Promise<void> | null = null;
-let cacheCleanupComplete = false;
+let cacheCleanupLastRunAt = 0;
+let cacheCleanupTimer: number | null = null;
 
 export type MarketCacheScope = 'live' | 'history';
 
@@ -42,8 +44,8 @@ function pruneMemoryCache() {
 }
 
 function pruneStoredCache(database: IDBDatabase): Promise<void> {
-  if (cacheCleanupComplete) return Promise.resolve();
   if (cacheCleanup) return cacheCleanup;
+  if (Date.now() - cacheCleanupLastRunAt < CACHE_CLEANUP_INTERVAL_MS) return Promise.resolve();
   const cleanup = new Promise<void>((resolve, reject) => {
     const transaction = database.transaction(STORE_NAME, 'readwrite');
     const request = transaction.objectStore(STORE_NAME).openCursor();
@@ -61,18 +63,35 @@ function pruneStoredCache(database: IDBDatabase): Promise<void> {
       }
       cursor.continue();
     };
-    transaction.oncomplete = () => resolve();
+    transaction.oncomplete = () => {
+      cacheCleanupLastRunAt = Date.now();
+      resolve();
+    };
     transaction.onerror = () => reject(transaction.error ?? new Error('No se pudo limpiar el cache OHLC'));
     transaction.onabort = () => reject(transaction.error ?? new Error('Se canceló la limpieza del cache OHLC'));
   });
   cacheCleanup = cleanup.then(() => {
-    cacheCleanupComplete = true;
     cacheCleanup = null;
   }, error => {
     cacheCleanup = null;
     throw error;
   });
   return cacheCleanup;
+}
+
+function scheduleCacheCleanup() {
+  if (cacheCleanupTimer !== null) return;
+  cacheCleanupTimer = window.setInterval(() => {
+    void openDatabase().then(async database => {
+      try {
+        await pruneStoredCache(database);
+      } catch {
+        // Retry on the next interval; stale rows are filtered on read meanwhile.
+      } finally {
+        database.close();
+      }
+    }).catch(() => undefined);
+  }, CACHE_CLEANUP_INTERVAL_MS);
 }
 
 function hasFreshRecentBar(bars: MarketBar[], interval: string) {
@@ -132,7 +151,10 @@ function openDatabase(): Promise<IDBDatabase> {
       const database = request.result;
       if (!database.objectStoreNames.contains(STORE_NAME)) database.createObjectStore(STORE_NAME);
     };
-    request.onsuccess = () => resolve(request.result);
+    request.onsuccess = () => {
+      scheduleCacheCleanup();
+      resolve(request.result);
+    };
     request.onerror = () => reject(request.error ?? new Error('No se pudo abrir el cache OHLC'));
   });
 }
