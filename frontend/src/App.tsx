@@ -1112,6 +1112,7 @@ function Workspace() {
   const pendingBinanceTpRef = useRef<{ symbol: string; price: number } | null>(null);
   const [binanceProductionAvailable, setBinanceProductionAvailable] = useState(false);
   const [productionWorkerRunning, setProductionWorkerRunning] = useState(false);
+  const [productionWorkerStatus, setProductionWorkerStatus] = useState<{ status?: string; queue_depth?: number; last_event_latency_ms?: number | null; p95_event_latency_ms?: number | null; last_error?: string | null } | null>(null);
   const [executionMode, setExecutionMode] = useState<'paper' | 'production'>('paper');
   const [binanceSizingMode, setBinanceSizingMode] = useState<BinanceSizingMode>(() => localStorage.getItem('helloworld-binance-sizing-mode') === 'maximum' ? 'maximum' : 'minimum');
   const [binanceStopPercent, setBinanceStopPercent] = useState(() => Number(localStorage.getItem('helloworld-binance-stop-percent') ?? FIXED_BINANCE_STOP_PERCENT) || FIXED_BINANCE_STOP_PERCENT);
@@ -1378,8 +1379,8 @@ function Workspace() {
     if (broker !== 'binance') { setBinanceProductionAvailable(false); setExecutionMode('paper'); return; }
     let active = true;
     const loadRuntime = () => fetch(`${apiUrl}/trading/binance/runtime`, { headers: auth.accessToken ? { Authorization: `Bearer ${auth.accessToken}` } : undefined, credentials: 'include' })
-      .then(response => response.ok ? response.json() as Promise<{ real_trading_enabled?: boolean }> : Promise.reject(new Error()))
-      .then(runtime => { if (active) { setBinanceProductionAvailable(runtime.real_trading_enabled === true); if (runtime.real_trading_enabled !== true) setExecutionMode('paper'); } })
+      .then(response => response.ok ? response.json() as Promise<{ real_trading_enabled?: boolean; production_worker_live_enabled?: boolean }> : Promise.reject(new Error()))
+      .then(runtime => { if (active) { const liveAvailable = runtime.real_trading_enabled === true && runtime.production_worker_live_enabled === true; setBinanceProductionAvailable(liveAvailable); if (!liveAvailable) setExecutionMode('paper'); } })
       .catch(() => { if (active) { setBinanceProductionAvailable(false); setExecutionMode('paper'); } });
     void loadRuntime();
     const timer = window.setInterval(loadRuntime, 15_000);
@@ -1400,6 +1401,23 @@ function Workspace() {
   useEffect(() => {
     localStorage.setItem('helloworld-selected-symbol', symbol);
   }, [symbol]);
+
+  useEffect(() => {
+    if (broker !== 'binance' || !auth.accessToken) { setProductionWorkerRunning(false); setProductionWorkerStatus(null); return; }
+    let active = true;
+    const refreshWorker = () => fetch(`${apiUrl}/trading/production/workers`, { headers: { Authorization: `Bearer ${auth.accessToken}` }, credentials: 'include' })
+      .then(response => response.ok ? response.json() as Promise<Array<{ symbol: string; running: boolean; status?: string; queue_depth?: number; last_event_latency_ms?: number | null; p95_event_latency_ms?: number | null; last_error?: string | null }>> : Promise.reject(new Error('worker status unavailable')))
+      .then(workers => {
+        if (!active) return;
+        const selected = workers.find(worker => worker.symbol === symbol.toUpperCase() && worker.running);
+        setProductionWorkerRunning(Boolean(selected));
+        setProductionWorkerStatus(selected ?? null);
+      })
+      .catch(() => { if (active) { setProductionWorkerRunning(false); setProductionWorkerStatus(null); } });
+    void refreshWorker();
+    const timer = window.setInterval(refreshWorker, 10_000);
+    return () => { active = false; window.clearInterval(timer); };
+  }, [auth.accessToken, broker, symbol]);
 
   useEffect(() => {
     if (broker !== 'binance') { setBinanceRules(null); return; }
@@ -3674,7 +3692,7 @@ function Workspace() {
   const productionOrderPreview = broker === 'binance'
     ? <span className={`production-order-preview ${productionPositions.length > 0 ? 'production-preview-active' : ''}`} aria-label="Preview de la próxima operación Binance"><span className="preview-mode"><small>MODO</small><strong>{binanceSizingMode === 'minimum' ? 'MÍNIMO' : 'MÁXIMO'}</strong></span><span className="preview-risk"><small>BALANCE <button type="button" className="preview-adjust-button" onClick={() => adjustRiskBalance(.1)} aria-label="Aumentar balance">↑</button><button type="button" className="preview-adjust-button" onClick={() => adjustRiskBalance(-.1)} aria-label="Disminuir balance">↓</button></small><strong>{riskPreviewBalance.toFixed(4)} USDT</strong></span><span className="preview-risk"><small>RISK % <button type="button" className="preview-adjust-button" onClick={() => adjustRiskPercent(.1)} aria-label="Aumentar riesgo porcentual">↑</button><button type="button" className="preview-adjust-button" onClick={() => adjustRiskPercent(-.1)} aria-label="Disminuir riesgo porcentual">↓</button></small><strong>{activeRiskPercent.toFixed(2)}%</strong></span><span className="preview-risk"><small>RISK $ <button type="button" className="preview-adjust-button" onClick={() => adjustRiskUsd(.01)} aria-label="Aumentar riesgo en dólares">↑</button><button type="button" className="preview-adjust-button" onClick={() => adjustRiskUsd(-.01)} aria-label="Disminuir riesgo en dólares">↓</button></small><strong>{riskPreviewUsd.toFixed(4)} USDT</strong></span><span><small>MARGIN</small><strong>{productionPreviewData ? `${productionPreviewData.margin.toFixed(4)} USDT` : '—'}</strong></span><span><small>MULTIPLICADOR</small><strong>{productionPreviewData ? `×${productionPreviewData.marginMultiplier.toFixed(2)}` : '—'}</strong></span><span><small>NOTIONAL</small><strong>{productionPreviewData ? `${productionPreviewData.notional.toFixed(4)} USDT` : '—'}</strong></span><span><small>LEVERAGE</small><strong>{productionPreviewData ? `${productionPreviewData.leverage}x` : '—'}</strong></span><span><small>FEE</small><strong>{productionPreviewData ? `${productionPreviewData.fees.toFixed(4)} USDT` : '—'}</strong></span><span className="preview-sl"><small>SL <button type="button" className="preview-adjust-button" onClick={() => adjustProtectionPercent('sl', .05)} aria-label="Aumentar SL">↑</button><button type="button" className="preview-adjust-button" onClick={() => adjustProtectionPercent('sl', -.05)} aria-label="Disminuir SL">↓</button></small><strong>−{binanceStopPercent.toFixed(2)}% · REAL −{productionPreviewData ? productionPreviewData.slAmount.toFixed(4) : '—'} $</strong><em>OBJ −{targetSlUsd.toFixed(4)} $</em></span><span className="preview-tp"><small>TP <button type="button" className="preview-adjust-button" onClick={() => adjustProtectionPercent('tp', .05)} aria-label="Aumentar TP">↑</button><button type="button" className="preview-adjust-button" onClick={() => adjustProtectionPercent('tp', -.05)} aria-label="Disminuir TP">↓</button><button type="button" className="preview-optimize-button" onClick={optimizeTrackerTarget} disabled={!showTracker} title="Probar TP de 0.10% a 20.00% con límite de pérdidas" aria-label="Optimizar TP">↗</button></small><strong>+{binanceTargetPercent.toFixed(2)}% · REAL +{productionPreviewData ? productionPreviewData.tpAmount.toFixed(4) : '—'} $</strong><em>OBJ +{targetTpUsd.toFixed(4)} $</em>{tpOptimizationResult && <i className="tp-optimizer-result">BEST {tpOptimizationResult.targetPercent.toFixed(2)}% · EQ {tpOptimizationResult.equity.toFixed(2)} · LIM −{tpOptimizationResult.lossLimit.toFixed(2)}%</i>}</span><span className="preview-pnl"><small>PNL</small><strong>{productionPositions.length > 0 ? `${productionPnl >= 0 ? '+' : ''}${productionPnl.toFixed(4)} USDT` : '—'}</strong></span></span>
     : null;
-  const previewControls = <div className="preview-controls"><button type="button" className={`binance-sizing-toggle ${binanceSizingMode === 'maximum' ? 'binance-sizing-maximum' : ''}`} onClick={() => setBinanceSizingMode(current => { const next = current === 'minimum' ? 'maximum' : 'minimum'; localStorage.setItem('helloworld-binance-sizing-mode', next); return next; })} aria-label="Cambiar modo de sizing Binance" title="Alternar modo mínimo/máximo">{binanceSizingMode === 'minimum' ? 'MÍN' : 'MÁX'}</button><button type="button" className={`production-mode-icon ${productionWorkerRunning ? 'production-mode-active' : ''}`} onClick={() => void toggleProductionWorker()} aria-label="Iniciar o detener worker Paper/Producción" title={productionWorkerRunning ? 'Detener worker' : binanceProductionAvailable ? 'Iniciar Producción' : 'Iniciar Paper'}>◉</button></div>;
+  const previewControls = <div className="preview-controls"><button type="button" className={`binance-sizing-toggle ${binanceSizingMode === 'maximum' ? 'binance-sizing-maximum' : ''}`} onClick={() => setBinanceSizingMode(current => { const next = current === 'minimum' ? 'maximum' : 'minimum'; localStorage.setItem('helloworld-binance-sizing-mode', next); return next; })} aria-label="Cambiar modo de sizing Binance" title="Alternar modo mínimo/máximo">{binanceSizingMode === 'minimum' ? 'MÍN' : 'MÁX'}</button><button type="button" className={`production-mode-icon ${productionWorkerRunning ? 'production-mode-active' : ''}`} onClick={() => void toggleProductionWorker()} aria-label="Iniciar o detener worker Paper/Producción" title={productionWorkerRunning ? `Worker ${productionWorkerStatus?.status ?? 'RUNNING'} · cola ${productionWorkerStatus?.queue_depth ?? 0} · p95 ${productionWorkerStatus?.p95_event_latency_ms ?? '—'} ms${productionWorkerStatus?.last_error ? ` · ${productionWorkerStatus.last_error}` : ''}` : binanceProductionAvailable ? 'Iniciar Producción' : 'Iniciar Paper'}>◉</button></div>;
   const productionPositionLabel = productionPositions.length > 0
     ? productionPositions.map(position => {
       const pnl = Number(position.unrealized_pnl ?? 0);

@@ -26,6 +26,16 @@ services:
       APP_ENV: ${APP_ENV:-local}
       CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:5173,http://localhost:8080}
       DATABASE_URL: ${DATABASE_URL:-postgresql+psycopg://goodmorning:goodmorning_local_password@postgres:5432/goodmorning_mvp}
+      BINANCE_REAL_TRADING_ENABLED: ${BINANCE_REAL_TRADING_ENABLED:-false}
+      PRODUCTION_WORKER_ENABLED: ${PRODUCTION_WORKER_ENABLED:-true}
+      PRODUCTION_WORKER_LIVE_ENABLED: ${PRODUCTION_WORKER_LIVE_ENABLED:-false}
+      PRODUCTION_WORKER_RESUME_LIVE: ${PRODUCTION_WORKER_RESUME_LIVE:-false}
+      TELEGRAM_ENABLED: ${TELEGRAM_ENABLED:-true}
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
+      TELEGRAM_CHAT_ID: ${TELEGRAM_CHAT_ID:-}
+      TELEGRAM_MIN_DELAY: ${TELEGRAM_MIN_DELAY:-0.25}
+      TELEGRAM_COMMANDS_ENABLED: ${TELEGRAM_COMMANDS_ENABLED:-false}
+      TELEGRAM_COMMAND_USER_ID: ${TELEGRAM_COMMAND_USER_ID:-}
     # Local development port mapping only; public Coolify URLs must not include ports.
     ports:
       - "8000:8000"

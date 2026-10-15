@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 from uuid import uuid4
 
 from sqlalchemy import delete as sqlalchemy_delete, insert, select, update
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.engine import Engine
 from sqlalchemy.sql import column, table
 
@@ -16,7 +17,7 @@ paper_operations_table = table(
     column("entry_time"), column("entry_price"), column("current_at"), column("current_price"),
     column("stop_time"), column("stop_price"), column("target_time"), column("target_price"),
     column("status"), column("close_reason"), column("risk_percent"), column("notional"),
-    column("margin"), column("pnl"), column("created_at"), column("updated_at"),
+    column("margin"), column("pnl"), column("source"), column("idempotency_key"), column("created_at"), column("updated_at"),
 )
 
 
@@ -30,11 +31,32 @@ class PaperOperationStore:
             rows = connection.execute(query).mappings().all()
         return [self._public(dict(row)) for row in rows]
 
+    def open_for_symbol(self, user_id: str, symbol: str) -> dict[str, object] | None:
+        query = select(paper_operations_table).where(
+            paper_operations_table.c.user_id == user_id,
+            paper_operations_table.c.symbol == symbol.upper(),
+            paper_operations_table.c.status == "OPEN",
+            paper_operations_table.c.source == "realtime-engine",
+        ).order_by(paper_operations_table.c.created_at.desc())
+        with self._engine.connect() as connection:
+            row = connection.execute(query).mappings().first()
+        return self._public(dict(row)) if row else None
+
     def create(self, user_id: str, values: dict[str, object]) -> dict[str, object]:
         now = datetime.now(timezone.utc)
         operation = {**self._database_values(values), "id": str(uuid4()), "user_id": user_id, "created_at": now, "updated_at": now}
-        with self._engine.begin() as connection:
-            connection.execute(insert(paper_operations_table).values(**operation))
+        try:
+            with self._engine.begin() as connection:
+                connection.execute(insert(paper_operations_table).values(**operation))
+        except IntegrityError:
+            idempotency_key = operation.get("idempotency_key")
+            if not idempotency_key:
+                raise
+            with self._engine.connect() as connection:
+                existing = connection.execute(select(paper_operations_table).where(paper_operations_table.c.user_id == user_id, paper_operations_table.c.idempotency_key == idempotency_key)).mappings().first()
+            if existing is None:
+                raise
+            return self._public(dict(existing))
         return self._public(operation)
 
     def update(self, user_id: str, operation_id: str, values: dict[str, object]) -> dict[str, object] | None:

@@ -41,7 +41,7 @@ from app.binance_execution import BinanceExecutionStore, BinanceExecutionSupervi
 from app.binance_tp_worker import BinanceTakeProfitWorker
 from app.backtest_engine import MAX_BACKTEST_DAYS, fetch_binance_history, run_storycard_backtest, _bar_context
 from app.production_worker import ProductionWorkerConfigStore, ProductionWorkerManager
-from app.telegram_service import BackendEventBus, TelegramSink, telegram_event_sink
+from app.telegram_service import BackendEventBus, TelegramCommandService, TelegramSink, telegram_event_sink
 from app.scanner_analysis import ScannerAnalysisConfig, activity_state, analyze_tracker
 from app.scanner_cache import ScannerCache
 from app.profiling import Profiling
@@ -65,11 +65,12 @@ binance_market_gateway = BinanceMarketGateway()
 binance_execution_store = BinanceExecutionStore(engine)
 binance_execution_supervisor = BinanceExecutionSupervisor(settings, binance_credentials, binance_manager, binance_execution_store)
 binance_tp_worker = BinanceTakeProfitWorker(binance_manager, binance_execution_store, settings.binance_base_url)
-telegram_sink = TelegramSink(settings.telegram_bot_token, settings.telegram_chat_id, settings.telegram_min_delay)
+telegram_sink = TelegramSink(settings.telegram_bot_token, settings.telegram_chat_id, settings.telegram_min_delay, enabled=settings.telegram_enabled)
 backend_events = BackendEventBus()
 backend_events.add_sink(telegram_event_sink(telegram_sink))
 production_worker_config_store = ProductionWorkerConfigStore(engine)
-production_workers = ProductionWorkerManager(binance_market_gateway, paper_operation_store, backend_events, binance_manager, binance_execution_store, production_worker_config_store)
+production_workers = ProductionWorkerManager(binance_market_gateway, paper_operation_store, backend_events, binance_manager, binance_execution_store, production_worker_config_store, settings.binance_base_url)
+telegram_commands = TelegramCommandService(settings.telegram_bot_token, settings.telegram_chat_id, settings.telegram_command_user_id, production_workers, telegram_sink)
 _binance_exchange_info_cache: tuple[float, dict[str, object]] | None = None
 _binance_exchange_info_lock = Lock()
 _active_symbols_cache: OrderedDict[tuple[object, ...], tuple[float, dict[str, object]]] = OrderedDict()
@@ -386,17 +387,14 @@ def initialize_auth_schema() -> None:
 async def start_backend_services() -> None:
     if settings.telegram_enabled and telegram_sink.configured:
         await telegram_sink.start()
+    if settings.telegram_enabled and settings.telegram_commands_enabled:
+        await telegram_commands.start()
     if settings.production_worker_enabled:
-        await production_workers.restore(resume_live=settings.production_worker_resume_live and settings.binance_real_trading_enabled)
+        await production_workers.restore(resume_live=settings.production_worker_resume_live and settings.binance_real_trading_enabled and settings.production_worker_live_enabled)
 
 
 @app.on_event("shutdown")
 def stop_binance_monitor() -> None:
-    for user_id, symbol in list(production_workers.workers):
-        # Workers are paper/live process-local sessions; stop their market listeners
-        # before closing the shared gateway.
-        production_workers.workers[(user_id, symbol)].running = False
-    production_workers.workers.clear()
     binance_execution_supervisor.stop()
     binance_tp_worker.stop()
     binance_manager.stop_all()
@@ -405,6 +403,8 @@ def stop_binance_monitor() -> None:
 
 @app.on_event("shutdown")
 async def stop_market_gateway() -> None:
+    await production_workers.shutdown()
+    await telegram_commands.stop()
     await telegram_sink.stop()
     await binance_market_gateway.close()
 
@@ -506,7 +506,7 @@ def binance_account(identity: AuthIdentity = Depends(identity_dependency(auth_se
 def binance_runtime(identity: AuthIdentity = Depends(identity_dependency(auth_service))) -> dict[str, object]:
     """Expose backend worker health without exposing credentials or secrets."""
     snapshot = binance_manager.snapshot(identity.user_id)
-    return {"real_trading_enabled": settings.binance_real_trading_enabled, "worker": binance_execution_supervisor.status(), "account": snapshot}
+    return {"real_trading_enabled": settings.binance_real_trading_enabled, "production_worker_live_enabled": settings.production_worker_live_enabled, "worker": binance_execution_supervisor.status(), "account": snapshot}
 
 
 @app.get("/trading/production/workers")
@@ -523,12 +523,15 @@ async def start_production_worker(payload: ProductionWorkerInput, identity: Auth
     if payload.mode == "live":
         if not settings.binance_real_trading_enabled:
             raise HTTPException(status_code=503, detail="El trading real está bloqueado en este entorno.")
+        if not settings.production_worker_live_enabled:
+            raise HTTPException(status_code=503, detail="El adaptador Live del engine está bloqueado hasta completar la validación de reconciliación y protecciones.")
         if not payload.confirmed:
             raise HTTPException(status_code=409, detail="Confirma explícitamente el modo live.")
     try:
         return await production_workers.start(identity.user_id, payload.symbol, mode=payload.mode, interval=payload.interval, tracker_period=payload.tracker_period, stop_percent=payload.stop_percent, target_percent=payload.target_percent, quantity=payload.quantity)
     except ValueError as exc:
-        raise HTTPException(status_code=422, detail=str(exc)) from exc
+        code = 409 if "otra instancia" in str(exc) else 422
+        raise HTTPException(status_code=code, detail=str(exc)) from exc
 
 
 @app.delete("/trading/production/workers/{symbol}")
@@ -936,7 +939,7 @@ async def binance_candles(
     try:
         async with httpx.AsyncClient(timeout=15) as client:
             response = await client.get(
-                "https://fapi.binance.com/fapi/v1/klines",
+                f"{settings.binance_base_url.rstrip('/')}/fapi/v1/klines",
                 params=params,
             )
             response.raise_for_status()
@@ -944,6 +947,7 @@ async def binance_candles(
     except (httpx.HTTPError, ValueError) as exc:
         raise HTTPException(status_code=502, detail="No se pudieron cargar las velas de Binance Futures.") from exc
     bars: list[dict[str, object]] = []
+    now_ms = int(time.time() * 1000)
     for row in payload if isinstance(payload, list) else []:
         if not isinstance(row, list) or len(row) < 5:
             continue
@@ -951,7 +955,8 @@ async def binance_candles(
             bars.append({
                 "time": int(float(row[0]) / 1000),
                 "open": float(row[1]), "high": float(row[2]),
-                "low": float(row[3]), "close": float(row[4]), "closed": True,
+                "low": float(row[3]), "close": float(row[4]),
+                "closed": int(row[6]) < now_ms if len(row) > 6 else True,
             })
         except (TypeError, ValueError):
             continue
