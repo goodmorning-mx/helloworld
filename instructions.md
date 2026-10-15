@@ -46,16 +46,22 @@ GoodMorning Factory administra este producto. El repositorio del producto es la 
 #### Módulos core y servicios
 
 - `gm-pwa` v`0.1.4` · tipo `frontend` · modo seleccionado `embedded` · modos permitidos: `embedded`
+  - Source pin: ausente en esta declaración legacy; no asumas que un tag o una versión semver fijan el código instalado.
 - `gm-auth` v`0.1.4` · tipo `full-stack` · modo seleccionado `embedded` · modos permitidos: `embedded`, `service`
+  - Source pin: ausente en esta declaración legacy; no asumas que un tag o una versión semver fijan el código instalado.
   - Recurso `postgres` · clase `postgresql` · owner `gm-auth` · shared `True`
   - Bindings (sin valores): `DATABASE_URL` [database_url, driver=psycopg]
 - `gm-mcp` v`0.3.1` · tipo `backend` · modo seleccionado `embedded` · modos permitidos: `embedded`, `gateway`
+  - Source pin: ausente en esta declaración legacy; no asumas que un tag o una versión semver fijan el código instalado.
 - `gm-billing` v`0.1.0` · tipo `full-stack` · modo seleccionado `embedded` · modos permitidos: `embedded`, `service`
+  - Source pin: ausente en esta declaración legacy; no asumas que un tag o una versión semver fijan el código instalado.
 - `gm-agent` v`0.1.5` · tipo `full-stack` · modo seleccionado `embedded` · modos permitidos: `embedded`, `service`, `gateway`
+  - Source pin: ausente en esta declaración legacy; no asumas que un tag o una versión semver fijan el código instalado.
 
 ### Validación y Definition of Done
 
 - Ejecutar los checks documentados del producto: typecheck/lint, tests unitarios e integración, build, `docker compose config` o builds de servicios cuando apliquen.
+- Todo módulo GoodMorning nuevo o actualizado debe usar un release aprobado y un `source_commit` SHA completo coincidente con el registry de Factory; instala desde la URL Git fijada al SHA, no desde una rama ni un tag mutable.
 - Validar healthchecks y smoke checks de DEV después de cambios de despliegue; no afirmar que un entorno está funcionando sin evidencia.
 - Confirmar que no se agregaron secretos, tokens, credenciales, UUIDs privados ni identificadores de infraestructura.
 - Confirmar que las capacidades existentes y las migraciones siguen siendo compatibles.
