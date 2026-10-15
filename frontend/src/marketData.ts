@@ -7,13 +7,16 @@ export type MarketBar = {
 };
 
 const DATABASE_NAME = 'helloworld-market-data';
-const STORE_NAME = 'ohlc';
+const DATABASE_VERSION = 2;
+const LEGACY_STORE_NAME = 'ohlc';
+const STORE_NAME = 'ohlc-candles';
 const LIVE_CACHE_DAYS = 2;
 const HISTORY_CACHE_DAYS = 31;
 const HISTORY_CACHE_PREFIX = 'history:';
 const CACHE_CLEANUP_INTERVAL_MS = 60 * 60 * 1000;
 const memoryCache = new Map<string, MarketBar[]>();
 const persistTimers = new Map<string, number>();
+const pendingWrites = new Map<string, Map<number, MarketBar>>();
 const recentRequests = new Map<string, Promise<MarketBar[]>>();
 const preloadQueue: Array<() => void> = [];
 let activePreloads = 0;
@@ -21,6 +24,7 @@ const MAX_ACTIVE_PRELOADS = 4;
 let cacheCleanup: Promise<void> | null = null;
 let cacheCleanupLastRunAt = 0;
 let cacheCleanupTimer: number | null = null;
+let memoryCacheLastPruneAt = 0;
 
 export type MarketCacheScope = 'live' | 'history';
 
@@ -35,6 +39,9 @@ function cacheCutoff(scope: MarketCacheScope = 'live') {
 }
 
 function pruneMemoryCache() {
+  const now = Date.now();
+  if (now - memoryCacheLastPruneAt < CACHE_CLEANUP_INTERVAL_MS) return;
+  memoryCacheLastPruneAt = now;
   for (const [key, bars] of memoryCache) {
     const history = key.startsWith(HISTORY_CACHE_PREFIX);
     const cutoff = cacheCutoff(history ? 'history' : 'live');
@@ -47,15 +54,27 @@ function pruneStoredCache(database: IDBDatabase): Promise<void> {
   if (cacheCleanup) return cacheCleanup;
   if (Date.now() - cacheCleanupLastRunAt < CACHE_CLEANUP_INTERVAL_MS) return Promise.resolve();
   const cleanup = new Promise<void>((resolve, reject) => {
-    const transaction = database.transaction(STORE_NAME, 'readwrite');
-    const request = transaction.objectStore(STORE_NAME).openCursor();
-    request.onsuccess = () => {
-      const cursor = request.result;
+    const transaction = database.transaction([STORE_NAME, LEGACY_STORE_NAME], 'readwrite');
+    const liveCursor = transaction.objectStore(STORE_NAME).openCursor();
+    liveCursor.onsuccess = () => {
+      const cursor = liveCursor.result;
+      if (!cursor) return;
+      const [, time] = cursor.key as [string, number];
+      if (!Number.isFinite(time) || time < cacheCutoff('live')) cursor.delete();
+      cursor.continue();
+    };
+    const historyCursor = transaction.objectStore(LEGACY_STORE_NAME).openCursor();
+    historyCursor.onsuccess = () => {
+      const cursor = historyCursor.result;
       if (!cursor) return;
       const key = String(cursor.key);
-      const scope = key.startsWith(HISTORY_CACHE_PREFIX) ? 'history' : 'live';
+      if (!key.startsWith(HISTORY_CACHE_PREFIX)) {
+        cursor.delete();
+        cursor.continue();
+        return;
+      }
+      const cutoff = cacheCutoff('history');
       const cached = Array.isArray(cursor.value) ? cursor.value as MarketBar[] : [];
-      const cutoff = cacheCutoff(scope);
       const retained = cached.filter(bar => Number.isFinite(bar.time) && bar.time >= cutoff);
       if (retained.length !== cached.length) {
         if (retained.length) cursor.update(retained);
@@ -102,16 +121,16 @@ function hasFreshRecentBar(bars: MarketBar[], interval: string) {
   const secondsPerUnit = unit === 's' ? 1 : unit === 'm' ? 60 : unit === 'h' ? 3600 : 86400;
   const seconds = size * secondsPerUnit;
   const lastExpectedCandle = Math.floor(Date.now() / 1000 / seconds) * seconds - seconds;
-  return Number.isFinite(latest) && latest >= lastExpectedCandle - seconds;
+  return Number.isFinite(latest) && latest >= lastExpectedCandle;
 }
 
 /** Share an in-flight history request so entry/context charts and scanner
  * preloading never request the same symbol/interval twice. */
-export function requestRecentBars(symbol: string, interval: string, loader: () => Promise<MarketBar[]>): Promise<MarketBar[]> {
+export function requestRecentBars(symbol: string, interval: string, loader: (cachedBars: MarketBar[]) => Promise<MarketBar[]>): Promise<MarketBar[]> {
   const key = cacheKey(symbol, interval);
   const existing = recentRequests.get(key);
   if (existing) return existing;
-  const request = loader().finally(() => recentRequests.delete(key));
+  const request = readCachedBars(symbol, interval).then(cached => hasFreshRecentBar(cached, interval) ? cached : loader(cached)).finally(() => recentRequests.delete(key));
   recentRequests.set(key, request);
   return request;
 }
@@ -127,7 +146,7 @@ function drainPreloadQueue() {
 
 /** Schedule low-priority history warming without competing with a selected
  * symbol's immediate request. */
-export function preloadRecentBars(symbol: string, interval: string, loader: () => Promise<MarketBar[]>): Promise<MarketBar[]> {
+export function preloadRecentBars(symbol: string, interval: string, loader: (cachedBars: MarketBar[]) => Promise<MarketBar[]>): Promise<MarketBar[]> {
   return new Promise((resolve, reject) => {
     preloadQueue.push(() => {
       void readCachedBars(symbol, interval)
@@ -146,10 +165,31 @@ function openDatabase(): Promise<IDBDatabase> {
       reject(new Error('IndexedDB no está disponible'));
       return;
     }
-    const request = indexedDB.open(DATABASE_NAME, 1);
+    const request = indexedDB.open(DATABASE_NAME, DATABASE_VERSION);
     request.onupgradeneeded = () => {
       const database = request.result;
+      if (!database.objectStoreNames.contains(LEGACY_STORE_NAME)) database.createObjectStore(LEGACY_STORE_NAME);
       if (!database.objectStoreNames.contains(STORE_NAME)) database.createObjectStore(STORE_NAME);
+      const transaction = request.transaction;
+      if (!transaction) return;
+      const legacy = transaction.objectStore(LEGACY_STORE_NAME);
+      const destination = transaction.objectStore(STORE_NAME);
+      const cursorRequest = legacy.openCursor();
+      cursorRequest.onsuccess = () => {
+        const cursor = cursorRequest.result;
+        if (!cursor) return;
+        const seriesKey = String(cursor.key);
+        if (seriesKey.startsWith(HISTORY_CACHE_PREFIX)) {
+          cursor.continue();
+          return;
+        }
+        const bars = Array.isArray(cursor.value) ? cursor.value as MarketBar[] : [];
+        for (const bar of bars) {
+          if (Number.isFinite(bar.time)) destination.put(bar, [seriesKey, bar.time]);
+        }
+        cursor.delete();
+        cursor.continue();
+      };
     };
     request.onsuccess = () => {
       scheduleCacheCleanup();
@@ -164,20 +204,43 @@ export async function readCachedBars(symbol: string, interval: string, scope: Ma
   const cutoff = cacheCutoff(scope);
   pruneMemoryCache();
   const inMemory = memoryCache.get(key);
-  if (inMemory) return inMemory.filter(bar => bar.time >= cutoff);
+  if (inMemory) {
+    if (!inMemory.length || inMemory[0].time >= cutoff) return inMemory;
+    const retained = inMemory.filter(bar => bar.time >= cutoff);
+    memoryCache.set(key, retained);
+    return retained;
+  }
   try {
     const database = await openDatabase();
-    await pruneStoredCache(database);
-    return await new Promise((resolve, reject) => {
-      const request = database.transaction(STORE_NAME, 'readonly').objectStore(STORE_NAME).get(key);
-      request.onsuccess = () => {
-        const bars = Array.isArray(request.result) ? request.result : [];
-        const retained = bars.filter((bar: MarketBar) => Number.isFinite(bar.time) && bar.time >= cutoff);
-        memoryCache.set(key, retained);
-        resolve(retained);
-      };
-      request.onerror = () => reject(request.error ?? new Error('No se pudo leer el cache OHLC'));
-    });
+    try {
+      await pruneStoredCache(database);
+      const retained = await new Promise<MarketBar[]>((resolve, reject) => {
+        if (scope === 'history') {
+          const request = database.transaction(LEGACY_STORE_NAME, 'readonly').objectStore(LEGACY_STORE_NAME).get(key);
+          request.onsuccess = () => resolve((Array.isArray(request.result) ? request.result as MarketBar[] : []).filter(bar => Number.isFinite(bar.time) && bar.time >= cutoff));
+          request.onerror = () => reject(request.error ?? new Error('No se pudo leer el cache OHLC'));
+          return;
+        }
+        const range = IDBKeyRange.bound([key, Number.MIN_SAFE_INTEGER], [key, Number.MAX_SAFE_INTEGER]);
+        const request = database.transaction(STORE_NAME, 'readonly').objectStore(STORE_NAME).openCursor(range);
+        const bars: MarketBar[] = [];
+        request.onsuccess = () => {
+          const cursor = request.result;
+          if (!cursor) {
+            resolve(bars);
+            return;
+          }
+          const bar = cursor.value as MarketBar;
+          if (Number.isFinite(bar.time) && bar.time >= cutoff) bars.push(bar);
+          cursor.continue();
+        };
+        request.onerror = () => reject(request.error ?? new Error('No se pudo leer el cache OHLC'));
+      });
+      memoryCache.set(key, retained);
+      return retained;
+    } finally {
+      database.close();
+    }
   } catch {
     return [];
   }
@@ -185,25 +248,121 @@ export async function readCachedBars(symbol: string, interval: string, scope: Ma
 
 export async function cacheBars(symbol: string, interval: string, incoming: MarketBar[], scope: MarketCacheScope = 'live') {
   if (incoming.length === 0) return;
-  const existing = await readCachedBars(symbol, interval, scope);
-  const merged = [...new Map([...existing, ...incoming]
-    .filter(bar => Number.isFinite(bar.time))
-    .map(bar => [bar.time, bar] as const)).values()]
-    .sort((left, right) => left.time - right.time);
-  const cutoff = cacheCutoff(scope);
   const key = cacheKey(symbol, interval, scope);
-  const retained = merged.filter(bar => bar.time >= cutoff);
+  if (scope === 'history') {
+    const existing = await readCachedBars(symbol, interval, scope);
+    const merged = [...new Map([...existing, ...incoming]
+      .filter(bar => Number.isFinite(bar.time))
+      .map(bar => [bar.time, bar] as const)).values()]
+      .sort((left, right) => left.time - right.time);
+    const retained = merged.filter(bar => bar.time >= cacheCutoff(scope));
+    memoryCache.set(key, retained);
+    if (persistTimers.has(key)) window.clearTimeout(persistTimers.get(key));
+    persistTimers.set(key, window.setTimeout(() => {
+      void (async () => {
+        try {
+          const database = await openDatabase();
+          try {
+            await new Promise<void>((resolve, reject) => {
+              const transaction = database.transaction(LEGACY_STORE_NAME, 'readwrite');
+              const request = transaction.objectStore(LEGACY_STORE_NAME).put(memoryCache.get(key) ?? [], key);
+              transaction.oncomplete = () => resolve();
+              transaction.onerror = () => reject(transaction.error ?? new Error('No se pudo escribir el cache OHLC'));
+              request.onerror = () => reject(request.error ?? new Error('No se pudo escribir el cache OHLC'));
+            });
+          } finally {
+            database.close();
+          }
+        } catch {
+          // Charts must continue to work when browser storage is unavailable.
+        }
+      })();
+      persistTimers.delete(key);
+    }, 500));
+    return;
+  }
+  const cached = memoryCache.get(key) ?? await readCachedBars(symbol, interval, scope);
+  const retained = memoryCache.get(key) ?? cached;
+  const cutoff = cacheCutoff(scope);
+  const updates = incoming.filter(bar => Number.isFinite(bar.time) && bar.time >= cutoff).slice().sort((left, right) => left.time - right.time);
+  if (!updates.length) return;
+  const pending = pendingWrites.get(key) ?? new Map<number, MarketBar>();
+  let changed = false;
+  if (retained.length > 0 && updates[updates.length - 1].time < retained[0].time) {
+    retained.unshift(...updates);
+    for (const bar of updates) pending.set(bar.time, bar);
+    changed = true;
+  } else for (const bar of updates) {
+    const lastIndex = retained.length - 1;
+    const last = retained[lastIndex];
+    if (!last || bar.time > last.time) {
+      retained.push(bar);
+      changed = true;
+    } else if (bar.time === last.time) {
+      if (last.open !== bar.open || last.high !== bar.high || last.low !== bar.low || last.close !== bar.close) {
+        retained[lastIndex] = bar;
+        changed = true;
+      } else continue;
+    } else {
+      let low = 0;
+      let high = retained.length;
+      while (low < high) {
+        const middle = (low + high) >>> 1;
+        if (retained[middle].time < bar.time) low = middle + 1;
+        else high = middle;
+      }
+      const existing = retained[low];
+      if (existing?.time === bar.time) {
+        if (existing.open !== bar.open || existing.high !== bar.high || existing.low !== bar.low || existing.close !== bar.close) {
+          retained[low] = bar;
+          changed = true;
+        } else continue;
+      } else {
+        retained.splice(low, 0, bar);
+        changed = true;
+      }
+    }
+    pending.set(bar.time, bar);
+  }
+  let low = 0;
+  let high = retained.length;
+  while (low < high) {
+    const middle = (low + high) >>> 1;
+    if (retained[middle].time < cutoff) low = middle + 1;
+    else high = middle;
+  }
+  if (low > 0) retained.splice(0, low);
   memoryCache.set(key, retained);
+  if (!changed) return;
+  pendingWrites.set(key, pending);
   if (persistTimers.has(key)) window.clearTimeout(persistTimers.get(key));
   persistTimers.set(key, window.setTimeout(() => {
     void (async () => {
       try {
         const database = await openDatabase();
-        await new Promise<void>((resolve, reject) => {
-          const request = database.transaction(STORE_NAME, 'readwrite').objectStore(STORE_NAME).put(memoryCache.get(key) ?? [], key);
-          request.onsuccess = () => resolve();
-          request.onerror = () => reject(request.error ?? new Error('No se pudo escribir el cache OHLC'));
-        });
+        try {
+          const writes = pendingWrites.get(key);
+          if (!writes?.size) return;
+          pendingWrites.set(key, new Map());
+          try {
+            await new Promise<void>((resolve, reject) => {
+              const transaction = database.transaction(STORE_NAME, 'readwrite');
+              const store = transaction.objectStore(STORE_NAME);
+              for (const bar of writes.values()) store.put(bar, [key, bar.time]);
+              transaction.oncomplete = () => resolve();
+              transaction.onerror = () => reject(transaction.error ?? new Error('No se pudo escribir el cache OHLC'));
+              transaction.onabort = () => reject(transaction.error ?? new Error('Se canceló la escritura del cache OHLC'));
+            });
+            if (pendingWrites.get(key)?.size === 0) pendingWrites.delete(key);
+          } catch (error) {
+            const retry = pendingWrites.get(key) ?? new Map<number, MarketBar>();
+            for (const [time, bar] of writes) if (!retry.has(time)) retry.set(time, bar);
+            pendingWrites.set(key, retry);
+            throw error;
+          }
+        } finally {
+          database.close();
+        }
       } catch {
         // Charts must continue to work when browser storage is unavailable.
       }
