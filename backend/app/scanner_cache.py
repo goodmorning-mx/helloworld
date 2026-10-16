@@ -24,7 +24,7 @@ class ScannerCache:
         self,
         *,
         max_symbols: int = 100,
-        max_bars: int = 1500,
+        max_bars: int = 2880,
         refresh_seconds: float = 5.0,
         retention_seconds: float = 48 * 60 * 60,
     ) -> None:
