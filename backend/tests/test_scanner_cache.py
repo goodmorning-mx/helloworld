@@ -2,7 +2,7 @@ import asyncio
 import time
 
 from app import main
-from app.scanner_cache import ScannerCache
+from app.scanner_cache import SCANNER_WINDOW_SECONDS, ScannerCache
 
 
 def test_refresh_bars_shares_in_flight_request_and_merges_incrementally() -> None:
@@ -205,6 +205,7 @@ def test_scanner_endpoint_fetches_only_new_closed_candles(monkeypatch) -> None:
             return Response(self.second_rows)
 
     now_seconds = [int(time.time() // 60 * 60) + 5]
+    expected_window_start = ((now_seconds[0] - SCANNER_WINDOW_SECONDS) // 60 * 60) * 1000
     monkeypatch.setattr(main.time, "time", lambda: now_seconds[0])
     monkeypatch.setattr(main, "_scanner_cache", ScannerCache(refresh_seconds=0))
     monkeypatch.setattr(main.httpx, "AsyncClient", Client)
@@ -221,7 +222,7 @@ def test_scanner_endpoint_fetches_only_new_closed_candles(monkeypatch) -> None:
     first, second, third, fourth = asyncio.run(scenario())
     assert len(Client.calls) == 4
     assert Client.calls[0]["limit"] == 100
-    assert "startTime" not in Client.calls[0]
+    assert Client.calls[0]["startTime"] == expected_window_start
     assert Client.calls[1]["startTime"] == int(first["symbols"][0]["last_bar_time"]) * 1000 - 60_000
     assert first["symbols"][0]["status"] == "VALID"
     assert second["symbols"][0]["status"] == "VALID"
@@ -237,11 +238,11 @@ def test_scanner_endpoint_fetches_only_new_closed_candles(monkeypatch) -> None:
         leverage=10, include_operations=True, identity=None,
     ))
     assert detail["config"]["leverage"] == 10
-    assert detail["window_seconds"] == 48 * 60 * 60
+    assert detail["window_seconds"] == 8 * 60 * 60
     assert detail["symbols"][0]["operations"] == len(detail["symbols"][0]["operation_details"])
 
 
-def test_scanner_cold_load_pages_full_48_hour_window(monkeypatch) -> None:
+def test_scanner_cold_loads_8_hour_window_in_one_page(monkeypatch) -> None:
     class Response:
         def __init__(self, rows):
             self.rows = rows
@@ -253,7 +254,7 @@ def test_scanner_cold_load_pages_full_48_hour_window(monkeypatch) -> None:
             return self.rows
 
     now_seconds = int(time.time() // 60 * 60) + 5
-    window_start = (now_seconds - 48 * 60 * 60) // 60 * 60
+    window_start = (now_seconds - 8 * 60 * 60) // 60 * 60
 
     class Client:
         calls = []
@@ -282,10 +283,9 @@ def test_scanner_cold_load_pages_full_48_hour_window(monkeypatch) -> None:
     monkeypatch.setattr(main.httpx, "AsyncClient", Client)
     monkeypatch.setattr(main, "analyze_tracker", cheap_analysis)
 
-    payload = asyncio.run(main.binance_scanner_analysis(symbols="BTCUSDT", limit=2880, movement_averages="", identity=None))
-    assert len(Client.calls) == 2
+    payload = asyncio.run(main.binance_scanner_analysis(symbols="BTCUSDT", limit=480, movement_averages="", identity=None))
+    assert len(Client.calls) == 1
     assert Client.calls[0]["startTime"] == window_start * 1000
-    assert Client.calls[0]["limit"] == 1500
-    assert Client.calls[1]["limit"] == 1380
-    assert payload["symbols"][0]["bars"] == 2880
-    assert payload["window_seconds"] == 48 * 60 * 60
+    assert Client.calls[0]["limit"] == 480
+    assert payload["symbols"][0]["bars"] == 480
+    assert payload["window_seconds"] == 8 * 60 * 60
