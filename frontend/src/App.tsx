@@ -1848,7 +1848,10 @@ function Workspace() {
         nativePriceLinesRef.current.push({ series, line: targetLine }, { series, line: stopLine });
       });
       if (!showTracker) return;
-      const sourceBars = canvas === 'entry' ? candleBarsRef.current : overviewBarsRef.current;
+      // Tracker is the entry strategy and uses the same closed 1m candles as
+      // the scanner. Keep its levels identical on both chart canvases; the
+      // context chart's selected interval only changes its candle display.
+      const sourceBars = candleBarsRef.current;
       const trackerWindow = sourceBars.slice(-(trackerPeriod + 1));
       const trackerValues = calculateTrackerLevels(trackerWindow, trackerPeriod);
       const latest = trackerValues[trackerValues.length - 1];
@@ -2727,19 +2730,11 @@ function Workspace() {
       if (index >= bars.length - 1) return null;
       const level = trackerLevels[index];
       if (!level) return null;
-      const signal = bar.close >= level.h1 && bar.close >= level.h2
-        ? { side: 'SHORT', level: 'H2' }
-        : bar.close >= level.h1 && bar.close < level.h2
-          ? { side: 'SHORT', level: 'H1' }
-          : bar.close <= level.l1 && bar.close > level.l2
-            ? { side: 'LONG', level: 'L1' }
-            : bar.close <= level.l2 && bar.close <= level.l1
-              ? { side: 'LONG', level: 'L2' }
-              : null;
+      const signal = calculateTrackerSignal(bar.close, level);
       if (!signal) return null;
       const point = toPoint(bar.close, index);
       if (!point) return null;
-      return <circle key={`tracker-signal-${bar.time}`} cx={point.x} cy={point.y} r="5" className={`tracker-signal tracker-signal-${signal.side.toLowerCase()}`}><title>Tracker {signal.side} · {signal.level} · cierre {formatPaperPrice(bar.close)}</title></circle>;
+      return <circle key={`tracker-signal-${bar.time}`} cx={point.x} cy={point.y} r="5" className={`tracker-signal tracker-signal-${signal.side}`}><title>Tracker {signal.side.toUpperCase()} · {signal.level} · cierre {formatPaperPrice(bar.close)}</title></circle>;
     }) : [];
     const trackerStartMarker = canvas === 'entry' && showTracker ? (() => {
       const startIndex = trackerLevels.findIndex(level => Boolean(level));
