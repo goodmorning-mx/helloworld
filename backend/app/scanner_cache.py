@@ -10,6 +10,9 @@ from typing import Any, Awaitable, Callable
 
 BarsLoader = Callable[[list[dict[str, Any]]], Awaitable[list[dict[str, Any]]]]
 
+SCANNER_WINDOW_SECONDS = 8 * 60 * 60
+SCANNER_MAX_BARS = SCANNER_WINDOW_SECONDS // 60
+
 
 class ScannerCache:
     """Share candle refreshes and analysis work across scanner requests.
@@ -24,9 +27,9 @@ class ScannerCache:
         self,
         *,
         max_symbols: int = 100,
-        max_bars: int = 2880,
+        max_bars: int = SCANNER_MAX_BARS,
         refresh_seconds: float = 5.0,
-        retention_seconds: float = 48 * 60 * 60,
+        retention_seconds: float = SCANNER_WINDOW_SECONDS,
     ) -> None:
         self.max_symbols = max_symbols
         self.max_bars = max_bars

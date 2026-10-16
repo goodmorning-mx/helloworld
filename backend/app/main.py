@@ -43,7 +43,7 @@ from app.backtest_engine import MAX_BACKTEST_DAYS, fetch_binance_history, run_st
 from app.production_worker import ProductionWorkerConfigStore, ProductionWorkerManager
 from app.telegram_service import BackendEventBus, TelegramCommandService, TelegramSink, telegram_event_sink
 from app.scanner_analysis import ScannerAnalysisConfig, activity_state, analyze_tracker, analyze_tracker_operations
-from app.scanner_cache import ScannerCache
+from app.scanner_cache import SCANNER_MAX_BARS, SCANNER_WINDOW_SECONDS, ScannerCache
 from app.profiling import Profiling
 
 settings = get_settings()
@@ -972,7 +972,7 @@ async def binance_scanner_analysis(
     initial_balance: float = 100.0,
     risk_percent: float = 1.0,
     leverage: float = 1.0,
-    limit: int = 2880,
+    limit: int = SCANNER_MAX_BARS,
     movement_averages: str = Query("", description="Optional comma-separated 1m movement averages matching symbols."),
     include_operations: bool = False,
     identity: AuthIdentity = Depends(identity_dependency(auth_service)),
@@ -994,7 +994,7 @@ async def binance_scanner_analysis(
         risk_percent=max(0.01, min(float(risk_percent), 100)),
         leverage=max(1.0, min(float(leverage), 125)),
     )
-    safe_limit = max(100, min(int(limit), 2880))
+    safe_limit = max(100, min(int(limit), SCANNER_MAX_BARS))
     semaphore = asyncio.Semaphore(5)
     request_profile = Profiling("scanner_analysis")
     config_key = (*tuple(vars(config).items()), ("limit", safe_limit))
@@ -1006,13 +1006,12 @@ async def binance_scanner_analysis(
 
             async def load_new_bars(existing: list[dict[str, object]]) -> list[dict[str, object]]:
                 profile.mark("fetch_klines_start", cached_bars=len(existing), limit=safe_limit)
-                # Scanner and Tracker use the same rolling two-day closed-candle
-                # window. Binance caps each page at 1,500 rows, so a cold cache
-                # fills the window in bounded pages and a warm cache appends only
-                # from its latest candle.
+                # Scanner and Tracker use the same rolling 8-hour closed-candle
+                # window. A cold cache fits in one Binance page; a warm cache
+                # appends only from its latest candle.
                 now_seconds = int(time.time())
-                window_start = max(0, (now_seconds - 48 * 60 * 60) // 60 * 60)
-                cursor: int | None = max(window_start, int(existing[-1]["time"]) - 60) if existing else (window_start if safe_limit > 1500 else None)
+                window_start = max(0, (now_seconds - SCANNER_WINDOW_SECONDS) // 60 * 60)
+                cursor: int | None = max(window_start, int(existing[-1]["time"]) - 60) if existing else window_start
                 now_ms = int(time.time() * 1000)
                 bars: list[dict[str, object]] = []
                 rows_received = 0
@@ -1111,7 +1110,7 @@ async def binance_scanner_analysis(
     request_profile.mark("activity_classification_end", changed_states=sum(1 for row in rows if row.get("activity_state")))
     if not include_operations:
         rows = [{key: value for key, value in row.items() if key != "operation_details"} for row in rows]
-    return {"symbols": rows, "updated_at": int(time.time()), "cache_ttl_seconds": 5, "window_seconds": 48 * 60 * 60, "config": {"tracker_period": config.tracker_period, "stop_percent": config.stop_percent, "initial_balance": config.initial_balance, "risk_percent": config.risk_percent, "leverage": config.leverage}, "profiling": request_profile.snapshot()}
+    return {"symbols": rows, "updated_at": int(time.time()), "cache_ttl_seconds": 5, "window_seconds": SCANNER_WINDOW_SECONDS, "config": {"tracker_period": config.tracker_period, "stop_percent": config.stop_percent, "initial_balance": config.initial_balance, "risk_percent": config.risk_percent, "leverage": config.leverage}, "profiling": request_profile.snapshot()}
 
 
 @app.websocket("/market/binance/stream/{symbol}")

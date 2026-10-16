@@ -100,8 +100,8 @@ The incremental scanner cache was introduced in PR #18 and refined with a closed
 
 - The frontend requests the active scanner universe, then analyzes symbols one at a time and updates each card as its result arrives. This keeps the CPU-heavy Tracker calculations from competing with one another and preserves progressive feedback.
 - The active-universe endpoint requests only `horizon + 1` candles per symbol and loads symbols with bounded concurrency.
-- The backend keeps a bounded process-local cache of active-universe snapshots, closed 1m candles (up to 1,500 per symbol), and analyses keyed by symbol, strategy configuration, and latest closed candle.
-- Scanner candles and analysis entries expire after 48 hours without a successful candle refresh. Browser live-market OHLC uses a rolling two-day window and refreshes stale preloads; the Lab's 30-day history remains in a separate 31-day cache.
+- The backend keeps a bounded process-local cache of active-universe snapshots, closed 1m candles (up to 480 per symbol), and analyses keyed by symbol, strategy configuration, and latest closed candle.
+- Scanner candles and analysis entries expire after 8 hours without a successful candle refresh; Tracker analysis uses up to 480 closed 1m candles. Browser live-market OHLC keeps its separate rolling two-day window and refreshes stale preloads; the Lab's 30-day history remains in a separate 31-day cache.
 - Candle history is loaded on a cold symbol; later refreshes request only from the last cached candle. The backend skips Binance requests while the latest expected closed candle is already cached and retries symbols whose refresh failed.
 - Identical candle refreshes and analysis calculations share in-flight tasks.
 - Network failures preserve metrics and report `STALE`; symbols with no prior result report a recoverable error. The next scanner cycle retries stale symbols.
