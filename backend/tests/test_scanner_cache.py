@@ -231,3 +231,61 @@ def test_scanner_endpoint_fetches_only_new_closed_candles(monkeypatch) -> None:
     assert third["symbols"][0]["tp_optimal_percent"] == second["symbols"][0]["tp_optimal_percent"]
     assert fourth["symbols"][0]["status"] == "VALID"
     assert "error" not in fourth["symbols"][0]
+
+    detail = asyncio.run(main.binance_scanner_analysis(
+        symbols="BTCUSDT", tracker_period=2, limit=100, movement_averages="0.5",
+        leverage=10, include_operations=True, identity=None,
+    ))
+    assert detail["config"]["leverage"] == 10
+    assert detail["window_seconds"] == 48 * 60 * 60
+    assert detail["symbols"][0]["operations"] == len(detail["symbols"][0]["operation_details"])
+
+
+def test_scanner_cold_load_pages_full_48_hour_window(monkeypatch) -> None:
+    class Response:
+        def __init__(self, rows):
+            self.rows = rows
+
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return self.rows
+
+    now_seconds = int(time.time() // 60 * 60) + 5
+    window_start = (now_seconds - 48 * 60 * 60) // 60 * 60
+
+    class Client:
+        calls = []
+
+        def __init__(self, timeout):
+            assert timeout == 15
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return None
+
+        async def get(self, _url, params):
+            self.calls.append(dict(params))
+            start = int(params["startTime"] / 1000)
+            count = int(params["limit"])
+            rows = [[(start + index * 60) * 1000, "100", "101", "99", "100", "0", (start + index * 60) * 1000 + 59_999] for index in range(count)]
+            return Response(rows)
+
+    def cheap_analysis(bars, config, profiling):
+        return {"tp_optimal_percent": 1.0, "average_duration_minutes": None, "operations": 0, "wins": 0, "losses": 0, "equity_final": config.initial_balance, "final_result_usdt": 0.0, "loss_limit_percent": 0.0, "last_bar_time": bars[-1]["time"], "bars": len(bars), "operation_details": []}
+
+    monkeypatch.setattr(main.time, "time", lambda: now_seconds)
+    monkeypatch.setattr(main, "_scanner_cache", ScannerCache(refresh_seconds=0))
+    monkeypatch.setattr(main.httpx, "AsyncClient", Client)
+    monkeypatch.setattr(main, "analyze_tracker", cheap_analysis)
+
+    payload = asyncio.run(main.binance_scanner_analysis(symbols="BTCUSDT", limit=2880, movement_averages="", identity=None))
+    assert len(Client.calls) == 2
+    assert Client.calls[0]["startTime"] == window_start * 1000
+    assert Client.calls[0]["limit"] == 1500
+    assert Client.calls[1]["limit"] == 1380
+    assert payload["symbols"][0]["bars"] == 2880
+    assert payload["window_seconds"] == 48 * 60 * 60

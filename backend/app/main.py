@@ -42,7 +42,7 @@ from app.binance_tp_worker import BinanceTakeProfitWorker
 from app.backtest_engine import MAX_BACKTEST_DAYS, fetch_binance_history, run_storycard_backtest, _bar_context
 from app.production_worker import ProductionWorkerConfigStore, ProductionWorkerManager
 from app.telegram_service import BackendEventBus, TelegramCommandService, TelegramSink, telegram_event_sink
-from app.scanner_analysis import ScannerAnalysisConfig, activity_state, analyze_tracker
+from app.scanner_analysis import ScannerAnalysisConfig, activity_state, analyze_tracker, analyze_tracker_operations
 from app.scanner_cache import ScannerCache
 from app.profiling import Profiling
 
@@ -972,8 +972,9 @@ async def binance_scanner_analysis(
     initial_balance: float = 100.0,
     risk_percent: float = 1.0,
     leverage: float = 1.0,
-    limit: int = 1500,
+    limit: int = 2880,
     movement_averages: str = Query("", description="Optional comma-separated 1m movement averages matching symbols."),
+    include_operations: bool = False,
     identity: AuthIdentity = Depends(identity_dependency(auth_service)),
 ) -> dict[str, object]:
     """Analyze the scanner universe without requiring a chart to be selected.
@@ -993,7 +994,7 @@ async def binance_scanner_analysis(
         risk_percent=max(0.01, min(float(risk_percent), 100)),
         leverage=max(1.0, min(float(leverage), 125)),
     )
-    safe_limit = max(100, min(int(limit), 1500))
+    safe_limit = max(100, min(int(limit), 2880))
     semaphore = asyncio.Semaphore(5)
     request_profile = Profiling("scanner_analysis")
     config_key = (*tuple(vars(config).items()), ("limit", safe_limit))
@@ -1005,30 +1006,47 @@ async def binance_scanner_analysis(
 
             async def load_new_bars(existing: list[dict[str, object]]) -> list[dict[str, object]]:
                 profile.mark("fetch_klines_start", cached_bars=len(existing), limit=safe_limit)
-                # Re-fetch the most recent cached candle so upstream corrections
-                # are merged, then ask Binance only for the subsequent candles.
-                params: dict[str, object] = {"symbol": symbol, "interval": "1m", "limit": safe_limit}
-                if existing and int(time.time()) - int(existing[-1]["time"]) < _scanner_cache.retention_seconds:
-                    params = {"symbol": symbol, "interval": "1m", "startTime": max(0, int(existing[-1]["time"]) * 1000 - 60_000), "limit": 1500}
-                with profile.measure("fetch_klines"):
-                    async with httpx.AsyncClient(timeout=15) as client:
-                        response = await client.get(f"{settings.binance_base_url.rstrip('/')}/fapi/v1/klines", params=params)
-                        response.raise_for_status()
-                        payload = response.json()
+                # Scanner and Tracker use the same rolling two-day closed-candle
+                # window. Binance caps each page at 1,500 rows, so a cold cache
+                # fills the window in bounded pages and a warm cache appends only
+                # from its latest candle.
+                now_seconds = int(time.time())
+                window_start = max(0, (now_seconds - 48 * 60 * 60) // 60 * 60)
+                cursor: int | None = max(window_start, int(existing[-1]["time"]) - 60) if existing else (window_start if safe_limit > 1500 else None)
                 now_ms = int(time.time() * 1000)
                 bars: list[dict[str, object]] = []
-                with profile.measure("parse_response"):
-                    for row in payload if isinstance(payload, list) else []:
-                        if not isinstance(row, list) or len(row) < 7:
-                            continue
-                        try:
-                            # Ignore Binance's still-forming 1m candle.
-                            if int(row[6]) >= now_ms:
-                                continue
-                            bars.append({"time": int(float(row[0]) / 1000), "open": float(row[1]), "high": float(row[2]), "low": float(row[3]), "close": float(row[4])})
-                        except (TypeError, ValueError):
-                            continue
-                profile.mark("fetch_klines_end", rows=len(payload) if isinstance(payload, list) else 0, closed_bars=len(bars))
+                rows_received = 0
+                with profile.measure("fetch_klines"):
+                    async with httpx.AsyncClient(timeout=15) as client:
+                        while (cursor is None or cursor * 1000 < now_ms) and len(bars) < safe_limit:
+                            page_limit = min(1500, safe_limit - len(bars))
+                            params: dict[str, object] = {"symbol": symbol, "interval": "1m", "limit": page_limit}
+                            if cursor is not None:
+                                params["startTime"] = cursor * 1000
+                            response = await client.get(f"{settings.binance_base_url.rstrip('/')}/fapi/v1/klines", params=params)
+                            response.raise_for_status()
+                            payload = response.json()
+                            page = payload if isinstance(payload, list) else []
+                            rows_received += len(page)
+                            for row in page:
+                                if not isinstance(row, list) or len(row) < 7:
+                                    continue
+                                try:
+                                    # Ignore Binance's still-forming candle and
+                                    # anything older than the shared rolling window.
+                                    timestamp = int(float(row[0]) / 1000)
+                                    if int(row[6]) >= now_ms or timestamp < window_start:
+                                        continue
+                                    bars.append({"time": timestamp, "open": float(row[1]), "high": float(row[2]), "low": float(row[3]), "close": float(row[4])})
+                                except (TypeError, ValueError):
+                                    continue
+                            if len(page) < page_limit or not page or (cursor is None and safe_limit <= 1500):
+                                break
+                            next_cursor = int(float(page[-1][0]) / 1000) + 60
+                            if next_cursor <= cursor:
+                                break
+                            cursor = next_cursor
+                profile.mark("fetch_klines_end", rows=rows_received, closed_bars=len(bars), window_start=window_start)
                 return bars
 
             expected_latest_closed_bar = (int(time.time()) // 60) * 60 - 60
@@ -1045,7 +1063,9 @@ async def binance_scanner_analysis(
                 profile.mark("analysis_cache_hit", last_bar_time=last_bar_time)
             elif bars:
                 async def calculate() -> dict[str, object]:
-                    return await asyncio.to_thread(analyze_tracker, bars, config, profile)
+                    result = await asyncio.to_thread(analyze_tracker, bars, config, profile)
+                    result.pop("operation_details", None)
+                    return result
                 try:
                     with profile.measure("analysis_cache_or_compute"):
                         analysis = await _scanner_cache.analyze_once(symbol, config_key, last_bar_time, calculate)
@@ -1060,6 +1080,10 @@ async def binance_scanner_analysis(
                 if previous:
                     return {"symbol": symbol, **previous[1], "status": "STALE", "error": fetch_error or "Sin velas cerradas disponibles.", "stale_since_bar_time": previous[0], "profiling": profile.snapshot()}
                 return {"symbol": symbol, "status": "ERROR", "error": fetch_error or "Sin velas cerradas disponibles.", "tp_optimal_percent": None, "average_duration_minutes": None, "operations": 0, "wins": 0, "losses": 0, "equity_final": None, "final_result_usdt": None, "last_bar_time": None, "bars": 0, "profiling": profile.snapshot()}
+
+            if include_operations and "operation_details" not in analysis and analysis.get("tp_optimal_percent") is not None:
+                details = await asyncio.to_thread(analyze_tracker_operations, bars, config, float(analysis["tp_optimal_percent"]), profile)
+                analysis = {**analysis, **details}
 
             status = "STALE" if fetch_error else "VALID"
             row: dict[str, object] = {"symbol": symbol, **analysis, "status": status, "profiling": profile.snapshot()}
@@ -1085,7 +1109,9 @@ async def binance_scanner_analysis(
                 _scanner_analysis_states[str(row["symbol"])] = str(row["activity_state"])
                 await backend_events.publish({"type": "SCANNER_STATE_CHANGED", "symbol": row["symbol"], "state": row["activity_state"], "tp_optimal_percent": row["tp_optimal_percent"], "average_duration_minutes": row["average_duration_minutes"], "movement_average_percent": movement})
     request_profile.mark("activity_classification_end", changed_states=sum(1 for row in rows if row.get("activity_state")))
-    return {"symbols": rows, "updated_at": int(time.time()), "cache_ttl_seconds": 5, "config": {"tracker_period": config.tracker_period, "stop_percent": config.stop_percent, "initial_balance": config.initial_balance, "risk_percent": config.risk_percent, "leverage": config.leverage}, "profiling": request_profile.snapshot()}
+    if not include_operations:
+        rows = [{key: value for key, value in row.items() if key != "operation_details"} for row in rows]
+    return {"symbols": rows, "updated_at": int(time.time()), "cache_ttl_seconds": 5, "window_seconds": 48 * 60 * 60, "config": {"tracker_period": config.tracker_period, "stop_percent": config.stop_percent, "initial_balance": config.initial_balance, "risk_percent": config.risk_percent, "leverage": config.leverage}, "profiling": request_profile.snapshot()}
 
 
 @app.websocket("/market/binance/stream/{symbol}")

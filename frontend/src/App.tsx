@@ -100,6 +100,47 @@ type TrackerVirtualOperation = {
   minRoe: TrackerExtremePoint;
   realMinRoe: TrackerExtremePoint;
 };
+type TrackerScannerOperation = {
+  side: 'LONG' | 'SHORT'; entry_time: number; entry_price: number; exit_time: number; exit_price: number;
+  min_roe: number; min_roe_time: number; min_roe_price: number; max_roe: number; max_roe_time: number; max_roe_price: number;
+  real_min_roe: number; real_min_roe_time: number; real_min_roe_price: number; real_max_roe: number; real_max_roe_time: number; real_max_roe_price: number;
+  raw_min_roe?: number; pnl: number; raw_pnl?: number;
+  fees: number; notional: number; leverage: number; level: 'H1' | 'H2' | 'L1' | 'L2';
+  body_average_percent_at_open: number; body_average_percent_at_close: number;
+  close_reason: 'TP' | 'SL'; status: 'WIN' | 'FAIL'; raw_status?: 'WIN' | 'FAIL';
+  result_roe: number; raw_result_roe?: number; balance_after: number; duration_minutes: number;
+};
+function trackerOperationsFromScanner(records: TrackerScannerOperation[], targetPercent: number, stopPercent: number): TrackerVirtualOperation[] {
+  return records.map((record, index) => {
+    const direction = record.side === 'LONG' ? 1 : -1;
+    const point = (roePercent: number, time: number, closePrice?: number): TrackerExtremePoint => ({
+      time,
+      price: closePrice ?? record.entry_price * (1 + direction * roePercent / Math.max(1, record.leverage) / 100),
+      roePercent,
+      pnlUsd: roePercent / Math.max(1, record.leverage) / 100 * record.notional,
+    });
+    const entry = { time: record.entry_time, price: record.entry_price };
+    const exit = { time: record.exit_time, price: record.exit_price };
+    const min = point(record.min_roe, record.min_roe_time, record.min_roe_price);
+    const max = point(record.max_roe, record.max_roe_time, record.max_roe_price);
+    return {
+      id: `scanner-tracker-${record.entry_time}-${record.side}-${index}`,
+      side: record.side.toLowerCase() as 'long' | 'short', level: record.level,
+      start: entry, end: exit,
+      stop: { time: entry.time, price: entry.price * (1 - direction * Math.abs(stopPercent) / 100) },
+      target: { time: exit.time, price: entry.price * (1 + direction * Math.abs(targetPercent) / 100) },
+      closed: true, closeReason: record.close_reason,
+      status: record.status === 'WIN' ? 'CLOSED - WIN' : 'CLOSED - FAILED',
+      pnl: record.pnl, resultRoePercent: record.result_roe, notional: record.notional, leverage: record.leverage,
+      fees: record.fees, balanceAfter: record.balance_after,
+      bodyAveragePercentAtOpen: record.body_average_percent_at_open, bodyAveragePercentAtClose: record.body_average_percent_at_close,
+      finalTargetPercent: Math.abs((record.raw_result_roe ?? record.result_roe) / Math.max(1, record.leverage)),
+      finalTargetRoePercent: Math.abs(record.raw_result_roe ?? record.result_roe),
+      maxRoe: max, realMaxRoe: point(record.real_max_roe, record.real_max_roe_time, record.real_max_roe_price),
+      minRoe: min, realMinRoe: point(record.real_min_roe, record.real_min_roe_time, record.real_min_roe_price),
+    };
+  });
+}
 type TrackerLossLimitSummary = { limit: number; winsKept: number; lossesLimited: number; winCoverage: number; lossCoverage: number; targetDistance: number };
 
 function findBestTrackerLossLimit(operations: TrackerVirtualOperation[]): TrackerLossLimitSummary {
@@ -1357,13 +1398,16 @@ function Workspace() {
   const [paperStatsTo, setPaperStatsTo] = useState('');
   const [showPaperSettings, setShowPaperSettings] = useState(false);
   const [paperInitialBalance, setPaperInitialBalance] = useState(() => { const value = Number(localStorage.getItem('helloworld-paper-balance') ?? 100); return Number.isFinite(value) && value >= 1 ? value : 100; });
+  const scannerTheoreticalLeverage = (() => { const value = Number((JSON.parse(localStorage.getItem('helloworld-paper-assist') ?? '{}') as { leverage?: number }).leverage ?? 10); return Number.isFinite(value) && value > 0 ? value : 10; })();
+  const scannerSelectedLeverage = Math.min(scannerTheoreticalLeverage, maxLeverageFor('binance', symbol));
   const [depositAmount, setDepositAmount] = useState('');
   const [paperRiskPercent, setPaperRiskPercent] = useState(() => Number(JSON.parse(localStorage.getItem('helloworld-paper-assist') ?? '{}').riskPercent ?? 1) || 1);
   type ActiveMarketSymbol = { symbol: string; last_price: number; change_pct: number; movement_pct: number; range_pct: number; quote_volume: number; trades: number; score: number; max_leverage: number | null; horizon: number; interval: string; variation_sum_pct: number; variation_average_pct: number };
-  type ScannerAnalysis = { symbol: string; status: 'ANALYZING' | 'VALID' | 'STALE' | 'ERROR'; tp_optimal_percent: number | null; average_duration_minutes: number | null; activity_state?: 'DORMIDA' | 'DESPERTANDO' | 'ACTIVA'; operations: number; wins: number; losses: number; equity_final: number | null; final_result_usdt: number | null; last_bar_time: number | null; bars: number; error?: string; profiling?: { total_ms?: number; stages?: Array<{ stage: string; total_ms: number; last_ms: number; max_ms: number; count: number }> } };
+  type ScannerAnalysis = { symbol: string; status: 'ANALYZING' | 'VALID' | 'STALE' | 'ERROR'; tp_optimal_percent: number | null; average_duration_minutes: number | null; activity_state?: 'DORMIDA' | 'DESPERTANDO' | 'ACTIVA'; operations: number; wins: number; losses: number; win_rate?: number; equity_final: number | null; final_result_usdt: number | null; loss_limit_percent?: number; last_bar_time: number | null; bars: number; operation_details?: TrackerScannerOperation[]; error?: string; profiling?: { total_ms?: number; stages?: Array<{ stage: string; total_ms: number; last_ms: number; max_ms: number; count: number }> } };
   type ScannerSortKey = 'operations' | 'wins' | 'losses' | 'tp_optimal_percent' | 'average_duration_minutes' | 'final_result_usdt';
   const [activeMarketSymbols, setActiveMarketSymbols] = useState<ActiveMarketSymbol[]>([]);
   const [scannerAnalysisBySymbol, setScannerAnalysisBySymbol] = useState<Record<string, ScannerAnalysis>>({});
+  const [trackerScannerDetail, setTrackerScannerDetail] = useState<ScannerAnalysis | null>(null);
   const [scannerSort, setScannerSort] = useState<{ key: ScannerSortKey; direction: 'asc' | 'desc' }>({ key: 'operations', direction: 'desc' });
   const scannerProfilerRef = useRef(new Profiling('scanner'));
   const [scannerProfiling, setScannerProfiling] = useState<ProfilingSnapshot>(() => scannerProfilerRef.current.snapshot());
@@ -1548,7 +1592,8 @@ function Workspace() {
           for (const [index, candidate] of markets.entries()) {
             if (!active) return;
             try {
-              const analysis = await scannerProfilerRef.current.measure('scanner.symbol_analysis', () => fetchJson<{ symbols?: ScannerAnalysis[] }>(`${apiUrl}/market/binance/scanner-analysis?symbols=${encodeURIComponent(candidate.symbol)}&movement_averages=${encodeURIComponent(String(candidate.variation_average_pct))}&tracker_period=${trackerPeriod}&stop_percent=${binanceStopPercent}&initial_balance=${paperInitialBalance}&risk_percent=${paperRiskPercent}&limit=1500`, { headers: auth.accessToken ? { Authorization: `Bearer ${auth.accessToken}` } : undefined, credentials: 'include' }));
+              const candidateLeverage = Math.min(scannerTheoreticalLeverage, maxLeverageFor('binance', candidate.symbol));
+              const analysis = await scannerProfilerRef.current.measure('scanner.symbol_analysis', () => fetchJson<{ symbols?: ScannerAnalysis[] }>(`${apiUrl}/market/binance/scanner-analysis?symbols=${encodeURIComponent(candidate.symbol)}&movement_averages=${encodeURIComponent(String(candidate.variation_average_pct))}&tracker_period=${trackerPeriod}&stop_percent=${binanceStopPercent}&initial_balance=${paperInitialBalance}&risk_percent=${paperRiskPercent}&leverage=${candidateLeverage}&limit=2880`, { headers: auth.accessToken ? { Authorization: `Bearer ${auth.accessToken}` } : undefined, credentials: 'include' }));
               const row = analysis.symbols?.[0];
               if (row) {
                 hadAnalysisErrors ||= row.status === 'ERROR' || row.status === 'STALE';
@@ -1597,7 +1642,45 @@ function Workspace() {
     void loadActiveMarkets();
     const timer = window.setInterval(() => void loadActiveMarkets(), 60_000);
     return () => { active = false; window.clearInterval(timer); };
-  }, [auth.accessToken, broker, trackerPeriod, binanceStopPercent, paperInitialBalance, paperRiskPercent]);
+  }, [auth.accessToken, broker, trackerPeriod, binanceStopPercent, paperInitialBalance, paperRiskPercent, scannerTheoreticalLeverage]);
+
+  useEffect(() => {
+    setTrackerScannerDetail(null);
+    if (broker !== 'binance' || !showTracker || replayState.active) return;
+    let active = true;
+    const refreshSelectedTracker = async () => {
+      try {
+        const query = new URLSearchParams({
+          symbols: symbol,
+          tracker_period: String(trackerPeriod),
+          stop_percent: String(binanceStopPercent),
+          initial_balance: String(paperInitialBalance),
+          risk_percent: String(paperRiskPercent),
+          leverage: String(scannerSelectedLeverage),
+          limit: '2880',
+          include_operations: 'true',
+        });
+        const payload = await fetchJson<{ symbols?: ScannerAnalysis[] }>(`${apiUrl}/market/binance/scanner-analysis?${query}`, {
+          headers: auth.accessToken ? { Authorization: `Bearer ${auth.accessToken}` } : undefined,
+          credentials: 'include',
+        });
+        const row = payload.symbols?.[0];
+        if (!active || !row || !row.operation_details || (row.status !== 'VALID' && row.status !== 'STALE')) return;
+        setTrackerScannerDetail(row);
+        if (row.tp_optimal_percent != null) {
+          setBinanceTargetPercent(current => current === row.tp_optimal_percent ? current : row.tp_optimal_percent!);
+          localStorage.setItem('helloworld-binance-target-percent', String(row.tp_optimal_percent));
+          setTrackerLossLimitEnabled(true);
+          setTpOptimizationResult({ targetPercent: row.tp_optimal_percent, equity: row.equity_final ?? paperInitialBalance, lossLimit: row.loss_limit_percent ?? 0, wins: row.wins, losses: row.losses });
+        }
+      } catch {
+        // Keep the last selected-symbol result visible if a refresh is transiently unavailable.
+      }
+    };
+    void refreshSelectedTracker();
+    const timer = window.setInterval(() => void refreshSelectedTracker(), 60_000);
+    return () => { active = false; window.clearInterval(timer); };
+  }, [apiUrl, auth.accessToken, binanceStopPercent, broker, paperInitialBalance, paperRiskPercent, replayState.active, scannerSelectedLeverage, showTracker, symbol, trackerPeriod]);
 
   useEffect(() => {
     if (broker !== 'binance' || activeMarketSymbols.length === 0) return;
@@ -3567,24 +3650,22 @@ function Workspace() {
       setTrackerVirtualOperations([]);
       return;
     }
+    if (broker === 'binance' && !replayState.active) {
+      if (trackerScannerDetail?.symbol === symbol && trackerScannerDetail.operation_details) {
+        setTrackerVirtualOperations(trackerOperationsFromScanner(trackerScannerDetail.operation_details, trackerScannerDetail.tp_optimal_percent ?? binanceTargetPercent, binanceStopPercent));
+      } else {
+        setTrackerVirtualOperations([]);
+      }
+      return;
+    }
     const source = renderBars(candleBarsRef.current, Math.max(300, Math.round(trackerPeriod) + 1));
     setTrackerVirtualOperations(runTrackerVisualSimulation(source, trackerPeriod, binanceStopPercent, binanceTargetPercent, paperInitialBalance, paperRiskPercent, paperLeverage, replayState.active));
-  }, [showTracker, trackerPeriod, binanceStopPercent, binanceTargetPercent, paperInitialBalance, paperRiskPercent, paperLeverage, symbol, trackerRevision, replayState.active]);
+  }, [showTracker, trackerPeriod, binanceStopPercent, binanceTargetPercent, paperInitialBalance, paperRiskPercent, paperLeverage, symbol, trackerRevision, replayState.active, broker, trackerScannerDetail]);
   useEffect(() => {
     setSymbolHistoryReady(false);
     setTrackerLossLimitEnabled(false);
     setTpOptimizationResult(null);
   }, [symbol, broker]);
-  useEffect(() => {
-    if (!symbolHistoryReady || !showTracker || broker !== 'binance' || replayState.active) return;
-    const source = renderBars(candleBarsRef.current, Math.max(300, Math.round(trackerPeriod) + 1));
-    const best = optimizeTrackerConfiguration(source, trackerPeriod, binanceStopPercent, paperInitialBalance, paperRiskPercent, paperLeverage);
-    if (!best) return;
-    setBinanceTargetPercent(current => current === best.targetPercent ? current : best.targetPercent);
-    localStorage.setItem('helloworld-binance-target-percent', String(best.targetPercent));
-    setTrackerLossLimitEnabled(true);
-    setTpOptimizationResult(best);
-  }, [symbolHistoryReady, showTracker, broker, symbol, trackerPeriod, binanceStopPercent, paperInitialBalance, paperRiskPercent, paperLeverage, replayState.active]);
   const backtestVisualDrawings: Drawing[] = (showTracker ? trackerVirtualOperations : []).filter(operation => operation.status === 'CLOSED - WIN' || (showTrackerFails && operation.status === 'CLOSED - FAILED') || (replayState.active && !operation.closed)).map(operation => ({
     id: operation.id,
     symbol,
@@ -3672,6 +3753,7 @@ function Workspace() {
     setPaperRiskPercent(nextPercent);
   };
   const adjustProtectionPercent = (kind: 'sl' | 'tp', delta: number) => {
+    if (kind === 'tp' && broker === 'binance' && !replayState.active && trackerScannerDetail?.symbol === symbol) return;
     const setter = kind === 'sl' ? setBinanceStopPercent : setBinanceTargetPercent;
     const current = kind === 'sl' ? binanceStopPercent : binanceTargetPercent;
     const next = Math.max(.05, Math.min(20, Number((current + delta).toFixed(2))));
@@ -3679,6 +3761,14 @@ function Workspace() {
     localStorage.setItem(kind === 'sl' ? 'helloworld-binance-stop-percent' : 'helloworld-binance-target-percent', String(next));
   };
   const optimizeTrackerTarget = () => {
+    if (broker === 'binance' && !replayState.active) {
+      if (trackerScannerDetail?.symbol === symbol && trackerScannerDetail.tp_optimal_percent != null) {
+        setBinanceTargetPercent(trackerScannerDetail.tp_optimal_percent);
+        setTrackerLossLimitEnabled(true);
+        setTpOptimizationResult({ targetPercent: trackerScannerDetail.tp_optimal_percent, equity: trackerScannerDetail.equity_final ?? paperInitialBalance, lossLimit: trackerScannerDetail.loss_limit_percent ?? 0, wins: trackerScannerDetail.wins, losses: trackerScannerDetail.losses });
+      }
+      return;
+    }
     const source = renderBars(candleBarsRef.current, Math.max(300, Math.round(trackerPeriod) + 1));
     if (!showTracker) return;
     const best = optimizeTrackerConfiguration(source, trackerPeriod, binanceStopPercent, paperInitialBalance, paperRiskPercent, paperLeverage);
@@ -3762,9 +3852,21 @@ function Workspace() {
   const tradingAgent = <TradingAgentChat activeSymbol={symbol} interval={interval} apiUrl={apiUrl} accessToken={auth.accessToken} />;
 
   const toolOptions = [['line', '╱', 'Línea'], ['ruler', '▥', 'Medir'], ['long', 'L', 'Long'], ['short', 'S', 'Short'], ['zoom', '⌗', 'Zoom lazo'], ['pan', '✋', 'Pan']] as const;
+  const trackerCanonicalAnalysis = broker === 'binance' && !replayState.active && trackerScannerDetail?.symbol === symbol && trackerScannerDetail.operation_details ? trackerScannerDetail : null;
   const trackerClosedOperations = trackerVirtualOperations.filter(operation => operation.closed);
-  const trackerLossLimitAnalysis = findBestTrackerLossLimit(trackerClosedOperations);
+  const trackerLossLimitAnalysis = trackerCanonicalAnalysis ? (() => {
+    const records = trackerCanonicalAnalysis.operation_details ?? [];
+    const limit = trackerCanonicalAnalysis.loss_limit_percent ?? 0;
+    const wins = records.filter(operation => operation.raw_status === 'WIN');
+    const losses = records.filter(operation => operation.raw_status === 'FAIL');
+    const winsKept = wins.filter(operation => operation.min_roe >= -limit).length;
+    const lossesLimited = losses.filter(operation => operation.min_roe <= -limit).length;
+    const winCoverage = wins.length ? winsKept / wins.length : 0;
+    const lossCoverage = losses.length ? lossesLimited / losses.length : 0;
+    return { limit, winsKept, lossesLimited, winCoverage, lossCoverage, targetDistance: Math.abs(winCoverage - .8) + Math.abs(lossCoverage - .8) };
+  })() : findBestTrackerLossLimit(trackerClosedOperations);
   const trackerAdjustedOutcome = (operation: TrackerVirtualOperation) => {
+    if (trackerCanonicalAnalysis) return { status: operation.status, pnl: operation.pnl, resultRoePercent: operation.resultRoePercent, limited: true };
     const crossedLimitedStop = trackerLossLimitEnabled && operation.minRoe.roePercent <= -trackerLossLimitAnalysis.limit;
     if (!crossedLimitedStop) return { status: operation.status, pnl: operation.pnl, resultRoePercent: operation.resultRoePercent, limited: false };
     const grossLimitedPnl = -(trackerLossLimitAnalysis.limit / 100 / Math.max(1, operation.leverage)) * operation.notional;
@@ -3858,9 +3960,10 @@ function Workspace() {
     controls.className = 'tracker-loss-limit-controls';
     const limitButton = document.createElement('button');
     limitButton.type = 'button';
+    limitButton.disabled = Boolean(trackerCanonicalAnalysis);
     limitButton.className = trackerLossLimitEnabled ? 'tracker-loss-limit-button tracker-loss-limit-active' : 'tracker-loss-limit-button';
-    limitButton.textContent = trackerLossLimitEnabled ? 'Quitar límite' : 'Limitar pérdidas';
-    limitButton.title = 'Calcular el mejor umbral y superponer una curva con las pérdidas limitadas';
+    limitButton.textContent = trackerCanonicalAnalysis ? 'Límite del scanner' : trackerLossLimitEnabled ? 'Quitar límite' : 'Limitar pérdidas';
+    limitButton.title = trackerCanonicalAnalysis ? 'Este resultado ya incluye el límite calculado por el scanner.' : 'Calcular el mejor umbral y superponer una curva con las pérdidas limitadas';
     limitButton.addEventListener('click', () => setTrackerLossLimitEnabled(value => !value));
     controls.appendChild(limitButton);
     const analysis = document.createElement('small');
@@ -3899,7 +4002,7 @@ function Workspace() {
     tablePanel.appendChild(scroll);
     host.appendChild(tablePanel);
     return () => tablePanel.remove();
-  }, [showTracker, trackerClosedOperations, timezone, trackerSummarySort, trackerLossLimitEnabled, trackerLossLimitAnalysis.limit, trackerLossLimitAnalysis.winCoverage, trackerLossLimitAnalysis.lossCoverage, trackerAdjustedEquity]);
+  }, [showTracker, trackerClosedOperations, timezone, trackerSummarySort, trackerLossLimitEnabled, trackerLossLimitAnalysis.limit, trackerLossLimitAnalysis.winCoverage, trackerLossLimitAnalysis.lossCoverage, trackerAdjustedEquity, trackerCanonicalAnalysis]);
   const trackerFactorSeries = trackerClosedOperations.filter(operation => operation.status === 'CLOSED - WIN' && operation.bodyAveragePercentAtOpen > 0).map(operation => ({
     time: Number(operation.end.time),
     tpFactor: operation.finalTargetPercent / operation.bodyAveragePercentAtOpen,
