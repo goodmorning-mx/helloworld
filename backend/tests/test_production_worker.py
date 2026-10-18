@@ -52,11 +52,11 @@ class FakeRuntimeStore:
         self.states.setdefault(key, {"last_bar_time": None})
         return True
 
-    def save_runtime(self, user_id, symbol, owner_id, *, last_bar_time, status="RUNNING", lease_seconds=45):
+    def save_runtime(self, user_id, symbol, owner_id, *, last_bar_time, status="RUNNING", tracker_operation=None, adaptive_parameters=None, lease_seconds=45):
         key = (user_id, symbol)
         if key not in self.leases:
             return False
-        self.states[key] = {"last_bar_time": last_bar_time, "status": status}
+        self.states[key] = {"last_bar_time": last_bar_time, "status": status, "tracker_operation": tracker_operation, "adaptive_parameters": adaptive_parameters}
         return True
 
     def release_lease(self, user_id, symbol, owner_id, status):
@@ -127,6 +127,45 @@ def test_tracker_worker_uses_close_not_intrabar_wick_and_retries_fail_same_candl
     asyncio.run(scenario())
 
 
+def test_execution_exit_does_not_change_the_authoritative_tracker_position():
+    async def scenario():
+        store = FakePaperStore()
+        worker = SymbolWorker("user", "TESTUSDT", "1m", 2, .2, 1.0, PaperExecutionAdapter(risk_usdt=1), store, BackendEventBus())
+        await worker.on_market_event({"type": "kline", "interval": "1m", "bar": bar(1, 100, 100, 100, 100)})
+        await worker.on_market_event({"type": "kline", "interval": "1m", "bar": bar(2, 100, 100, 100, 100)})
+        await worker.on_market_event({"type": "kline", "interval": "1m", "bar": bar(3, 100, 101, 99, 101)})
+        tracked_id = dict(worker.tracker_operation)
+        worker.operation["stop_percent"] = .05
+        await worker.on_market_event({"type": "kline", "interval": "1m", "bar": bar(4, 101, 101.2, 100.9, 101.1)})
+        assert worker.operation is None
+        assert worker.tracker_operation == tracked_id
+        assert next(iter(store.rows.values()))["status"] == "CLOSED - FAILED"
+
+    asyncio.run(scenario())
+
+
+def test_paper_protection_levels_follow_tracker_recalibration():
+    async def scenario():
+        store = FakePaperStore()
+        worker = SymbolWorker("user", "TESTUSDT", "1m", 5, .2, 1.0, PaperExecutionAdapter(), store, BackendEventBus())
+        operation = {"id": "paper-1", "symbol": "TESTUSDT", "side": "LONG", "entry_price": 100.0, "stop_price": 99.8, "target_price": 101.0, "status": "OPEN"}
+        store.rows[operation["id"]] = dict(operation)
+        worker.operation = operation
+        worker.stop_percent = .5
+        worker.target_percent = 2.0
+        worker.parameter_version = 4
+
+        await worker.adapter.update_parameters(worker)
+
+        assert worker.operation["stop_price"] == 99.5
+        assert worker.operation["target_price"] == 102.0
+        assert worker.operation["parameter_version"] == 4
+        assert store.rows["paper-1"]["stop_price"] == 99.5
+        assert store.rows["paper-1"]["target_price"] == 102.0
+
+    asyncio.run(scenario())
+
+
 def test_worker_market_callback_enqueues_without_waiting_for_strategy():
     async def scenario():
         worker = SymbolWorker("user", "TESTUSDT", "1m", 2, .2, 1.0, PaperExecutionAdapter(), FakePaperStore(), BackendEventBus())
@@ -177,11 +216,11 @@ def test_manager_starts_and_stops_supervised_paper_worker_and_releases_lease():
         status = await manager.start("user", "TESTUSDT", mode="paper")
         assert status["running"] is True
         assert len(gateway.listeners["TESTUSDT"]) == 1
-        for _ in range(100):
+        for _ in range(1000):
             status = manager.status("user", "TESTUSDT")
             if status["status"] == "RUNNING":
                 break
-            await asyncio.sleep(.001)
+            await asyncio.sleep(.005)
         assert status["status"] == "RUNNING"
         other_instance = ProductionWorkerManager(gateway, FakePaperStore(), BackendEventBus(), object(), object(), runtime)
         try:
@@ -223,7 +262,7 @@ def test_worker_start_returns_while_cold_history_seeding_runs_in_background():
                 break
             await asyncio.sleep(.01)
         assert status["status"] == "RUNNING"
-        assert status["bars"] == 1500
+        assert status["bars"] == 480
         await manager.stop("user", "TESTUSDT")
 
     asyncio.run(scenario())

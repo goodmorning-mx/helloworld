@@ -25,6 +25,9 @@ def format_scanner_message(rows: list[dict[str, object]], *, updated_at: object 
         state = str(row.get("status", "?"))
         result = row.get("final_result_usdt")
         tp = row.get("tp_optimal_percent")
+        stop = row.get("loss_limit_percent")
+        execution_stop = row.get("stop_percent")
+        tracker_period = row.get("tracker_period")
         ops = row.get("operations", 0)
         wins = row.get("wins", 0)
         losses = row.get("losses", 0)
@@ -35,6 +38,17 @@ def format_scanner_message(rows: list[dict[str, object]], *, updated_at: object 
         result_value = float(result)
         sign = "+" if result_value >= 0 else ""
         tp_text = f"TP {float(tp):.2f}%" if tp is not None else "TP —"
+        if tracker_period is not None:
+            tp_text += f" · N {int(tracker_period)}"
+        if stop is not None:
+            if row.get("parameter_source") == "TRACKER_WORKER":
+                tp_text += f" · MINROE {float(stop):.2f}% ROE"
+            else:
+                tp_text += f" · MINROE {float(stop):.2f}% ROE"
+        if execution_stop is not None:
+            tp_text += f" · SL {float(execution_stop):.2f}% precio"
+        if row.get("parameter_source") == "TRACKER_WORKER":
+            tp_text += " · LIVE"
         lines.append(
             f"{index}. {symbol} · {sign}{result_value:.2f} USDT · {tp_text} · "
             f"Ops {ops} · W {wins}/L {losses} · {activity}"
@@ -52,7 +66,7 @@ class TelegramControlService:
     async def scan(self, user_id: str, limit: int = 20) -> dict[str, object]:
         return await self.scan_provider(user_id, max(1, min(int(limit), 30)))
 
-    async def start(self, user_id: str, symbol: str) -> dict[str, Any]:
+    async def start(self, user_id: str, symbol: str, *, risk_percent: float = 1.0, leverage: float = 1.0, initial_balance: float = 100.0) -> dict[str, Any]:
         normalized = self._symbol(symbol)
         return await self.worker_manager.start(
             user_id,
@@ -62,6 +76,9 @@ class TelegramControlService:
             tracker_period=5,
             stop_percent=0.2,
             target_percent=1.0,
+            risk_percent=risk_percent,
+            leverage=leverage,
+            initial_balance=initial_balance,
         )
 
     async def stop(self, user_id: str, symbol: str) -> dict[str, Any]:
@@ -75,10 +92,24 @@ class TelegramControlService:
         for worker in workers:
             latency = worker.get("p95_event_latency_ms")
             latency_text = f"p95 {float(latency):.1f} ms" if latency is not None else "p95 —"
+            params = worker.get("adaptive_parameters") if isinstance(worker.get("adaptive_parameters"), dict) else {}
+            adaptive_text = (
+                f"N {params.get('tracker_period', '—')} · TP {float(params.get('target_percent', 0)):.2f}% · "
+                f"SL precio {float(params.get('stop_percent', 0)):.2f}% · MINROE {float(params.get('minroe_limit_percent', 0)):.2f}% · "
+                f"riesgo {float(params.get('risk_percent', 0)):.2f}% "
+                f"({float(params.get('risk_usdt', 0)):.2f} USDT) · "
+                f"ventana {int(params.get('bars', 0))}/480 · v{worker.get('parameter_version', 0)}"
+            ) if params else "parámetros pendientes"
+            tracked = worker.get("tracker_operation") if isinstance(worker.get("tracker_operation"), dict) else None
+            execution = worker.get("operation") if isinstance(worker.get("operation"), dict) else None
+            tracker_state = f"{tracked.get('side')} {tracked.get('level')}" if tracked else "sin posición"
+            execution_state = f"{execution.get('side')} {execution.get('status', 'OPEN')}" if execution else "sin posición"
             error = worker.get("last_error")
             line = (
                 f"{worker.get('symbol', '?')} · {worker.get('status', '?')} · "
-                f"cola {worker.get('queue_depth', 0)} · velas {worker.get('events_processed', 0)} · {latency_text}"
+                f"cola {worker.get('queue_depth', 0)} · velas {worker.get('events_processed', 0)} · {latency_text}\n"
+                f"  Tracker {tracker_state} · ejecución {execution_state}\n"
+                f"  Parámetros: {adaptive_text}"
             )
             if error:
                 line += f" · error: {str(error)[:120]}"

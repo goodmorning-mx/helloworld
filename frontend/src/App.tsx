@@ -1153,7 +1153,7 @@ function Workspace() {
   const pendingBinanceTpRef = useRef<{ symbol: string; price: number } | null>(null);
   const [binanceProductionAvailable, setBinanceProductionAvailable] = useState(false);
   const [productionWorkerRunning, setProductionWorkerRunning] = useState(false);
-  const [productionWorkerStatus, setProductionWorkerStatus] = useState<{ status?: string; queue_depth?: number; last_event_latency_ms?: number | null; p95_event_latency_ms?: number | null; last_error?: string | null } | null>(null);
+  const [productionWorkerStatus, setProductionWorkerStatus] = useState<{ status?: string; queue_depth?: number; last_event_latency_ms?: number | null; p95_event_latency_ms?: number | null; last_error?: string | null; adaptive_parameters?: { status?: string; tracker_period?: number; target_percent?: number; stop_percent?: number; minroe_limit_percent?: number; risk_percent?: number; risk_usdt?: number; leverage?: number; initial_balance?: number; bars?: number; window_hours?: number; sample_operations?: number; last_bar_time?: number | null }; parameter_version?: number } | null>(null);
   const [executionMode, setExecutionMode] = useState<'paper' | 'production'>('paper');
   const [binanceSizingMode, setBinanceSizingMode] = useState<BinanceSizingMode>(() => localStorage.getItem('helloworld-binance-sizing-mode') === 'maximum' ? 'maximum' : 'minimum');
   const [binanceStopPercent, setBinanceStopPercent] = useState(() => Number(localStorage.getItem('helloworld-binance-stop-percent') ?? FIXED_BINANCE_STOP_PERCENT) || FIXED_BINANCE_STOP_PERCENT);
@@ -1454,7 +1454,7 @@ function Workspace() {
     if (broker !== 'binance' || !auth.accessToken) { setProductionWorkerRunning(false); setProductionWorkerStatus(null); return; }
     let active = true;
     const refreshWorker = () => fetch(`${apiUrl}/trading/production/workers`, { headers: { Authorization: `Bearer ${auth.accessToken}` }, credentials: 'include' })
-      .then(response => response.ok ? response.json() as Promise<Array<{ symbol: string; running: boolean; status?: string; queue_depth?: number; last_event_latency_ms?: number | null; p95_event_latency_ms?: number | null; last_error?: string | null }>> : Promise.reject(new Error('worker status unavailable')))
+      .then(response => response.ok ? response.json() as Promise<Array<{ symbol: string; running: boolean; status?: string; queue_depth?: number; last_event_latency_ms?: number | null; p95_event_latency_ms?: number | null; last_error?: string | null; adaptive_parameters?: { status?: string; tracker_period?: number; target_percent?: number; stop_percent?: number; minroe_limit_percent?: number; risk_percent?: number; risk_usdt?: number; leverage?: number; initial_balance?: number; bars?: number; window_hours?: number; sample_operations?: number; last_bar_time?: number | null }; parameter_version?: number }>> : Promise.reject(new Error('worker status unavailable')))
       .then(workers => {
         if (!active) return;
         const selected = workers.find(worker => worker.symbol === symbol.toUpperCase() && worker.running);
@@ -3753,7 +3753,7 @@ function Workspace() {
       }
       const mode = binanceProductionAvailable ? 'live' : 'paper';
       if (mode === 'live' && !window.confirm('Producción enviará órdenes reales a Binance. ¿Continuar?')) return;
-      const response = await fetch(`${apiUrl}/trading/production/workers`, { method: 'POST', headers, credentials: 'include', body: JSON.stringify({ symbol, mode, interval: '1m', tracker_period: trackerPeriod, stop_percent: binanceStopPercent, target_percent: binanceTargetPercent, quantity: productionPreviewData?.quantity ?? 0, confirmed: mode === 'live' }) });
+      const response = await fetch(`${apiUrl}/trading/production/workers`, { method: 'POST', headers, credentials: 'include', body: JSON.stringify({ symbol, mode, interval: '1m', tracker_period: trackerPeriod, stop_percent: binanceStopPercent, target_percent: binanceTargetPercent, quantity: productionPreviewData?.quantity ?? 0, risk_percent: activeRiskPercent, leverage: productionPreviewData?.leverage ?? 1, initial_balance: riskPreviewBalance, confirmed: mode === 'live' }) });
       if (!response.ok) throw new Error((await response.json() as { detail?: string }).detail ?? 'No se pudo iniciar el worker de producción.');
       setProductionWorkerRunning(true);
       setExecutionMode(mode === 'live' ? 'production' : 'paper');
@@ -3872,6 +3872,7 @@ function Workspace() {
       return { label: 'DONE', className: 'scanner-status-done' };
     };
   const parameterAnalysis = trackerScannerDetail?.symbol === symbol ? trackerScannerDetail : scannerAnalysisBySymbol[symbol] ?? null;
+  const liveAdaptiveParameters = productionWorkerRunning ? productionWorkerStatus?.adaptive_parameters : null;
   const parameterStatus = replayState.active
     ? 'REPLAY'
     : trackerDetailStatus === 'loading'
@@ -3889,14 +3890,14 @@ function Workspace() {
   const parameterCard = <aside className={`parameter-card parameter-card-${parameterStatus.toLowerCase()}`} aria-label={`Parámetros activos de ${symbol}`}>
     <div className="parameter-card-head"><div><span className="positions-kicker">PARÁMETROS · {symbol}</span><strong>Ventana de ajuste</strong></div><b role="status">{parameterStatus}</b></div>
     <div className="parameter-card-grid">
-      <div className="parameter-value parameter-value-tp"><small>TP SCANNER</small><strong>{parameterAnalysis?.tp_optimal_percent != null ? `+${parameterAnalysis.tp_optimal_percent.toFixed(2)}%` : '—'}</strong><em>activo +{binanceTargetPercent.toFixed(2)}%</em></div>
-      <div className="parameter-value parameter-value-sl"><small>SL FIJO ACTUAL</small><strong>−{binanceStopPercent.toFixed(2)}%</strong><em>configurado para ejecución</em></div>
-      <div className="parameter-value parameter-value-limit"><small>SL HISTÓRICO · MINROE</small><strong>{parameterAnalysis?.loss_limit_percent != null ? `−${Math.abs(parameterAnalysis.loss_limit_percent).toFixed(2)}%` : '—'}</strong><em>umbral de simulación 8h</em></div>
-      <div className="parameter-value parameter-value-level"><small>LEVELS N ACTIVO</small><strong>{trackerPeriod} velas</strong><em>Tracker · marco 1m</em></div>
-      <div className="parameter-value parameter-value-risk"><small>RISK ENGINE</small><strong>{activeRiskPercent.toFixed(2)}% · {productionPreviewData?.leverage ?? scannerSelectedLeverage}x</strong><em>{riskPreviewUsd.toFixed(2)} USDT de riesgo estimado</em></div>
-      <div className="parameter-value parameter-value-window"><small>VENTANA RODANTE</small><strong>8h · {parameterAnalysis?.bars ?? 0}/480</strong><em>{parameterAnalysis?.operations ?? 0} ops · última vela {parameterLastBar}</em></div>
+      <div className="parameter-value parameter-value-tp"><small>{liveAdaptiveParameters ? 'TP TRACKER ACTIVO' : 'TP SCANNER'}</small><strong>{liveAdaptiveParameters?.target_percent != null ? `+${liveAdaptiveParameters.target_percent.toFixed(2)}%` : parameterAnalysis?.tp_optimal_percent != null ? `+${parameterAnalysis.tp_optimal_percent.toFixed(2)}%` : '—'}</strong><em>{liveAdaptiveParameters ? `versión ${productionWorkerStatus?.parameter_version ?? 0}` : `activo +${binanceTargetPercent.toFixed(2)}%`}</em></div>
+      <div className="parameter-value parameter-value-sl"><small>SL TRACKER ACTIVO</small><strong>−{(liveAdaptiveParameters?.stop_percent ?? binanceStopPercent).toFixed(2)}%</strong><em>{liveAdaptiveParameters ? 'parámetro adaptativo vigente' : 'ejecución Paper/Live'}</em></div>
+      <div className="parameter-value parameter-value-limit"><small>MINROE HISTÓRICO</small><strong>{liveAdaptiveParameters ? `−${Math.abs(liveAdaptiveParameters.minroe_limit_percent ?? 0).toFixed(2)}% ROE` : parameterAnalysis?.loss_limit_percent != null ? `−${Math.abs(parameterAnalysis.loss_limit_percent).toFixed(2)}% ROE` : '—'}</strong><em>{liveAdaptiveParameters ? `SL precio −${(liveAdaptiveParameters.stop_percent ?? 0).toFixed(2)}%` : 'umbral histórico 8h'}</em></div>
+      <div className="parameter-value parameter-value-level"><small>LEVELS N ACTIVO</small><strong>{liveAdaptiveParameters?.tracker_period ?? trackerPeriod} velas</strong><em>{liveAdaptiveParameters ? 'elegido en ventana 8h' : 'Tracker · marco 1m'}</em></div>
+      <div className="parameter-value parameter-value-risk"><small>RISK ENGINE</small><strong>{(liveAdaptiveParameters?.risk_percent ?? activeRiskPercent).toFixed(2)}% · {liveAdaptiveParameters?.leverage ?? productionPreviewData?.leverage ?? scannerSelectedLeverage}x</strong><em>{liveAdaptiveParameters ? `${(liveAdaptiveParameters.risk_usdt ?? 0).toFixed(2)} USDT · balance ${(liveAdaptiveParameters.initial_balance ?? 0).toFixed(2)}` : `${riskPreviewUsd.toFixed(2)} USDT de riesgo estimado`}</em></div>
+      <div className="parameter-value parameter-value-window"><small>VENTANA RODANTE</small><strong>{liveAdaptiveParameters ? `${(liveAdaptiveParameters.window_hours ?? 0).toFixed(1)}h · ${liveAdaptiveParameters.bars ?? 0}/480` : `8h · ${parameterAnalysis?.bars ?? 0}/480`}</strong><em>{liveAdaptiveParameters ? `${liveAdaptiveParameters.sample_operations ?? 0} ops · versión ${productionWorkerStatus?.parameter_version ?? 0}` : `${parameterAnalysis?.operations ?? 0} ops · última vela ${parameterLastBar}`}</em></div>
     </div>
-    <small className="parameter-card-foot">TP sincronizado con scanner. MINROE es histórico; el SL de ejecución sigue fijo. N muestra el valor activo.</small>
+    <small className="parameter-card-foot">{liveAdaptiveParameters ? 'Tracker gobierna señales y parámetros; Paper conserva salidas propias y no modifica el estado Tracker.' : 'Con worker activo, Tracker recalibra N/TP/SL al cerrar una operación sobre la ventana 8h.'}</small>
   </aside>;
   const marketScanner = broker === 'binance' ? <section className="market-overview" aria-label="Resumen de operación Binance"><div className="market-scanner-training"><div className="training-card-content"><span className="positions-kicker">TRAINING OPERATOR · PNL NETO DIARIO</span><strong>${trainingPnl.toFixed(2)} / $40.00</strong><div className="training-progress-track"><span style={{ width: `${trainingProgress * 100}%` }} /></div><small>{trainingPnl >= 40 ? 'Meta diaria completada' : `Faltan $${Math.max(0, 40 - trainingPnl).toFixed(2)}`}</small></div><div className="binance-balance-card"><span className="positions-kicker">BINANCE · BALANCE</span><strong>{binanceLiveAccount?.futures_balance != null ? `${Number(binanceLiveAccount.futures_balance).toFixed(2)} USDT` : '—'}</strong><small>Disponible {binanceLiveAccount?.available_balance != null ? `${Number(binanceLiveAccount.available_balance).toFixed(2)} USDT` : '—'}</small><small>PNL abierto {binanceLiveAccount?.total_unrealized_pnl != null ? `${Number(binanceLiveAccount.total_unrealized_pnl) >= 0 ? '+' : ''}${Number(binanceLiveAccount.total_unrealized_pnl).toFixed(4)} USDT` : '—'}</small></div><div className="replay-card"><span className="positions-kicker">REPLAY · VELA A VELA</span>{replayControls}</div>{levelAdjustCard}{parameterCard}</div><div className="market-preview-slot"><div className="market-preview-card">{previewControls}{productionOrderPreview}</div></div></section> : null;
   const tradingAgent = <TradingAgentChat activeSymbol={symbol} interval={interval} apiUrl={apiUrl} accessToken={auth.accessToken} />;

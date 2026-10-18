@@ -12,12 +12,13 @@ from typing import Any, Protocol
 from uuid import uuid4
 
 from sqlalchemy import insert, or_, select, update
-from sqlalchemy.dialects.postgresql import insert as pg_insert
+from sqlalchemy.dialects.postgresql import JSONB, insert as pg_insert
 from sqlalchemy.engine import Engine
 from sqlalchemy.sql import column, table
 
 from app.binance_credentials import BinanceMonitorManager
 from app.binance_execution import BinanceExecutionStore
+from app.adaptive_tracker import WINDOW_BARS, calibrate_tracker_parameters
 from app.market_gateway import BinanceMarketGateway
 from app.paper_operations import PaperOperationStore
 from app.telegram_service import BackendEventBus
@@ -30,12 +31,13 @@ production_worker_configs_table = table(
     "production_worker_configs",
     column("id"), column("user_id"), column("symbol"), column("mode"), column("interval"),
     column("tracker_period"), column("stop_percent"), column("target_percent"), column("quantity"),
+    column("risk_percent"), column("leverage"), column("initial_balance"),
     column("enabled"), column("created_at"), column("updated_at"),
 )
 production_worker_runtime_table = table(
     "production_worker_runtime", column("owner_id"), column("lease_until"),
     column("user_id"), column("symbol"), column("last_bar_time"), column("heartbeat_at"),
-    column("status"), column("updated_at"),
+    column("status"), column("tracker_operation", JSONB), column("adaptive_parameters", JSONB), column("updated_at"),
 )
 
 
@@ -81,10 +83,10 @@ class ProductionWorkerConfigStore:
         with self._engine.begin() as connection:
             return connection.execute(statement).scalar_one_or_none() == owner_id
 
-    def save_runtime(self, user_id: str, symbol: str, owner_id: str, *, last_bar_time: int | None, status: str = "RUNNING", lease_seconds: int = 45) -> bool:
+    def save_runtime(self, user_id: str, symbol: str, owner_id: str, *, last_bar_time: int | None, status: str = "RUNNING", tracker_operation: dict[str, Any] | None = None, adaptive_parameters: dict[str, Any] | None = None, lease_seconds: int = 45) -> bool:
         now = datetime.now(timezone.utc)
         with self._engine.begin() as connection:
-            result = connection.execute(update(production_worker_runtime_table).where(production_worker_runtime_table.c.user_id == user_id, production_worker_runtime_table.c.symbol == symbol.upper(), production_worker_runtime_table.c.owner_id == owner_id).values(last_bar_time=last_bar_time, heartbeat_at=now, lease_until=now + timedelta(seconds=lease_seconds), status=status, updated_at=now))
+            result = connection.execute(update(production_worker_runtime_table).where(production_worker_runtime_table.c.user_id == user_id, production_worker_runtime_table.c.symbol == symbol.upper(), production_worker_runtime_table.c.owner_id == owner_id).values(last_bar_time=last_bar_time, tracker_operation=tracker_operation, adaptive_parameters=adaptive_parameters, heartbeat_at=now, lease_until=now + timedelta(seconds=lease_seconds), status=status, updated_at=now))
             return result.rowcount == 1
 
     def release_lease(self, user_id: str, symbol: str, owner_id: str, status: str) -> None:
@@ -113,6 +115,10 @@ class SymbolWorker:
     events: BackendEventBus
     bars: list[dict[str, Any]] = field(default_factory=list)
     operation: dict[str, Any] | None = None
+    tracker_operation: dict[str, Any] | None = None
+    adaptive_parameters: dict[str, Any] = field(default_factory=dict)
+    recalibration_task: asyncio.Task[None] | None = None
+    parameter_version: int = 0
     running: bool = True
     last_bar_time: int | None = None
     queue: asyncio.Queue[dict[str, Any]] = field(default_factory=lambda: asyncio.Queue(maxsize=64))
@@ -215,7 +221,7 @@ class SymbolWorker:
     async def _renew_lease(self) -> bool:
         if self.runtime_store is None or self.lease_owner_id is None:
             return True
-        owned = await asyncio.to_thread(self.runtime_store.save_runtime, self.user_id, self.symbol, self.lease_owner_id, last_bar_time=self.last_bar_time, status=self.status)
+        owned = await asyncio.to_thread(self.runtime_store.save_runtime, self.user_id, self.symbol, self.lease_owner_id, last_bar_time=self.last_bar_time, status=self.status, tracker_operation=self.tracker_operation, adaptive_parameters=self.adaptive_parameters)
         if owned:
             return True
         self.status = "LEASE_LOST"
@@ -235,45 +241,116 @@ class SymbolWorker:
         bar = event.get("bar")
         if not isinstance(bar, dict) or not bool(bar.get("closed")):
             return
+        # A recalibration is calculated off-loop, but the next candle must use
+        # its committed parameter snapshot. The market callback remains enqueue-only.
+        if self.recalibration_task is not None and not self.recalibration_task.done():
+            await self.recalibration_task
         normalized = {key: float(bar[key]) if key != "time" else int(bar[key]) for key in ("time", "open", "high", "low", "close")}
         if self.last_bar_time is not None and normalized["time"] <= self.last_bar_time:
             self.duplicate_events += 1
             return
-        self.bars = [item for item in self.bars if int(item["time"]) != normalized["time"]][-1499:] + [normalized]
+        self.bars = [item for item in self.bars if int(item["time"]) != normalized["time"]][-WINDOW_BARS + 1:] + [normalized]
         await self._evaluate(normalized)
         self.last_bar_time = normalized["time"]
 
     async def _evaluate(self, bar: dict[str, Any]) -> None:
+        # Paper/Binance executions manage their own exits. These exits never
+        # mutate Tracker's independent virtual position or signal sequence.
+        if self.operation is not None:
+            operation_stop = float(self.operation.get("stop_percent", self.stop_percent))
+            operation_target = float(self.operation.get("target_percent", self.target_percent))
+            execution_reason = tracker_close_reason(str(self.operation["side"]), float(self.operation["entry_price"]), float(bar["close"]), operation_stop, operation_target)
+            if execution_reason is not None:
+                await self.adapter.close(self, execution_reason, float(bar["close"]), bar)
+
         if len(self.bars) <= self.tracker_period:
             return
         previous = self.bars[-self.tracker_period - 1:-1]
         close = float(bar["close"])
         signal_data = tracker_signal(close, tracker_levels(previous))
-
-        if self.operation is not None:
-            raw_reason = tracker_close_reason(self.operation["side"], float(self.operation["entry_price"]), close, self.stop_percent, self.target_percent)
-            # A TP becomes a WIN only when this close is also classified on
-            # the opposite Tracker side: LONG -> H1/H2, SHORT -> L1/L2.
-            reason = raw_reason
-            if raw_reason == "TP" and (signal_data is None or (self.operation["side"] == "LONG" and signal_data[0] != "SHORT") or (self.operation["side"] == "SHORT" and signal_data[0] != "LONG")):
-                reason = None
+        tracker_closed = False
+        if self.tracker_operation is not None:
+            tracked = self.tracker_operation
+            raw_reason = tracker_close_reason(str(tracked["side"]), float(tracked["entry_price"]), close, float(tracked["stop_percent"]), float(tracked["target_percent"]))
+            opposite_signal = signal_data is not None and signal_data[0] != tracked["side"]
+            reason = raw_reason if raw_reason != "TP" or opposite_signal else None
             if reason is not None:
-                closed_side = self.operation["side"]
-                closed_level = self.operation.get("level", "H1")
-                await self.adapter.close(self, reason, close, bar)
+                tracker_closed = True
+                await self.events.publish({"type": "TRACKER_OPERATION_CLOSED", "symbol": self.symbol, "side": tracked["side"], "reason": reason, "price": close, "bar_time": int(bar["time"]), "parameter_version": tracked.get("parameter_version")})
+                self.tracker_operation = None
+                self._schedule_recalibration()
                 if reason == "TP":
-                    # Match the visual strategy: a winning operation reverses
-                    # immediately at this candle's close.
-                    await self.adapter.open(self, "SHORT" if closed_side == "LONG" else "LONG", close, {**bar, "level": closed_level})
-                elif signal_data is not None:
-                    # Match the visual strategy: a failed operation retries on
-                    # this same completed candle using Tracker's signal.
-                    side, level = signal_data
-                    await self.adapter.open(self, side, close, {**bar, "level": level})
-                return
-        if self.operation is None and signal_data is not None:
+                    side = "SHORT" if tracked["side"] == "LONG" else "LONG"
+                    level = tracked.get("level", "H1")
+                    signal_data = (side, level)
+
+        if self.tracker_operation is None and signal_data is not None:
             side, level = signal_data
-            await self.adapter.open(self, side, close, {**bar, "level": level})
+            self.tracker_operation = {
+                "side": side, "level": level, "entry_time": int(bar["time"]), "entry_price": close,
+                "stop_percent": self.stop_percent, "target_percent": self.target_percent,
+                "parameter_version": self.parameter_version,
+            }
+            signal_id = f"{self.symbol}:{self.interval}:{bar['time']}:{side}:{level}"
+            await self.events.publish({"type": "TRACKER_SIGNAL", "signal_id": signal_id, "symbol": self.symbol, "side": side, "level": level, "interval": self.interval, "bar_time": int(bar["time"]), "price": close, "stop_percent": self.stop_percent, "target_percent": self.target_percent, "tracker_period": self.tracker_period, "parameter_version": self.parameter_version, "mode": self.adapter.mode})
+            # Executions mirror Tracker entries but own their independent
+            # operation lifecycle and cannot feed back into strategy state.
+            if self.operation is None:
+                await self.adapter.open(self, side, close, {**bar, "level": level})
+        elif tracker_closed and self.tracker_operation is None and self.operation is None:
+            # A Tracker SL can retry only when the same candle has a new signal.
+            if signal_data is not None:
+                side, level = signal_data
+                await self.adapter.open(self, side, close, {**bar, "level": level})
+
+    def _schedule_recalibration(self) -> None:
+        if self.recalibration_task is not None and not self.recalibration_task.done():
+            return
+        self.recalibration_task = asyncio.create_task(self._recalibrate(), name=f"tracker-calibration-{self.symbol}")
+
+    async def _recalibrate(self) -> None:
+        current = dict(self.adaptive_parameters)
+        source_bars = list(self.bars)
+        params = await asyncio.to_thread(
+            calibrate_tracker_parameters, source_bars,
+            risk_percent=float(current.get("risk_percent", 1.0)),
+            leverage=float(current.get("leverage", 1.0)),
+            initial_balance=float(current.get("initial_balance", 100.0)),
+            current_tracker_period=self.tracker_period,
+        )
+        if not self.running:
+            return
+        self.adaptive_parameters = params
+        self.tracker_period = int(params["tracker_period"])
+        self.stop_percent = float(params["stop_percent"])
+        self.target_percent = float(params["target_percent"])
+        self.parameter_version += 1
+        self.adaptive_parameters["parameter_version"] = self.parameter_version
+        if self.tracker_operation is not None:
+            self.tracker_operation.update({
+                "stop_percent": self.stop_percent,
+                "target_percent": self.target_percent,
+                "parameter_version": self.parameter_version,
+            })
+        update_execution = getattr(self.adapter, "update_parameters", None)
+        if update_execution is not None:
+            await update_execution(self)
+        await self._persist_runtime_snapshot()
+        await self.events.publish({"type": "TRACKER_PARAMETERS_UPDATED", "symbol": self.symbol, **params, "parameter_version": self.parameter_version})
+
+    async def _persist_runtime_snapshot(self) -> None:
+        if self.runtime_store is None or self.lease_owner_id is None:
+            return
+        await asyncio.to_thread(
+            self.runtime_store.save_runtime,
+            self.user_id,
+            self.symbol,
+            self.lease_owner_id,
+            last_bar_time=self.last_bar_time,
+            status=self.status,
+            tracker_operation=self.tracker_operation,
+            adaptive_parameters=self.adaptive_parameters,
+        )
 
 
 class PaperExecutionAdapter:
@@ -288,24 +365,36 @@ class PaperExecutionAdapter:
         direction = 1 if side == "LONG" else -1
         stop = price * (1 - direction * worker.stop_percent / 100)
         target = price * (1 + direction * worker.target_percent / 100)
-        notional = self.risk_usdt / (worker.stop_percent / 100)
-        operation = {"id": f"paper-worker-{uuid4().hex[:12]}", "symbol": worker.symbol, "side": side, "chart": "entry", "level": bar.get("level"), "entry_time": int(bar["time"]), "entry_price": price, "current_time": int(bar["time"]), "current_price": price, "stop_time": int(bar["time"]), "stop_price": stop, "target_time": int(bar["time"]), "target_price": target, "status": "OPEN", "close_reason": None, "risk_percent": None, "notional": notional, "margin": notional, "pnl": 0.0, "source": "realtime-engine", "idempotency_key": f"tracker:{worker.symbol}:{worker.interval}:{bar['time']}:{side}:{bar.get('level', 'H1')}"}
+        parameters = worker.adaptive_parameters
+        risk_percent = max(0.01, min(float(parameters.get("risk_percent", 1.0)), 100.0))
+        leverage = max(1.0, min(float(parameters.get("leverage", 1.0)), 125.0))
+        risk_usdt = self.initial_balance * risk_percent / 100
+        notional = min(risk_usdt / max(worker.stop_percent / 100, 0.000001), self.initial_balance * leverage)
+        operation = {"id": f"paper-worker-{uuid4().hex[:12]}", "symbol": worker.symbol, "side": side, "chart": "entry", "level": bar.get("level"), "entry_time": int(bar["time"]), "entry_price": price, "current_time": int(bar["time"]), "current_price": price, "stop_time": int(bar["time"]), "stop_price": stop, "target_time": int(bar["time"]), "target_price": target, "stop_percent": worker.stop_percent, "target_percent": worker.target_percent, "parameter_version": worker.parameter_version, "status": "OPEN", "close_reason": None, "risk_percent": risk_percent, "notional": notional, "margin": notional / leverage, "pnl": 0.0, "source": "realtime-engine", "idempotency_key": f"tracker:{worker.symbol}:{worker.interval}:{bar['time']}:{side}:{bar.get('level', 'H1')}"}
         worker.operation = await asyncio.to_thread(_persist_open, worker, operation)
-        await worker.events.publish({
-            "type": "TRACKER_SIGNAL",
-            "signal_id": f"{worker.symbol}:{worker.interval}:{bar['time']}:{side}:{bar.get('level', 'H1')}",
-            "symbol": worker.symbol,
-            "side": side,
-            "level": bar.get("level", "H1"),
-            "interval": worker.interval,
-            "bar_time": int(bar["time"]),
-            "price": price,
-            "stop_percent": worker.stop_percent,
-            "target_percent": worker.target_percent,
-            "mode": self.mode,
-        })
         await worker.events.publish({"type": "PAPER_ENTRY", "symbol": worker.symbol, "side": side, "price": price})
         return worker.operation
+
+    async def update_parameters(self, worker: SymbolWorker) -> None:
+        """Move an open Paper position's protection to the Tracker snapshot."""
+        operation = worker.operation
+        if operation is None:
+            return
+        direction = 1 if operation["side"] == "LONG" else -1
+        entry = float(operation["entry_price"])
+        stop = entry * (1 - direction * worker.stop_percent / 100)
+        target = entry * (1 + direction * worker.target_percent / 100)
+        operation.update({
+            "stop_percent": worker.stop_percent,
+            "target_percent": worker.target_percent,
+            "stop_price": stop,
+            "target_price": target,
+            "parameter_version": worker.parameter_version,
+        })
+        await asyncio.to_thread(worker.paper_store.update, worker.user_id, operation["id"], {
+            "stop_price": stop,
+            "target_price": target,
+        })
 
     async def close(self, worker: SymbolWorker, reason: str, price: float, bar: dict[str, Any]) -> dict[str, Any]:
         if worker.operation is None:
@@ -351,20 +440,7 @@ class BinanceExecutionAdapter:
                     logger.exception("live_worker_emergency_close_failed symbol=%s", worker.symbol)
             await asyncio.to_thread(self.store.update, intent["id"], worker.user_id, status="ERROR", last_error=str(exc))
             raise
-        worker.operation = {"id": intent["id"], "side": side, "level": bar.get("level"), "entry_price": average_open, "notional": actual_quantity * average_open, "stop_price": stop, "target_price": target, "status": "PROTECTED"}
-        await worker.events.publish({
-            "type": "TRACKER_SIGNAL",
-            "signal_id": f"{worker.symbol}:{worker.interval}:{bar['time']}:{side}:{bar.get('level', 'H1')}",
-            "symbol": worker.symbol,
-            "side": side,
-            "level": bar.get("level", "H1"),
-            "interval": worker.interval,
-            "bar_time": int(bar["time"]),
-            "price": average_open,
-            "stop_percent": worker.stop_percent,
-            "target_percent": worker.target_percent,
-            "mode": self.mode,
-        })
+        worker.operation = {"id": intent["id"], "side": side, "level": bar.get("level"), "entry_price": average_open, "notional": actual_quantity * average_open, "stop_price": stop, "target_price": target, "stop_percent": worker.stop_percent, "target_percent": worker.target_percent, "parameter_version": worker.parameter_version, "status": "PROTECTED"}
         await worker.events.publish({"type": "LIVE_ENTRY", "symbol": worker.symbol, "side": side, "price": price})
         return intent
 
@@ -400,6 +476,10 @@ def _restore_paper_operation(row: dict[str, Any]) -> dict[str, Any]:
     operation["current_time"] = operation.get("current_time") or operation.get("entry_time")
     operation["current_price"] = operation.get("current_price") or operation.get("entry_price")
     operation["level"] = "H1"
+    entry = float(operation.get("entry_price") or 0)
+    if entry > 0:
+        operation["stop_percent"] = abs(float(operation.get("stop_price") or entry) - entry) / entry * 100
+        operation["target_percent"] = abs(float(operation.get("target_price") or entry) - entry) / entry * 100
     return operation
 
 
@@ -415,7 +495,7 @@ class ProductionWorkerManager:
         self.owner_id = uuid4().hex
         self.workers: dict[tuple[str, str], SymbolWorker] = {}
 
-    async def start(self, user_id: str, symbol: str, *, mode: str = "paper", interval: str = "1m", tracker_period: int = 5, stop_percent: float = 0.2, target_percent: float = 1.0, quantity: float = 0.0) -> dict[str, Any]:
+    async def start(self, user_id: str, symbol: str, *, mode: str = "paper", interval: str = "1m", tracker_period: int = 5, stop_percent: float = 0.2, target_percent: float = 1.0, quantity: float = 0.0, risk_percent: float = 1.0, leverage: float = 1.0, initial_balance: float = 100.0) -> dict[str, Any]:
         key = (user_id, symbol.upper())
         existing = self.workers.get(key)
         if existing is not None:
@@ -428,21 +508,44 @@ class ProductionWorkerManager:
             claimed = await asyncio.to_thread(self.config_store.claim_lease, user_id, symbol.upper(), self.owner_id)
             if not claimed:
                 raise ValueError("Ya existe un worker activo para este símbolo en otra instancia.")
-        adapter: ExecutionAdapter = PaperExecutionAdapter() if mode == "paper" else BinanceExecutionAdapter(self.binance_manager, self.execution_store, quantity)
+        adapter: ExecutionAdapter = PaperExecutionAdapter(initial_balance=max(1.0, float(initial_balance))) if mode == "paper" else BinanceExecutionAdapter(self.binance_manager, self.execution_store, quantity)
         worker = SymbolWorker(user_id, symbol.upper(), interval, max(1, int(tracker_period)), abs(float(stop_percent)), abs(float(target_percent)), adapter, self.paper_store, self.events)
         worker.runtime_store = self.config_store
         worker.lease_owner_id = self.owner_id if self.config_store is not None else None
         worker.history_provider = lambda: self.gateway.snapshot(worker.symbol, worker.interval)
-        worker.bars = self.gateway.snapshot(worker.symbol, interval)[-1500:]
+        worker.bars = self.gateway.snapshot(worker.symbol, interval)[-WINDOW_BARS:]
         try:
             runtime = await asyncio.to_thread(self.config_store.runtime, user_id, worker.symbol) if self.config_store is not None else None
             if runtime is not None and runtime.get("last_bar_time") is not None:
                 worker.last_bar_time = runtime.get("last_bar_time")
+            if runtime is not None:
+                worker.tracker_operation = runtime.get("tracker_operation")
+                saved_parameters = runtime.get("adaptive_parameters")
+                if isinstance(saved_parameters, dict) and saved_parameters:
+                    worker.adaptive_parameters = saved_parameters
+                    worker.tracker_period = max(4, min(20, int(saved_parameters.get("tracker_period", worker.tracker_period))))
+                    worker.stop_percent = max(0.05, float(saved_parameters.get("stop_percent", worker.stop_percent)))
+                    worker.target_percent = max(0.1, float(saved_parameters.get("target_percent", worker.target_percent)))
+                    worker.parameter_version = int(saved_parameters.get("parameter_version", 0))
+                    if isinstance(adapter, PaperExecutionAdapter):
+                        adapter.initial_balance = max(1.0, float(saved_parameters.get("initial_balance", adapter.initial_balance)))
+            if not worker.adaptive_parameters:
+                worker.adaptive_parameters = {
+                    "status": "INITIAL", "window_hours": min(8.0, len(worker.bars) / 60),
+                    "bars": len(worker.bars), "tracker_period": worker.tracker_period,
+                    "stop_percent": worker.stop_percent, "target_percent": worker.target_percent,
+                    "risk_percent": max(0.01, min(float(risk_percent), 100.0)), "leverage": max(1.0, min(float(leverage), 125.0)),
+                    "minroe_limit_percent": worker.stop_percent * max(1.0, min(float(leverage), 125.0)),
+                    "initial_balance": max(1.0, min(float(initial_balance), 1_000_000.0)),
+                    "risk_usdt": max(1.0, min(float(initial_balance), 1_000_000.0)) * max(0.01, min(float(risk_percent), 100.0)) / 100,
+                    "sample_operations": 0,
+                    "last_bar_time": worker.bars[-1]["time"] if worker.bars else None,
+                }
             open_operation = await asyncio.to_thread(self.paper_store.open_for_symbol, user_id, worker.symbol) if mode == "paper" else None
             if open_operation is not None:
                 worker.operation = _restore_paper_operation(open_operation)
             if self.config_store is not None:
-                await asyncio.to_thread(self.config_store.save, user_id, {"symbol": worker.symbol, "mode": mode, "interval": interval, "tracker_period": worker.tracker_period, "stop_percent": worker.stop_percent, "target_percent": worker.target_percent, "quantity": quantity, "enabled": True})
+                await asyncio.to_thread(self.config_store.save, user_id, {"symbol": worker.symbol, "mode": mode, "interval": interval, "tracker_period": worker.tracker_period, "stop_percent": worker.stop_percent, "target_percent": worker.target_percent, "quantity": quantity, "risk_percent": worker.adaptive_parameters.get("risk_percent", risk_percent), "leverage": worker.adaptive_parameters.get("leverage", leverage), "initial_balance": worker.adaptive_parameters.get("initial_balance", initial_balance), "enabled": True})
         except Exception:
             if self.config_store is not None:
                 await asyncio.to_thread(self.config_store.release_lease, user_id, worker.symbol, self.owner_id, "ERROR")
@@ -457,8 +560,9 @@ class ProductionWorkerManager:
         return self.status(user_id, symbol)
 
     async def _initialize_worker(self, worker: SymbolWorker, runtime: dict[str, Any] | None) -> None:
+        restored_parameters = bool(runtime and isinstance(runtime.get("adaptive_parameters"), dict) and runtime.get("adaptive_parameters"))
         try:
-            if len(self.gateway.snapshot(worker.symbol, worker.interval)) < 1500:
+            if len(self.gateway.snapshot(worker.symbol, worker.interval)) < WINDOW_BARS:
                 await self.gateway.prime(worker.symbol, worker.interval, self.base_url)
         except asyncio.CancelledError:
             raise
@@ -467,7 +571,7 @@ class ProductionWorkerManager:
             worker.last_error = f"market history seed failed: {exc}"[:300]
             logger.exception("production_worker_history_seed_failed symbol=%s", worker.symbol)
         try:
-            worker.bars = self.gateway.snapshot(worker.symbol, worker.interval)[-1500:]
+            worker.bars = self.gateway.snapshot(worker.symbol, worker.interval)[-WINDOW_BARS:]
             closed_bars = [bar for bar in worker.bars if bar.get("closed")]
             gap_exceeded = False
             if worker.last_bar_time is None and closed_bars:
@@ -480,9 +584,28 @@ class ProductionWorkerManager:
                     worker.last_bar_time = int(closed_bars[-1]["time"])
                     gap_exceeded = True
             if runtime is not None and runtime.get("last_bar_time") is not None and not gap_exceeded:
-                for bar in worker.bars:
+                worker.bars = [bar for bar in worker.bars if bool(bar.get("closed")) and int(bar["time"]) <= int(runtime["last_bar_time"])]
+            if runtime is not None and runtime.get("last_bar_time") is not None and not gap_exceeded:
+                for bar in self.gateway.snapshot(worker.symbol, worker.interval)[-WINDOW_BARS:]:
                     if bool(bar.get("closed")) and int(bar["time"]) > worker.last_bar_time:
                         worker.offer_market_event({"type": "kline", "interval": worker.interval, "bar": bar})
+            if not restored_parameters:
+                params = await asyncio.to_thread(
+                    calibrate_tracker_parameters,
+                    list(worker.bars),
+                    risk_percent=float(worker.adaptive_parameters.get("risk_percent", 1.0)),
+                    leverage=float(worker.adaptive_parameters.get("leverage", 1.0)),
+                    initial_balance=float(worker.adaptive_parameters.get("initial_balance", 100.0)),
+                    current_tracker_period=worker.tracker_period,
+                )
+                worker.adaptive_parameters = params
+                worker.tracker_period = int(params["tracker_period"])
+                worker.stop_percent = float(params["stop_percent"])
+                worker.target_percent = float(params["target_percent"])
+                worker.parameter_version += 1
+                worker.adaptive_parameters["parameter_version"] = worker.parameter_version
+                await self.events.publish({"type": "TRACKER_PARAMETERS_UPDATED", "symbol": worker.symbol, **params, "parameter_version": worker.parameter_version})
+                await worker._persist_runtime_snapshot()
         except Exception as exc:
             worker.status = "ERROR"
             worker.last_error = f"worker initialization failed: {exc}"[:300]
@@ -507,7 +630,7 @@ class ProductionWorkerManager:
             if config.get("mode") == "live" and not resume_live:
                 continue
             try:
-                await self.start(str(config["user_id"]), str(config["symbol"]), mode=str(config["mode"]), interval=str(config["interval"]), tracker_period=int(config["tracker_period"]), stop_percent=float(config["stop_percent"]), target_percent=float(config["target_percent"]), quantity=float(config["quantity"]))
+                await self.start(str(config["user_id"]), str(config["symbol"]), mode=str(config["mode"]), interval=str(config["interval"]), tracker_period=int(config["tracker_period"]), stop_percent=float(config["stop_percent"]), target_percent=float(config["target_percent"]), quantity=float(config["quantity"]), risk_percent=float(config.get("risk_percent", 1.0)), leverage=float(config.get("leverage", 1.0)), initial_balance=float(config.get("initial_balance", 100.0)))
             except Exception:
                 logger.exception("production_worker_restore_failed symbol=%s", config.get("symbol"))
 
@@ -522,6 +645,9 @@ class ProductionWorkerManager:
         if worker.initialization_task is not None and not worker.initialization_task.done():
             worker.initialization_task.cancel()
             await asyncio.gather(worker.initialization_task, return_exceptions=True)
+        if worker.recalibration_task is not None and not worker.recalibration_task.done():
+            worker.recalibration_task.cancel()
+            await asyncio.gather(worker.recalibration_task, return_exceptions=True)
         worker.ready.set()
         try:
             await asyncio.wait_for(worker.queue.join(), timeout=10)
@@ -539,7 +665,7 @@ class ProductionWorkerManager:
         worker = self.workers.get((user_id, symbol.upper()))
         latencies = sorted(worker.latency_samples_ms) if worker else []
         percentile = lambda value: round(latencies[min(len(latencies) - 1, int((len(latencies) - 1) * value))], 3) if latencies else None
-        return {"running": worker is not None and worker.running, "symbol": symbol.upper(), "mode": worker.adapter.mode if worker else None, "operation": worker.operation if worker else None, "bars": len(worker.bars) if worker else 0, "status": worker.status if worker else "STOPPED", "last_bar_time": worker.last_bar_time if worker else None, "queue_depth": worker.queue.qsize() if worker else 0, "events_received": worker.events_received if worker else 0, "events_processed": worker.events_processed if worker else 0, "duplicate_events": worker.duplicate_events if worker else 0, "queue_overflows": worker.queue_overflows if worker else 0, "last_event_latency_ms": worker.last_event_latency_ms if worker else None, "p50_event_latency_ms": percentile(.5), "p95_event_latency_ms": percentile(.95), "max_event_latency_ms": round(latencies[-1], 3) if latencies else None, "last_error": worker.last_error if worker else None}
+        return {"running": worker is not None and worker.running, "symbol": symbol.upper(), "mode": worker.adapter.mode if worker else None, "operation": worker.operation if worker else None, "tracker_operation": worker.tracker_operation if worker else None, "adaptive_parameters": worker.adaptive_parameters if worker else None, "parameter_version": worker.parameter_version if worker else None, "bars": len(worker.bars) if worker else 0, "status": worker.status if worker else "STOPPED", "last_bar_time": worker.last_bar_time if worker else None, "queue_depth": worker.queue.qsize() if worker else 0, "events_received": worker.events_received if worker else 0, "events_processed": worker.events_processed if worker else 0, "duplicate_events": worker.duplicate_events if worker else 0, "queue_overflows": worker.queue_overflows if worker else 0, "last_event_latency_ms": worker.last_event_latency_ms if worker else None, "p50_event_latency_ms": percentile(.5), "p95_event_latency_ms": percentile(.95), "max_event_latency_ms": round(latencies[-1], 3) if latencies else None, "last_error": worker.last_error if worker else None}
 
     def list(self, user_id: str) -> list[dict[str, Any]]:
         return [self.status(user_id, symbol) for uid, symbol in self.workers if uid == user_id]

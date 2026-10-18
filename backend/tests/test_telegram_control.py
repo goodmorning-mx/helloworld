@@ -33,6 +33,7 @@ def test_control_starts_only_paper_and_normalizes_symbols():
         assert workers.started == [("owner", "BTCUSDT", {
             "mode": "paper", "interval": "1m", "tracker_period": 5,
             "stop_percent": 0.2, "target_percent": 1.0,
+            "risk_percent": 1.0, "leverage": 1.0, "initial_balance": 100.0,
         })]
 
     asyncio.run(run())
@@ -114,12 +115,24 @@ def test_internal_scanner_snapshot_uses_shared_cached_analysis_and_compact_resul
             ],
         }
 
+    class FakeWorkerManager:
+        def list(self, _user_id):
+            return [{
+                "symbol": "ETHUSDT", "running": True, "parameter_version": 7,
+                "adaptive_parameters": {"target_percent": 2.5, "stop_percent": 0.4, "tracker_period": 9, "risk_percent": 1.2, "risk_usdt": 1.2},
+            }]
+
     monkeypatch.setattr(main, "binance_active_symbols", active_symbols)
     monkeypatch.setattr(main, "binance_scanner_analysis", scanner_analysis)
+    monkeypatch.setattr(main, "production_workers", FakeWorkerManager())
     snapshot = asyncio.run(main._telegram_scan_snapshot("owner", 2))
 
     assert snapshot["symbols"][0]["symbol"] == "ETHUSDT"
     assert "profiling" not in snapshot["symbols"][0]
+    assert snapshot["symbols"][0]["tracker_period"] == 9
+    assert snapshot["symbols"][0]["parameter_source"] == "TRACKER_WORKER"
+    assert "N 9" in snapshot["text"]
+    assert "SL 0.40%" in snapshot["text"]
     assert calls["analysis"]["symbols"] == "BTCUSDT,ETHUSDT"
     assert calls["analysis"]["limit"] == 480
     assert "ETHUSDT" in snapshot["text"]
