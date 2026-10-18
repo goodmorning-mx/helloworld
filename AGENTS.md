@@ -119,7 +119,9 @@ The current project already has an async Telegram service in `backend/app/telegr
 - `TelegramSink` is bounded and rate-limited.
 - `BackendEventBus` fans out events to Telegram.
 - It is initialized and managed by `backend/app/main.py`.
-- Current events include scanner state changes, worker start/stop, and Paper/Live entries/exits.
+- `TRACKER_SIGNAL` is published by Paper/Live execution adapters when a Tracker operation opens from a completed candle. Telegram messages carry symbol, side, level, price, interval, candle time, and SL/TP.
+- Signal IDs are stable per symbol/interval/candle/side/level and deduplicated in a bounded in-memory set. Telegram HTTP errors must not log request URLs because they contain the bot token.
+- Scanner state, worker start/stop, and Paper/Live exit events also use the event bus.
 
 Backend runtime variables needed in Coolify:
 
@@ -130,7 +132,7 @@ TELEGRAM_ENABLED=true
 TELEGRAM_MIN_DELAY=0.25
 ```
 
-These variables are not yet documented in `.env.example` and are not explicitly passed by local `compose.yaml`. The legacy implementation is in `src/helloworld/main.py` around `TelegramSink`, queue listening, and startup. It also contains duplicated implementations and a hardcoded token; treat that token as compromised, rotate it, and never copy it into the current project or documentation.
+These variables are documented in `.env.example` and passed by local `compose.yaml`. The deployment is a separate Coolify backend Application, so GitHub repository secrets do not populate the Coolify runtime. Configure the same variable names in that backend's runtime environment. The legacy implementation is in `src/helloworld/main.py` around `TelegramSink`, queue listening, and startup. It also contains duplicated implementations and a hardcoded token; treat that token as compromised, rotate it, and never copy it into the current project or documentation.
 
 ### Binance credentials
 
