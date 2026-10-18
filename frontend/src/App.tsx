@@ -3871,7 +3871,34 @@ function Workspace() {
       if (!operation.closed) return { label: 'IN PROGRESS', className: 'scanner-status-in-progress' };
       return { label: 'DONE', className: 'scanner-status-done' };
     };
-  const marketScanner = broker === 'binance' ? <section className="market-overview" aria-label="Resumen de operación Binance"><div className="market-scanner-training"><div className="training-card-content"><span className="positions-kicker">TRAINING OPERATOR · PNL NETO DIARIO</span><strong>${trainingPnl.toFixed(2)} / $40.00</strong><div className="training-progress-track"><span style={{ width: `${trainingProgress * 100}%` }} /></div><small>{trainingPnl >= 40 ? 'Meta diaria completada' : `Faltan $${Math.max(0, 40 - trainingPnl).toFixed(2)}`}</small></div><div className="binance-balance-card"><span className="positions-kicker">BINANCE · BALANCE</span><strong>{binanceLiveAccount?.futures_balance != null ? `${Number(binanceLiveAccount.futures_balance).toFixed(2)} USDT` : '—'}</strong><small>Disponible {binanceLiveAccount?.available_balance != null ? `${Number(binanceLiveAccount.available_balance).toFixed(2)} USDT` : '—'}</small><small>PNL abierto {binanceLiveAccount?.total_unrealized_pnl != null ? `${Number(binanceLiveAccount.total_unrealized_pnl) >= 0 ? '+' : ''}${Number(binanceLiveAccount.total_unrealized_pnl).toFixed(4)} USDT` : '—'}</small></div><div className="replay-card"><span className="positions-kicker">REPLAY · VELA A VELA</span>{replayControls}</div>{levelAdjustCard}</div><div className="market-preview-slot"><div className="market-preview-card">{previewControls}{productionOrderPreview}</div></div></section> : null;
+  const parameterAnalysis = trackerScannerDetail?.symbol === symbol ? trackerScannerDetail : scannerAnalysisBySymbol[symbol] ?? null;
+  const parameterStatus = replayState.active
+    ? 'REPLAY'
+    : trackerDetailStatus === 'loading'
+      ? 'ACTUALIZANDO'
+      : trackerDetailStatus === 'error'
+        ? 'ERROR'
+        : parameterAnalysis?.status === 'STALE'
+          ? 'DESACTUALIZADO'
+          : parameterAnalysis?.status === 'VALID'
+            ? 'SINCRONIZADO'
+            : 'ESPERANDO';
+  const parameterLastBar = parameterAnalysis?.last_bar_time
+    ? new Date(parameterAnalysis.last_bar_time * 1000).toLocaleTimeString('es-MX', { timeZone: timezone, hour: '2-digit', minute: '2-digit' })
+    : '—';
+  const parameterCard = <aside className={`parameter-card parameter-card-${parameterStatus.toLowerCase()}`} aria-label={`Parámetros activos de ${symbol}`}>
+    <div className="parameter-card-head"><div><span className="positions-kicker">PARÁMETROS · {symbol}</span><strong>Ventana de ajuste</strong></div><b role="status">{parameterStatus}</b></div>
+    <div className="parameter-card-grid">
+      <div className="parameter-value parameter-value-tp"><small>TP SCANNER</small><strong>{parameterAnalysis?.tp_optimal_percent != null ? `+${parameterAnalysis.tp_optimal_percent.toFixed(2)}%` : '—'}</strong><em>activo +{binanceTargetPercent.toFixed(2)}%</em></div>
+      <div className="parameter-value parameter-value-sl"><small>SL FIJO ACTUAL</small><strong>−{binanceStopPercent.toFixed(2)}%</strong><em>configurado para ejecución</em></div>
+      <div className="parameter-value parameter-value-limit"><small>SL HISTÓRICO · MINROE</small><strong>{parameterAnalysis?.loss_limit_percent != null ? `−${Math.abs(parameterAnalysis.loss_limit_percent).toFixed(2)}%` : '—'}</strong><em>umbral de simulación 8h</em></div>
+      <div className="parameter-value parameter-value-level"><small>LEVELS N ACTIVO</small><strong>{trackerPeriod} velas</strong><em>Tracker · marco 1m</em></div>
+      <div className="parameter-value parameter-value-risk"><small>RISK ENGINE</small><strong>{activeRiskPercent.toFixed(2)}% · {productionPreviewData?.leverage ?? scannerSelectedLeverage}x</strong><em>{riskPreviewUsd.toFixed(2)} USDT de riesgo estimado</em></div>
+      <div className="parameter-value parameter-value-window"><small>VENTANA RODANTE</small><strong>8h · {parameterAnalysis?.bars ?? 0}/480</strong><em>{parameterAnalysis?.operations ?? 0} ops · última vela {parameterLastBar}</em></div>
+    </div>
+    <small className="parameter-card-foot">TP sincronizado con scanner. MINROE es histórico; el SL de ejecución sigue fijo. N muestra el valor activo.</small>
+  </aside>;
+  const marketScanner = broker === 'binance' ? <section className="market-overview" aria-label="Resumen de operación Binance"><div className="market-scanner-training"><div className="training-card-content"><span className="positions-kicker">TRAINING OPERATOR · PNL NETO DIARIO</span><strong>${trainingPnl.toFixed(2)} / $40.00</strong><div className="training-progress-track"><span style={{ width: `${trainingProgress * 100}%` }} /></div><small>{trainingPnl >= 40 ? 'Meta diaria completada' : `Faltan $${Math.max(0, 40 - trainingPnl).toFixed(2)}`}</small></div><div className="binance-balance-card"><span className="positions-kicker">BINANCE · BALANCE</span><strong>{binanceLiveAccount?.futures_balance != null ? `${Number(binanceLiveAccount.futures_balance).toFixed(2)} USDT` : '—'}</strong><small>Disponible {binanceLiveAccount?.available_balance != null ? `${Number(binanceLiveAccount.available_balance).toFixed(2)} USDT` : '—'}</small><small>PNL abierto {binanceLiveAccount?.total_unrealized_pnl != null ? `${Number(binanceLiveAccount.total_unrealized_pnl) >= 0 ? '+' : ''}${Number(binanceLiveAccount.total_unrealized_pnl).toFixed(4)} USDT` : '—'}</small></div><div className="replay-card"><span className="positions-kicker">REPLAY · VELA A VELA</span>{replayControls}</div>{levelAdjustCard}{parameterCard}</div><div className="market-preview-slot"><div className="market-preview-card">{previewControls}{productionOrderPreview}</div></div></section> : null;
   const tradingAgent = <TradingAgentChat activeSymbol={symbol} interval={interval} apiUrl={apiUrl} accessToken={auth.accessToken} />;
 
   const toolOptions = [['line', '╱', 'Línea'], ['ruler', '▥', 'Medir'], ['long', 'L', 'Long'], ['short', 'S', 'Short'], ['zoom', '⌗', 'Zoom lazo'], ['pan', '✋', 'Pan']] as const;
