@@ -291,6 +291,19 @@ class PaperExecutionAdapter:
         notional = self.risk_usdt / (worker.stop_percent / 100)
         operation = {"id": f"paper-worker-{uuid4().hex[:12]}", "symbol": worker.symbol, "side": side, "chart": "entry", "level": bar.get("level"), "entry_time": int(bar["time"]), "entry_price": price, "current_time": int(bar["time"]), "current_price": price, "stop_time": int(bar["time"]), "stop_price": stop, "target_time": int(bar["time"]), "target_price": target, "status": "OPEN", "close_reason": None, "risk_percent": None, "notional": notional, "margin": notional, "pnl": 0.0, "source": "realtime-engine", "idempotency_key": f"tracker:{worker.symbol}:{worker.interval}:{bar['time']}:{side}:{bar.get('level', 'H1')}"}
         worker.operation = await asyncio.to_thread(_persist_open, worker, operation)
+        await worker.events.publish({
+            "type": "TRACKER_SIGNAL",
+            "signal_id": f"{worker.symbol}:{worker.interval}:{bar['time']}:{side}:{bar.get('level', 'H1')}",
+            "symbol": worker.symbol,
+            "side": side,
+            "level": bar.get("level", "H1"),
+            "interval": worker.interval,
+            "bar_time": int(bar["time"]),
+            "price": price,
+            "stop_percent": worker.stop_percent,
+            "target_percent": worker.target_percent,
+            "mode": self.mode,
+        })
         await worker.events.publish({"type": "PAPER_ENTRY", "symbol": worker.symbol, "side": side, "price": price})
         return worker.operation
 
@@ -339,6 +352,19 @@ class BinanceExecutionAdapter:
             await asyncio.to_thread(self.store.update, intent["id"], worker.user_id, status="ERROR", last_error=str(exc))
             raise
         worker.operation = {"id": intent["id"], "side": side, "level": bar.get("level"), "entry_price": average_open, "notional": actual_quantity * average_open, "stop_price": stop, "target_price": target, "status": "PROTECTED"}
+        await worker.events.publish({
+            "type": "TRACKER_SIGNAL",
+            "signal_id": f"{worker.symbol}:{worker.interval}:{bar['time']}:{side}:{bar.get('level', 'H1')}",
+            "symbol": worker.symbol,
+            "side": side,
+            "level": bar.get("level", "H1"),
+            "interval": worker.interval,
+            "bar_time": int(bar["time"]),
+            "price": average_open,
+            "stop_percent": worker.stop_percent,
+            "target_percent": worker.target_percent,
+            "mode": self.mode,
+        })
         await worker.events.publish({"type": "LIVE_ENTRY", "symbol": worker.symbol, "side": side, "price": price})
         return intent
 

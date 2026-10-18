@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections import deque
 from collections.abc import Awaitable
+from datetime import datetime, timezone
 from typing import Callable
 
 import httpx
@@ -24,6 +26,8 @@ class TelegramSink:
         self._task: asyncio.Task[None] | None = None
         self._client: httpx.AsyncClient | None = None
         self._lock = asyncio.Lock()
+        self._seen_signals: set[str] = set()
+        self._seen_signal_order: deque[str] = deque()
 
     @property
     def configured(self) -> bool:
@@ -45,17 +49,30 @@ class TelegramSink:
             await self._client.aclose()
             self._client = None
 
-    async def send(self, message: str) -> None:
+    async def send(self, message: str) -> bool:
         if not self.configured:
-            return
+            return False
         if self._task is None:
             async with self._lock:
                 if self._task is None:
                     await self.start()
         try:
             self._queue.put_nowait(str(message)[:4096])
+            return True
         except asyncio.QueueFull:
             logger.warning("telegram_queue_full")
+            return False
+
+    async def send_once(self, key: str, message: str) -> bool:
+        if key in self._seen_signals:
+            return False
+        if not await self.send(message):
+            return False
+        self._seen_signals.add(key)
+        self._seen_signal_order.append(key)
+        if len(self._seen_signal_order) > 2000:
+            self._seen_signals.discard(self._seen_signal_order.popleft())
+        return True
 
     async def _run(self) -> None:
         while True:
@@ -69,8 +86,10 @@ class TelegramSink:
                     response.raise_for_status()
             except asyncio.CancelledError:
                 raise
-            except Exception:
-                logger.exception("telegram_delivery_failed")
+            except Exception as exc:
+                # HTTP exceptions may include the bot-token URL; never log
+                # exception text or request details from Telegram delivery.
+                logger.warning("telegram_delivery_failed error_type=%s", type(exc).__name__)
             await asyncio.sleep(self.min_delay)
 
 
@@ -92,6 +111,34 @@ class BackendEventBus:
 def telegram_event_sink(telegram: TelegramSink) -> Callable[[dict[str, object]], Awaitable[None]]:
     async def consume(event: dict[str, object]) -> None:
         kind = str(event.get("type", "EVENT")).upper()
+        if kind in {"PAPER_ENTRY", "LIVE_ENTRY"}:
+            # The richer TRACKER_SIGNAL event below represents these entries.
+            return
+        if kind == "TRACKER_SIGNAL":
+            signal_id = str(event.get("signal_id", ""))
+            side = str(event.get("side", "?"))
+            symbol = str(event.get("symbol", ""))
+            level = str(event.get("level", "?"))
+            interval = str(event.get("interval", "1m"))
+            price = event.get("price", "?")
+            bar_time = event.get("bar_time")
+            mode = str(event.get("mode", "paper")).upper()
+            stop = event.get("stop_percent")
+            target = event.get("target_percent")
+            try:
+                candle_label = datetime.fromtimestamp(float(bar_time), timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+            except (TypeError, ValueError, OverflowError, OSError):
+                candle_label = "hora desconocida"
+            risk_label = f" · SL -{stop}% · TP +{target}%" if stop is not None and target is not None else ""
+            message = (
+                f"Señal Tracker {mode}: {side} {symbol} · {level} · "
+                f"precio {price} · marco {interval} · {candle_label}{risk_label}"
+            )
+            if signal_id:
+                await telegram.send_once(signal_id, message)
+            else:
+                await telegram.send(message)
+            return
         symbol = str(event.get("symbol", ""))
         details = " · ".join(f"{key}={value}" for key, value in event.items() if key not in {"type", "symbol"})
         await telegram.send(f"{kind} {symbol}" + (f" · {details}" if details else ""))
@@ -150,8 +197,10 @@ class TelegramCommandService:
                     await self._handle_update(update)
             except asyncio.CancelledError:
                 raise
-            except Exception:
-                logger.exception("telegram_command_poll_failed")
+            except Exception as exc:
+                # The request URL contains the bot token; never log exceptions
+                # or request details from Telegram polling.
+                logger.warning("telegram_command_poll_failed error_type=%s", type(exc).__name__)
                 await asyncio.sleep(3)
 
     async def _handle_update(self, update: dict[str, object]) -> None:
