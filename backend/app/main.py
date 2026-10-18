@@ -42,6 +42,7 @@ from app.binance_tp_worker import BinanceTakeProfitWorker
 from app.backtest_engine import MAX_BACKTEST_DAYS, fetch_binance_history, run_storycard_backtest, _bar_context
 from app.production_worker import ProductionWorkerConfigStore, ProductionWorkerManager
 from app.telegram_service import BackendEventBus, TelegramCommandService, TelegramSink, telegram_event_sink
+from app.telegram_control import TelegramControlService, format_scanner_message
 from app.scanner_analysis import ScannerAnalysisConfig, activity_state, analyze_tracker, analyze_tracker_operations
 from app.scanner_cache import SCANNER_MAX_BARS, SCANNER_WINDOW_SECONDS, ScannerCache
 from app.profiling import Profiling
@@ -67,10 +68,65 @@ binance_execution_supervisor = BinanceExecutionSupervisor(settings, binance_cred
 binance_tp_worker = BinanceTakeProfitWorker(binance_manager, binance_execution_store, settings.binance_base_url)
 telegram_sink = TelegramSink(settings.telegram_bot_token, settings.telegram_chat_id, settings.telegram_min_delay, enabled=settings.telegram_enabled)
 backend_events = BackendEventBus()
-backend_events.add_sink(telegram_event_sink(telegram_sink))
+if settings.telegram_signal_notifications_enabled:
+    backend_events.add_sink(telegram_event_sink(telegram_sink))
 production_worker_config_store = ProductionWorkerConfigStore(engine)
 production_workers = ProductionWorkerManager(binance_market_gateway, paper_operation_store, backend_events, binance_manager, binance_execution_store, production_worker_config_store, settings.binance_base_url)
-telegram_commands = TelegramCommandService(settings.telegram_bot_token, settings.telegram_chat_id, settings.telegram_command_user_id, production_workers, telegram_sink)
+
+
+async def _telegram_scan_snapshot(user_id: str, limit: int) -> dict[str, object]:
+    identity = type("TelegramIdentity", (), {"user_id": user_id})()
+    universe = await asyncio.to_thread(
+        binance_active_symbols,
+        limit=limit,
+        min_quote_volume=50_000_000,
+        min_trades=100_000,
+        min_movement_pct=0.5,
+        horizon=10,
+        interval="5m",
+        identity=identity,
+    )
+    candidates = universe.get("symbols", [])
+    if not isinstance(candidates, list):
+        candidates = []
+    symbols = [str(item.get("symbol", "")) for item in candidates if isinstance(item, dict)]
+    movement = [str(item.get("variation_average_pct", 0)) for item in candidates if isinstance(item, dict)]
+    if not symbols:
+        return {"symbols": [], "updated_at": int(time.time()), "text": "Scanner: no hay símbolos elegibles ahora."}
+    analysis = await binance_scanner_analysis(
+        symbols=",".join(symbols),
+        tracker_period=5,
+        stop_percent=0.2,
+        initial_balance=100,
+        risk_percent=1,
+        leverage=1,
+        limit=480,
+        movement_averages=",".join(movement),
+        include_operations=False,
+        identity=identity,
+    )
+    source_rows = [item for item in analysis.get("symbols", []) if isinstance(item, dict)]
+    rows = [
+        {key: row.get(key) for key in (
+            "symbol", "status", "tp_optimal_percent", "average_duration_minutes",
+            "operations", "wins", "losses", "win_rate", "equity_final",
+            "final_result_usdt", "activity_state", "last_bar_time", "bars", "error",
+        ) if key in row}
+        for row in source_rows
+    ]
+    rows.sort(key=lambda row: float(row.get("final_result_usdt") if row.get("final_result_usdt") is not None else -1_000_000), reverse=True)
+    return {"symbols": rows, "updated_at": analysis.get("updated_at"), "config": analysis.get("config"), "text": format_scanner_message(rows, updated_at=analysis.get("updated_at"))}
+
+
+telegram_control = TelegramControlService(production_workers, _telegram_scan_snapshot)
+telegram_commands = TelegramCommandService(
+    settings.telegram_bot_token,
+    settings.telegram_chat_id,
+    settings.telegram_command_user_id,
+    telegram_control,
+    telegram_sink,
+    sender_id=settings.telegram_command_sender_id,
+)
 _binance_exchange_info_cache: tuple[float, dict[str, object]] | None = None
 _binance_exchange_info_lock = Lock()
 _active_symbols_cache: OrderedDict[tuple[object, ...], tuple[float, dict[str, object]]] = OrderedDict()
@@ -307,6 +363,10 @@ class ProductionWorkerInput(BaseModel):
     confirmed: bool = False
 
 
+class TelegramWorkerStartInput(BaseModel):
+    symbol: str = Field(min_length=3, max_length=32, pattern=r"^[A-Za-z0-9]+USDT$")
+
+
 def _binance_public_execution_rules(symbol: str) -> tuple[float, float, float, float, int, int]:
     """Return live price and the current public exchange filters for a symbol."""
     base = settings.binance_base_url.rstrip("/")
@@ -537,6 +597,44 @@ async def start_production_worker(payload: ProductionWorkerInput, identity: Auth
 @app.delete("/trading/production/workers/{symbol}")
 async def stop_production_worker(symbol: str, identity: AuthIdentity = Depends(identity_dependency(auth_service))) -> dict[str, object]:
     return await production_workers.stop(identity.user_id, symbol)
+
+
+@app.get("/telegram/scan")
+async def telegram_scan_api(limit: int = Query(20, ge=1, le=30), identity: AuthIdentity = Depends(identity_dependency(auth_service))) -> dict[str, object]:
+    """Return a ranked, formatted scanner snapshot for API clients and Telegram."""
+    return await telegram_control.scan(identity.user_id, limit)
+
+
+@app.get("/telegram/status")
+def telegram_status_api(identity: AuthIdentity = Depends(identity_dependency(auth_service))) -> dict[str, object]:
+    """Return command receiver health and Paper worker metrics without secrets."""
+    return {**telegram_control.status(identity.user_id), "command_receiver": telegram_commands.status()}
+
+
+@app.get("/telegram/workers")
+def telegram_workers_api(identity: AuthIdentity = Depends(identity_dependency(auth_service))) -> list[dict[str, object]]:
+    """List the caller's Paper worker runtime status and metrics."""
+    return telegram_control.status(identity.user_id)["workers"]
+
+
+@app.post("/telegram/workers")
+async def telegram_start_worker_api(payload: TelegramWorkerStartInput, identity: AuthIdentity = Depends(identity_dependency(auth_service))) -> dict[str, object]:
+    """Start a Paper Tracker worker; this endpoint has no Live mode."""
+    if not settings.production_worker_enabled:
+        raise HTTPException(status_code=503, detail="Los workers de Paper están deshabilitados.")
+    try:
+        return await telegram_control.start(identity.user_id, payload.symbol)
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@app.delete("/telegram/workers/{symbol}")
+async def telegram_stop_worker_api(symbol: str, identity: AuthIdentity = Depends(identity_dependency(auth_service))) -> dict[str, object]:
+    """Stop only the caller's named Paper worker."""
+    try:
+        return await telegram_control.stop(identity.user_id, symbol)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @app.get("/trading/binance/execution-intents")
