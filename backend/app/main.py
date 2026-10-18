@@ -110,10 +110,26 @@ async def _telegram_scan_snapshot(user_id: str, limit: int) -> dict[str, object]
         {key: row.get(key) for key in (
             "symbol", "status", "tp_optimal_percent", "average_duration_minutes",
             "operations", "wins", "losses", "win_rate", "equity_final",
-            "final_result_usdt", "activity_state", "last_bar_time", "bars", "error",
+            "final_result_usdt", "activity_state", "last_bar_time", "bars", "error", "loss_limit_percent",
         ) if key in row}
         for row in source_rows
     ]
+    active_workers = {str(item.get("symbol", "")).upper(): item for item in production_workers.list(user_id)}
+    for row in rows:
+        worker = active_workers.get(str(row.get("symbol", "")).upper())
+        adaptive = worker.get("adaptive_parameters") if worker and isinstance(worker.get("adaptive_parameters"), dict) else None
+        if worker and worker.get("running") and adaptive:
+            row.update({
+                "tp_optimal_percent": adaptive.get("target_percent"),
+                "loss_limit_percent": adaptive.get("minroe_limit_percent"),
+                "stop_percent": adaptive.get("stop_percent"),
+                "minroe_limit_percent": adaptive.get("minroe_limit_percent"),
+                "tracker_period": adaptive.get("tracker_period"),
+                "risk_percent": adaptive.get("risk_percent"),
+                "risk_usdt": adaptive.get("risk_usdt"),
+                "parameter_version": worker.get("parameter_version"),
+                "parameter_source": "TRACKER_WORKER",
+            })
     rows.sort(key=lambda row: float(row.get("final_result_usdt") if row.get("final_result_usdt") is not None else -1_000_000), reverse=True)
     return {"symbols": rows, "updated_at": analysis.get("updated_at"), "config": analysis.get("config"), "text": format_scanner_message(rows, updated_at=analysis.get("updated_at"))}
 
@@ -360,11 +376,17 @@ class ProductionWorkerInput(BaseModel):
     stop_percent: float = Field(default=0.2, gt=0, le=100)
     target_percent: float = Field(default=1.0, gt=0, le=1_000)
     quantity: float = Field(default=0, ge=0)
+    risk_percent: float = Field(default=1.0, gt=0, le=100)
+    leverage: float = Field(default=1.0, ge=1, le=125)
+    initial_balance: float = Field(default=100.0, ge=1, le=1_000_000)
     confirmed: bool = False
 
 
 class TelegramWorkerStartInput(BaseModel):
     symbol: str = Field(min_length=3, max_length=32, pattern=r"^[A-Za-z0-9]+USDT$")
+    risk_percent: float = Field(default=1.0, gt=0, le=100)
+    leverage: float = Field(default=1.0, ge=1, le=125)
+    initial_balance: float = Field(default=100.0, ge=1, le=1_000_000)
 
 
 def _binance_public_execution_rules(symbol: str) -> tuple[float, float, float, float, int, int]:
@@ -588,7 +610,7 @@ async def start_production_worker(payload: ProductionWorkerInput, identity: Auth
         if not payload.confirmed:
             raise HTTPException(status_code=409, detail="Confirma explícitamente el modo live.")
     try:
-        return await production_workers.start(identity.user_id, payload.symbol, mode=payload.mode, interval=payload.interval, tracker_period=payload.tracker_period, stop_percent=payload.stop_percent, target_percent=payload.target_percent, quantity=payload.quantity)
+        return await production_workers.start(identity.user_id, payload.symbol, mode=payload.mode, interval=payload.interval, tracker_period=payload.tracker_period, stop_percent=payload.stop_percent, target_percent=payload.target_percent, quantity=payload.quantity, risk_percent=payload.risk_percent, leverage=payload.leverage, initial_balance=payload.initial_balance)
     except ValueError as exc:
         code = 409 if "otra instancia" in str(exc) else 422
         raise HTTPException(status_code=code, detail=str(exc)) from exc
@@ -623,7 +645,7 @@ async def telegram_start_worker_api(payload: TelegramWorkerStartInput, identity:
     if not settings.production_worker_enabled:
         raise HTTPException(status_code=503, detail="Los workers de Paper están deshabilitados.")
     try:
-        return await telegram_control.start(identity.user_id, payload.symbol)
+        return await telegram_control.start(identity.user_id, payload.symbol, risk_percent=payload.risk_percent, leverage=payload.leverage, initial_balance=payload.initial_balance)
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
 

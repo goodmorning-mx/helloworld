@@ -1,8 +1,6 @@
 import asyncio
 from collections import deque
-from types import SimpleNamespace
-
-from app.production_worker import PaperExecutionAdapter
+from app.production_worker import PaperExecutionAdapter, SymbolWorker
 from app.telegram_service import TelegramSink, telegram_event_sink
 
 
@@ -62,25 +60,29 @@ def test_paper_worker_publishes_a_structured_tracker_signal(monkeypatch):
                 published.append(event)
 
         monkeypatch.setattr("app.production_worker._persist_open", lambda worker, operation: operation)
-        worker = SimpleNamespace(
-            symbol="BTCUSDT", interval="1m", stop_percent=0.2, target_percent=1.0,
-            user_id="user-1", operation=None, events=Events(), paper_store=object(),
-        )
-        adapter = PaperExecutionAdapter()
-        await adapter.open(worker, "LONG", 65000.5, {"time": 123, "level": "H2"})
+        class Store:
+            def create(self, user_id, values):
+                return values
+
+        worker = SymbolWorker("user-1", "BTCUSDT", "1m", 2, 0.2, 1.0, PaperExecutionAdapter(), Store(), Events())
+        await worker.on_market_event({"type": "kline", "interval": "1m", "bar": {"time": 60, "open": 100, "high": 100, "low": 100, "close": 100, "closed": True}})
+        await worker.on_market_event({"type": "kline", "interval": "1m", "bar": {"time": 120, "open": 100, "high": 100, "low": 100, "close": 100, "closed": True}})
+        await worker.on_market_event({"type": "kline", "interval": "1m", "bar": {"time": 180, "open": 100, "high": 101, "low": 99, "close": 101, "closed": True}})
 
         signal = next(event for event in published if event["type"] == "TRACKER_SIGNAL")
         assert signal == {
             "type": "TRACKER_SIGNAL",
-            "signal_id": "BTCUSDT:1m:123:LONG:H2",
+            "signal_id": "BTCUSDT:1m:180:SHORT:H2",
             "symbol": "BTCUSDT",
-            "side": "LONG",
+            "side": "SHORT",
             "level": "H2",
             "interval": "1m",
-            "bar_time": 123,
-            "price": 65000.5,
+            "bar_time": 180,
+            "price": 101.0,
             "stop_percent": 0.2,
             "target_percent": 1.0,
+            "tracker_period": 2,
+            "parameter_version": 0,
             "mode": "paper",
         }
 
