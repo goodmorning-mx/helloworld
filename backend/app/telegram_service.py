@@ -211,6 +211,7 @@ class TelegramCommandService:
                     {"command": "start", "description": "Iniciar Paper: start BTCUSDT"},
                     {"command": "stop", "description": "Detener Paper: stop BTCUSDT"},
                     {"command": "status", "description": "Estado de workers y bot"},
+                    {"command": "help", "description": "Mostrar comandos disponibles"},
                 ]},
             )
             command_response.raise_for_status()
@@ -286,7 +287,13 @@ class TelegramCommandService:
         self.last_command_at = datetime.now(timezone.utc)
         try:
             if command == "help":
-                await self.sink.send("Comandos: scan · start BTCUSDT · stop BTCUSDT · status. start siempre crea un worker Paper.")
+                await self.sink.send(
+                    "Comandos disponibles:\n"
+                    "/scan — escanear y ordenar el mercado\n"
+                    "/start BTCUSDT — iniciar un worker Paper\n"
+                    "/stop BTCUSDT — detener el worker Paper\n"
+                    "/status — consultar el bot y los workers activos"
+                )
             elif command == "scan":
                 if len(parts) != 1:
                     await self.sink.send("Uso: scan")

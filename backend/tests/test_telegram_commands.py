@@ -58,7 +58,48 @@ def test_telegram_commands_are_private_chat_allowlisted_and_paper_only():
         assert "No hay workers activos" in sink.messages[-1]
 
         await service._handle_update({"update_id": 6, "message": {"chat": {"id": 12345, "type": "group"}, "from": {"id": 56789}, "text": "status"}})
-        assert service.commands_processed == 4
+        await service._handle_update({"update_id": 7, "message": {"chat": {"id": 12345, "type": "group"}, "from": {"id": 56789}, "text": "/help"}})
+        assert "/scan" in sink.messages[-1]
+        assert "/start BTCUSDT" in sink.messages[-1]
+        assert "/stop BTCUSDT" in sink.messages[-1]
+        assert "/status" in sink.messages[-1]
+        assert "Paper" in sink.messages[-1]
+        assert service.commands_processed == 5
+
+    asyncio.run(scenario())
+
+
+def test_telegram_command_menu_includes_help():
+    class Response:
+        def raise_for_status(self):
+            pass
+
+        def json(self):
+            return {"ok": True}
+
+    class MenuClient:
+        def __init__(self):
+            self.payload = None
+            self.posted = asyncio.Event()
+
+        async def post(self, url, *, json):
+            self.payload = json
+            self.posted.set()
+            return Response()
+
+        async def get(self, url, *, params):
+            await asyncio.Event().wait()
+
+    async def scenario():
+        client = MenuClient()
+        service = TelegramCommandService("token", "12345", "user-1", FakeControl(), FakeSink(), sender_id="56789")
+        service._client = client
+        task = asyncio.create_task(service._run())
+        await client.posted.wait()
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+        commands = [item["command"] for item in client.payload["commands"]]
+        assert commands == ["scan", "start", "stop", "status", "help"]
 
     asyncio.run(scenario())
 
