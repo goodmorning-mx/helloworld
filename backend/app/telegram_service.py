@@ -147,21 +147,42 @@ def telegram_event_sink(telegram: TelegramSink) -> Callable[[dict[str, object]],
 
 
 class TelegramCommandService:
-    """Allowlisted, Paper-only Telegram controls for the realtime engine."""
+    """Private-chat command client for the Paper engine and shared scanner API."""
 
-    def __init__(self, bot_token: str, chat_id: str, user_id: str, worker_manager: object, sink: TelegramSink) -> None:
+    def __init__(self, bot_token: str, chat_id: str, user_id: str, control: object, sink: TelegramSink, *, sender_id: str = "") -> None:
         self.bot_token = bot_token.strip()
         self.chat_id = chat_id.strip()
         self.user_id = user_id.strip()
-        self.worker_manager = worker_manager
+        self.sender_id = sender_id.strip()
+        self.control = control
         self.sink = sink
         self._task: asyncio.Task[None] | None = None
         self._client: httpx.AsyncClient | None = None
         self._offset: int | None = None
+        self._seen_updates: set[int] = set()
+        self._seen_update_order: deque[int] = deque()
+        self.commands_processed = 0
+        self.last_command_at: datetime | None = None
+        self.last_error: str | None = None
+        self.updates_received = 0
+        self.poll_errors = 0
+        self.last_poll_at: datetime | None = None
 
     @property
     def configured(self) -> bool:
-        return bool(self.bot_token and self.chat_id and self.user_id)
+        return bool(self.bot_token and self.chat_id and self.user_id and self.sender_id)
+
+    def status(self) -> dict[str, object]:
+        return {
+            "configured": self.configured,
+            "running": self._task is not None and not self._task.done(),
+            "commands_processed": self.commands_processed,
+            "updates_received": self.updates_received,
+            "poll_errors": self.poll_errors,
+            "last_poll_at": self.last_poll_at.isoformat() if self.last_poll_at else None,
+            "last_command_at": self.last_command_at.isoformat() if self.last_command_at else None,
+            "last_error": self.last_error,
+        }
 
     async def start(self) -> None:
         if not self.configured or self._task is not None:
@@ -182,6 +203,25 @@ class TelegramCommandService:
     async def _run(self) -> None:
         assert self._client is not None
         url = f"https://api.telegram.org/bot{self.bot_token}/getUpdates"
+        try:
+            command_response = await self._client.post(
+                f"https://api.telegram.org/bot{self.bot_token}/setMyCommands",
+                json={"language_code": "es", "commands": [
+                    {"command": "scan", "description": "Escanear y ordenar el mercado"},
+                    {"command": "start", "description": "Iniciar Paper: start BTCUSDT"},
+                    {"command": "stop", "description": "Detener Paper: stop BTCUSDT"},
+                    {"command": "status", "description": "Estado de workers y bot"},
+                ]},
+            )
+            command_response.raise_for_status()
+            if not command_response.json().get("ok"):
+                raise RuntimeError("Telegram rejected the command menu")
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            # Telegram's URL contains the bot token; only log the exception type.
+            self.last_error = type(exc).__name__
+            logger.warning("telegram_command_menu_update_failed error_type=%s", type(exc).__name__)
         while True:
             try:
                 params = {"timeout": 25, "allowed_updates": '["message"]'}
@@ -192,7 +232,10 @@ class TelegramCommandService:
                 payload = response.json()
                 if not payload.get("ok"):
                     raise RuntimeError("Telegram getUpdates returned an unsuccessful response")
+                self.last_poll_at = datetime.now(timezone.utc)
+                self.last_error = None
                 for update in payload.get("result", []):
+                    self.updates_received += 1
                     self._offset = int(update.get("update_id", 0)) + 1
                     await self._handle_update(update)
             except asyncio.CancelledError:
@@ -200,36 +243,80 @@ class TelegramCommandService:
             except Exception as exc:
                 # The request URL contains the bot token; never log exceptions
                 # or request details from Telegram polling.
+                self.poll_errors += 1
+                self.last_error = type(exc).__name__
                 logger.warning("telegram_command_poll_failed error_type=%s", type(exc).__name__)
                 await asyncio.sleep(3)
 
     async def _handle_update(self, update: dict[str, object]) -> None:
+        try:
+            update_id = int(update.get("update_id", -1))
+        except (TypeError, ValueError):
+            update_id = -1
+        if update_id >= 0 and update_id in self._seen_updates:
+            return
         message = update.get("message")
         if not isinstance(message, dict):
             return
         chat = message.get("chat")
-        if not isinstance(chat, dict) or str(chat.get("id", "")) != self.chat_id:
+        sender = message.get("from")
+        if (
+            not isinstance(chat, dict)
+            or str(chat.get("id", "")) != self.chat_id
+            or chat.get("type") not in {"private", "group", "supergroup"}
+            or not isinstance(sender, dict)
+            or str(sender.get("id", "")) != self.sender_id
+        ):
             return
         text = message.get("text")
-        if not isinstance(text, str) or not text.startswith("/"):
+        if not isinstance(text, str):
             return
         parts = text.strip().split()
-        command = parts[0].split("@", 1)[0].lower()
-        if command in {"/startpaper", "/stoppaper"} and (len(parts) != 2 or len(parts[1]) > 32):
-            await self.sink.send("Uso: /startpaper BTCUSDT o /stoppaper BTCUSDT")
+        if not parts:
             return
+        command = parts[0].lstrip("/").split("@", 1)[0].lower()
+        if command not in {"scan", "start", "stop", "status", "help"}:
+            return
+        if update_id >= 0:
+            self._seen_updates.add(update_id)
+            self._seen_update_order.append(update_id)
+            if len(self._seen_update_order) > 2000:
+                self._seen_updates.discard(self._seen_update_order.popleft())
+        self.commands_processed += 1
+        self.last_command_at = datetime.now(timezone.utc)
         try:
-            if command == "/help":
-                await self.sink.send("Paper realtime: /workers, /startpaper BTCUSDT, /stoppaper BTCUSDT. Los comandos Live no están disponibles.")
-            elif command == "/workers":
-                workers = self.worker_manager.list(self.user_id)
-                summary = [f"{worker['symbol']} {worker['status']} · cola {worker['queue_depth']}" for worker in workers]
-                await self.sink.send("Workers Paper: " + ("; ".join(summary) if summary else "ninguno activo"))
-            elif command == "/startpaper":
-                result = await self.worker_manager.start(self.user_id, parts[1].upper(), mode="paper")
-                await self.sink.send(f"Paper realtime iniciado: {result['symbol']} ({result['status']}).")
-            elif command == "/stoppaper":
-                result = await self.worker_manager.stop(self.user_id, parts[1].upper())
-                await self.sink.send(f"Paper realtime detenido: {result['symbol']}.")
+            if command == "help":
+                await self.sink.send("Comandos: scan · start BTCUSDT · stop BTCUSDT · status. start siempre crea un worker Paper.")
+            elif command == "scan":
+                if len(parts) != 1:
+                    await self.sink.send("Uso: scan")
+                    return
+                result = await self.control.scan(self.user_id, 20)
+                await self.sink.send(str(result.get("text", "Scanner sin resultados.")))
+            elif command == "status":
+                if len(parts) != 1:
+                    await self.sink.send("Uso: status")
+                    return
+                result = self.control.status(self.user_id)
+                receiver = self.status()
+                receiver_line = (
+                    f"Bot comandos · {'EN LÍNEA' if receiver['running'] else 'DETENIDO'} · "
+                    f"comandos {receiver['commands_processed']} · errores poll {receiver['poll_errors']}"
+                )
+                await self.sink.send(receiver_line + "\n" + str(result.get("text", "Estado no disponible.")))
+            elif command in {"start", "stop"}:
+                if len(parts) != 2 or len(parts[1]) > 32:
+                    await self.sink.send(f"Uso: {command} BTCUSDT")
+                    return
+                if command == "start":
+                    result = await self.control.start(self.user_id, parts[1])
+                    await self.sink.send(f"Worker Paper iniciado: {result['symbol']} · {result.get('status', 'STARTING')}.")
+                else:
+                    result = await self.control.stop(self.user_id, parts[1])
+                    await self.sink.send(f"Worker detenido: {result['symbol']}.")
+        except ValueError as exc:
+            await self.sink.send(str(exc)[:300])
         except Exception as exc:
-            await self.sink.send(f"No se pudo ejecutar {command}: {str(exc)[:300]}")
+            self.last_error = type(exc).__name__
+            logger.warning("telegram_command_failed command=%s error_type=%s", command, type(exc).__name__)
+            await self.sink.send("No se pudo ejecutar el comando. Intenta de nuevo o revisa status.")
