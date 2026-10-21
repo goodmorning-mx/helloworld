@@ -1416,8 +1416,9 @@ function Workspace() {
   const scannerSelectedLeverage = Math.min(scannerTheoreticalLeverage, maxLeverageFor('binance', symbol));
   const [depositAmount, setDepositAmount] = useState('');
   const [paperRiskPercent, setPaperRiskPercent] = useState(() => Number(JSON.parse(localStorage.getItem('helloworld-paper-assist') ?? '{}').riskPercent ?? 1) || 1);
-  type ActiveMarketSymbol = { symbol: string; last_price: number; change_pct: number; movement_pct: number; range_pct: number; quote_volume: number; trades: number; score: number; max_leverage: number | null; horizon: number; interval: string; variation_sum_pct: number; variation_average_pct: number };
-  type ScannerAnalysis = { symbol: string; status: 'ANALYZING' | 'VALID' | 'STALE' | 'ERROR'; tp_optimal_percent: number | null; average_duration_minutes: number | null; activity_state?: 'DORMIDA' | 'DESPERTANDO' | 'ACTIVA'; operations: number; wins: number; losses: number; win_rate?: number; equity_final: number | null; final_result_usdt: number | null; loss_limit_percent?: number; last_bar_time: number | null; bars: number; operation_details?: TrackerScannerOperation[]; error?: string; profiling?: { total_ms?: number; stages?: Array<{ stage: string; total_ms: number; last_ms: number; max_ms: number; count: number }> } };
+  type ActiveMarketSymbol = { symbol: string; last_price: number; change_pct: number; movement_pct: number; range_pct: number; quote_volume: number; trades: number; score: number; max_leverage: number | null; horizon: number; interval: string; variation_sum_pct: number; variation_average_pct: number; leverage?: number };
+  type ScannerAnalysis = { symbol: string; status: 'ANALYZING' | 'VALID' | 'STALE' | 'ERROR'; tp_optimal_percent: number | null; average_duration_minutes: number | null; activity_state?: 'DORMIDA' | 'DESPERTANDO' | 'ACTIVA'; operations: number; wins: number; losses: number; win_rate?: number; equity_final: number | null; final_result_usdt: number | null; loss_limit_percent?: number; tracker_period?: number; stop_percent?: number; initial_balance?: number; risk_percent?: number; leverage?: number; variation_average_pct?: number; window_seconds?: number; last_bar_time: number | null; bars: number; operation_details?: TrackerScannerOperation[]; error?: string; profiling?: { total_ms?: number; stages?: Array<{ stage: string; total_ms: number; last_ms: number; max_ms: number; count: number }> } };
+  type ScannerSnapshot = { scan_id?: string | null; updated_at?: number | null; age_seconds?: number; freshness: 'EMPTY' | 'FRESH' | 'STALE'; config?: Record<string, number | string> | null; universe: ActiveMarketSymbol[]; symbols: ScannerAnalysis[]; window_seconds?: number };
   type ScannerSortKey = 'operations' | 'wins' | 'losses' | 'tp_optimal_percent' | 'average_duration_minutes' | 'final_result_usdt';
   const [activeMarketSymbols, setActiveMarketSymbols] = useState<ActiveMarketSymbol[]>([]);
   const [scannerAnalysisBySymbol, setScannerAnalysisBySymbol] = useState<Record<string, ScannerAnalysis>>({});
@@ -1430,6 +1431,10 @@ function Workspace() {
   const scannerProfilerRef = useRef(new Profiling('scanner'));
   const [scannerProfiling, setScannerProfiling] = useState<ProfilingSnapshot>(() => scannerProfilerRef.current.snapshot());
   const [scannerAnalysisProgress, setScannerAnalysisProgress] = useState({ completed: 0, total: 0 });
+  const [scannerSnapshotUpdatedAt, setScannerSnapshotUpdatedAt] = useState<number | null>(null);
+  const [scannerSnapshotFreshness, setScannerSnapshotFreshness] = useState<'EMPTY' | 'FRESH' | 'STALE'>('EMPTY');
+  const scannerSnapshotUpdatedAtRef = useRef<number | null>(null);
+  const scannerLatestLoadedRef = useRef(false);
   const [activeMarketLoading, setActiveMarketLoading] = useState(false);
   const [activeMarketError, setActiveMarketError] = useState('');
   const [productionWorkerError, setProductionWorkerError] = useState('');
@@ -1634,67 +1639,53 @@ function Workspace() {
       setActiveMarketLoading(true);
       scannerProfilerRef.current.reset();
       try {
+        if (!scannerLatestLoadedRef.current) {
+          try {
+            const latest = await fetchJson<ScannerSnapshot>(`${apiUrl}/market/binance/scanner-snapshot`, { headers: auth.accessToken ? { Authorization: `Bearer ${auth.accessToken}` } : undefined, credentials: 'include' });
+            scannerLatestLoadedRef.current = true;
+            if (active && latest.freshness !== 'EMPTY') {
+              setActiveMarketSymbols(latest.universe ?? []);
+              setScannerAnalysisBySymbol(Object.fromEntries((latest.symbols ?? []).map(row => [row.symbol, row])));
+              scannerSnapshotUpdatedAtRef.current = latest.updated_at ?? null;
+              setScannerSnapshotUpdatedAt(latest.updated_at ?? null);
+              setScannerSnapshotFreshness(latest.freshness);
+              setScannerAnalysisProgress({ completed: latest.symbols.length, total: latest.symbols.length });
+            }
+          } catch {
+            // Keep the scanner live path available if the saved snapshot cannot be read.
+          }
+        }
         const payload = await scannerProfilerRef.current.measure('scanner.active_markets', () => fetchJson<{ symbols?: ActiveMarketSymbol[] }>(`${apiUrl}/market/binance/active-symbols?limit=20&min_movement_pct=0.5&horizon=10&interval=5m`, { headers: auth.accessToken ? { Authorization: `Bearer ${auth.accessToken}` } : undefined, credentials: 'include' }));
         const markets = Array.isArray(payload.symbols) ? payload.symbols : [];
-        if (active) setActiveMarketSymbols(markets);
-        if (markets.length) {
-          const marketSymbols = new Set(markets.map(candidate => candidate.symbol));
-          if (active) {
-            setScannerAnalysisBySymbol(current => {
-              const next = Object.fromEntries(Object.entries(current).filter(([key]) => marketSymbols.has(key)));
-              for (const candidate of markets) {
-                if (!next[candidate.symbol]) next[candidate.symbol] = { symbol: candidate.symbol, status: 'ANALYZING', tp_optimal_percent: null, average_duration_minutes: null, operations: 0, wins: 0, losses: 0, equity_final: null, final_result_usdt: null, last_bar_time: null, bars: 0 };
-              }
-              return next;
-            });
-            setScannerAnalysisProgress({ completed: 0, total: markets.length });
-          }
-          if (!active) return;
-          let hadAnalysisErrors = false;
-          for (const [index, candidate] of markets.entries()) {
-            if (!active) return;
-            try {
-              const candidateLeverage = Math.min(scannerTheoreticalLeverage, maxLeverageFor('binance', candidate.symbol));
-              const analysis = await scannerProfilerRef.current.measure('scanner.symbol_analysis', () => fetchJson<{ symbols?: ScannerAnalysis[] }>(`${apiUrl}/market/binance/scanner-analysis?symbols=${encodeURIComponent(candidate.symbol)}&movement_averages=${encodeURIComponent(String(candidate.variation_average_pct))}&tracker_period=${trackerPeriod}&stop_percent=${binanceStopPercent}&initial_balance=${paperInitialBalance}&risk_percent=${paperRiskPercent}&leverage=${candidateLeverage}&limit=480`, { headers: auth.accessToken ? { Authorization: `Bearer ${auth.accessToken}` } : undefined, credentials: 'include' }));
-              const row = analysis.symbols?.[0];
-              if (row) {
-                hadAnalysisErrors ||= row.status === 'ERROR' || row.status === 'STALE';
-                setScannerAnalysisBySymbol(current => {
-                  const previous = current[row.symbol];
-                  return {
-                    ...current,
-                    [row.symbol]: row.status === 'ERROR' && previous && previous.status !== 'ERROR'
-                      ? { ...previous, status: 'STALE', error: row.error ?? 'No se pudo actualizar este símbolo.' }
-                      : row,
-                  };
-                });
-              } else {
-                hadAnalysisErrors = true;
-              }
-            } catch (error) {
-              hadAnalysisErrors = true;
-              const message = error instanceof Error ? error.message : 'No se pudo actualizar este símbolo.';
-              setScannerAnalysisBySymbol(current => {
-                const previous = current[candidate.symbol];
-                return {
-                  ...current,
-                  [candidate.symbol]: previous
-                    ? { ...previous, status: 'STALE', error: message }
-                    : { symbol: candidate.symbol, status: 'ERROR', tp_optimal_percent: null, average_duration_minutes: null, operations: 0, wins: 0, losses: 0, equity_final: null, final_result_usdt: null, last_bar_time: null, bars: 0, error: message },
-                };
-              });
-            }
-            if (active) setScannerAnalysisProgress({ completed: index + 1, total: markets.length });
-          }
-          if (active) setActiveMarketError(hadAnalysisErrors ? 'Algunos símbolos conservaron su último resultado y se reintentarán en el siguiente ciclo.' : '');
-        } else if (active) {
-          setScannerAnalysisProgress({ completed: 0, total: 0 });
-          setActiveMarketError('');
-        }
+        if (!active) return;
+        setScannerAnalysisProgress({ completed: 0, total: markets.length });
+        const universe = markets.map(candidate => ({
+          ...candidate,
+          leverage: Math.min(scannerTheoreticalLeverage, maxLeverageFor('binance', candidate.symbol)),
+        }));
+        const snapshot = await scannerProfilerRef.current.measure('scanner.shared_snapshot', () => fetchJson<ScannerSnapshot>(`${apiUrl}/market/binance/scanner-snapshot`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', ...(auth.accessToken ? { Authorization: `Bearer ${auth.accessToken}` } : {}) },
+          credentials: 'include',
+          body: JSON.stringify({ symbols: universe, tracker_period: trackerPeriod, stop_percent: binanceStopPercent, initial_balance: paperInitialBalance, risk_percent: paperRiskPercent }),
+        }));
+        if (!active) return;
+        const savedUniverse = Array.isArray(snapshot.universe) ? snapshot.universe : universe;
+        const savedRows = Array.isArray(snapshot.symbols) ? snapshot.symbols : [];
+        setActiveMarketSymbols(savedUniverse);
+        setScannerAnalysisBySymbol(Object.fromEntries(savedRows.map(row => [row.symbol, row])));
+        scannerSnapshotUpdatedAtRef.current = snapshot.updated_at ?? null;
+        setScannerSnapshotUpdatedAt(snapshot.updated_at ?? null);
+        setScannerSnapshotFreshness(snapshot.freshness);
+        setScannerAnalysisProgress({ completed: savedRows.length, total: savedRows.length });
+        setActiveMarketError(savedRows.some(row => row.status === 'ERROR' || row.status === 'STALE')
+          ? 'El snapshot compartido contiene símbolos con datos stale o error.'
+          : snapshot.freshness === 'STALE' ? 'El snapshot compartido está desactualizado.' : '');
       } catch (error) {
         if (active) {
           const message = error instanceof Error ? error.message : 'No se pudo cargar el ranking de mercado.';
-          setScannerAnalysisBySymbol(current => Object.fromEntries(Object.entries(current).map(([key, value]) => [key, value.status === 'VALID' ? { ...value, status: 'STALE', error: message } : value])));
+          const lastSnapshot = scannerSnapshotUpdatedAtRef.current;
+          if (lastSnapshot != null && Date.now() / 1000 - lastSnapshot > 180) setScannerSnapshotFreshness('STALE');
           setActiveMarketError(message);
         }
       } finally {
@@ -1733,11 +1724,11 @@ function Workspace() {
       try {
         const query = new URLSearchParams({
           symbols: symbol,
-          tracker_period: String(trackerPeriod),
-          stop_percent: String(binanceStopPercent),
-          initial_balance: String(paperInitialBalance),
-          risk_percent: String(paperRiskPercent),
-          leverage: String(scannerSelectedLeverage),
+          tracker_period: String(cachedSummary?.tracker_period ?? trackerPeriod),
+          stop_percent: String(cachedSummary?.stop_percent ?? binanceStopPercent),
+          initial_balance: String(cachedSummary?.initial_balance ?? paperInitialBalance),
+          risk_percent: String(cachedSummary?.risk_percent ?? paperRiskPercent),
+          leverage: String(cachedSummary?.leverage ?? scannerSelectedLeverage),
           limit: '480',
           include_operations: 'true',
         });
@@ -1771,7 +1762,7 @@ function Workspace() {
     void refreshSelectedTracker();
     const timer = window.setInterval(() => void refreshSelectedTracker(), 60_000);
     return () => { active = false; window.clearInterval(timer); };
-  }, [apiUrl, auth.accessToken, binanceStopPercent, broker, paperInitialBalance, paperRiskPercent, replayState.active, scannerSelectedLeverage, showTracker, symbol, trackerPeriod]);
+  }, [apiUrl, auth.accessToken, binanceStopPercent, broker, paperInitialBalance, paperRiskPercent, replayState.active, scannerSelectedLeverage, scannerSnapshotUpdatedAt, showTracker, symbol, trackerPeriod]);
 
   useEffect(() => {
     if (broker !== 'binance' || activeMarketSymbols.length === 0) return;
@@ -3874,7 +3865,9 @@ function Workspace() {
     : '';
   const scannerProfileStage = scannerProfiling.stages[0];
   const scannerProfilingLabel = scannerAnalysisProgress.total > 0
-    ? `ANÁLISIS ${scannerAnalysisProgress.completed}/${scannerAnalysisProgress.total} · ${scannerProfileStage ? `${scannerProfileStage.stage} ${scannerProfileStage.lastMs.toFixed(0)}ms` : 'midiendo…'}`
+    ? activeMarketLoading
+      ? `SCANNER · ANALIZANDO ${scannerAnalysisProgress.total} SÍMBOLOS`
+      : `ANÁLISIS ${scannerAnalysisProgress.completed}/${scannerAnalysisProgress.total} · ${scannerProfileStage ? `${scannerProfileStage.stage} ${scannerProfileStage.lastMs.toFixed(0)}ms` : 'midiendo…'}`
     : scannerProfileStage ? `${scannerProfileStage.stage} ${scannerProfileStage.lastMs.toFixed(0)}ms` : 'PROFILING listo';
   const scannerRowsForTable = [...activeMarketSymbols].map(candidate => ({ candidate, analysis: scannerAnalysisBySymbol[candidate.symbol] })).sort((left, right) => {
     const leftValue = left.analysis?.[scannerSort.key];
@@ -3893,7 +3886,8 @@ function Workspace() {
   }, { operations: 0, wins: 0, losses: 0 });
   const toggleScannerSort = (key: ScannerSortKey) => setScannerSort(current => ({ key, direction: current.key === key && current.direction === 'desc' ? 'asc' : 'desc' }));
   const scannerSortButton = (label: string, key: ScannerSortKey) => <button type="button" onClick={() => toggleScannerSort(key)} aria-label={`Ordenar por ${label} ${scannerSort.key === key && scannerSort.direction === 'desc' ? 'ascendente' : 'descendente'}`}>{label}{scannerSort.key === key ? scannerSort.direction === 'desc' ? ' ↓' : ' ↑' : ''}</button>;
-  const scannerResultsTable = broker === 'binance' ? <details className="scanner-results-panel"><summary>Resultados temporales del scanner · {activeMarketSymbols.length} símbolos · {scannerTotals.operations} ops / {scannerTotals.wins} wins / {scannerTotals.losses} losses</summary><div className="scanner-results-scroll"><table className="scanner-results-table"><thead><tr><th>Símbolo</th><th>Estado</th><th>{scannerSortButton('Ops', 'operations')}</th><th>{scannerSortButton('Wins', 'wins')}</th><th>{scannerSortButton('Losses', 'losses')}</th><th>{scannerSortButton('TP', 'tp_optimal_percent')}</th><th>{scannerSortButton('Duración', 'average_duration_minutes')}</th><th>{scannerSortButton('Resultado USD', 'final_result_usdt')}</th></tr></thead><tbody>{scannerRowsForTable.map(({ candidate, analysis }) => <tr key={candidate.symbol} className={candidate.symbol === symbol ? 'scanner-table-active' : ''}><td><button type="button" className="scanner-table-symbol" onClick={() => { setLabRecommendations(null); setSymbol(candidate.symbol); }}>{candidate.symbol}</button></td><td>{analysis?.status ?? 'ANALYZING'}</td><td>{analysis?.last_bar_time != null ? analysis.operations : '—'}</td><td>{analysis?.last_bar_time != null ? analysis.wins : '—'}</td><td>{analysis?.last_bar_time != null ? analysis.losses : '—'}</td><td>{analysis?.tp_optimal_percent != null ? `${analysis.tp_optimal_percent.toFixed(2)}%` : '—'}</td><td>{analysis?.average_duration_minutes != null ? `${analysis.average_duration_minutes.toFixed(1)}m` : '—'}</td><td className={analysis?.final_result_usdt != null ? analysis.final_result_usdt >= 0 ? 'scanner-table-positive' : 'scanner-table-negative' : ''}>{analysis?.final_result_usdt != null ? `${analysis.final_result_usdt >= 0 ? '+' : ''}${analysis.final_result_usdt.toFixed(2)}` : '—'}</td></tr>)}</tbody><tfoot><tr><th colSpan={2}>Totales</th><td>{scannerTotals.operations}</td><td>{scannerTotals.wins}</td><td>{scannerTotals.losses}</td><td colSpan={3}>{scannerAnalysisProgress.completed}/{scannerAnalysisProgress.total} analizados</td></tr></tfoot></table></div></details> : null;
+  const scannerSnapshotTimeLabel = scannerSnapshotUpdatedAt == null ? 'sin snapshot' : new Date(scannerSnapshotUpdatedAt * 1000).toLocaleTimeString('es-MX', { timeZone: timezone, hour: '2-digit', minute: '2-digit' });
+  const scannerResultsTable = broker === 'binance' ? <details className="scanner-results-panel"><summary>Scan compartido · {scannerSnapshotFreshness} · {scannerSnapshotTimeLabel} · {activeMarketSymbols.length} símbolos · {scannerTotals.operations} ops / {scannerTotals.wins} wins / {scannerTotals.losses} losses</summary><div className="scanner-results-scroll"><table className="scanner-results-table"><thead><tr><th>Símbolo</th><th>Estado</th><th>{scannerSortButton('Ops', 'operations')}</th><th>{scannerSortButton('Wins', 'wins')}</th><th>{scannerSortButton('Losses', 'losses')}</th><th>{scannerSortButton('TP', 'tp_optimal_percent')}</th><th>{scannerSortButton('Duración', 'average_duration_minutes')}</th><th>{scannerSortButton('Resultado USD', 'final_result_usdt')}</th></tr></thead><tbody>{scannerRowsForTable.map(({ candidate, analysis }) => <tr key={candidate.symbol} className={candidate.symbol === symbol ? 'scanner-table-active' : ''}><td><button type="button" className="scanner-table-symbol" onClick={() => { setLabRecommendations(null); setSymbol(candidate.symbol); }}>{candidate.symbol}</button></td><td>{analysis?.status ?? 'ANALYZING'}</td><td>{analysis?.last_bar_time != null ? analysis.operations : '—'}</td><td>{analysis?.last_bar_time != null ? analysis.wins : '—'}</td><td>{analysis?.last_bar_time != null ? analysis.losses : '—'}</td><td>{analysis?.tp_optimal_percent != null ? `${analysis.tp_optimal_percent.toFixed(2)}%` : '—'}</td><td>{analysis?.average_duration_minutes != null ? `${analysis.average_duration_minutes.toFixed(1)}m` : '—'}</td><td className={analysis?.final_result_usdt != null ? analysis.final_result_usdt >= 0 ? 'scanner-table-positive' : 'scanner-table-negative' : ''}>{analysis?.final_result_usdt != null ? `${analysis.final_result_usdt >= 0 ? '+' : ''}${analysis.final_result_usdt.toFixed(2)}` : '—'}</td></tr>)}</tbody><tfoot><tr><th colSpan={2}>Totales</th><td>{scannerTotals.operations}</td><td>{scannerTotals.wins}</td><td>{scannerTotals.losses}</td><td colSpan={3}>{activeMarketLoading ? 'Actualizando el snapshot compartido…' : `${scannerAnalysisProgress.completed}/${scannerAnalysisProgress.total} analizados`}</td></tr></tfoot></table></div></details> : null;
   const scannerStatusBar = broker === 'binance' ? <div className="header-market-scanner" aria-label="Market scanner Binance"><small className="scanner-profiling" title={`Tiempo total del ciclo: ${scannerProfiling.totalMs.toFixed(0)}ms`}>{scannerProfilingLabel}</small>{[...activeMarketSymbols].sort((a, b) => b.variation_sum_pct - a.variation_sum_pct).map(candidate => { const variation = candidate.variation_sum_pct; const analysis = scannerAnalysisBySymbol[candidate.symbol]; const activity = analysis?.status === 'STALE' ? 'STALE' : analysis?.status === 'ERROR' ? 'ERROR' : analysis?.activity_state ?? 'ANALIZANDO'; const activityClass = analysis?.status === 'ERROR' ? 'scanner-error' : analysis?.activity_state ? `scanner-activity-${analysis.activity_state.toLowerCase()}` : ''; return <article key={candidate.symbol} className={`header-market-item ${candidate.symbol === symbol ? 'active' : ''} ${activityClass} ${analysis?.status === 'STALE' ? 'scanner-stale' : ''}`}><button type="button" className="header-market-main" title={analysis?.error ?? undefined} onClick={() => { setLabRecommendations(null); setSymbol(candidate.symbol); }}><b>{candidate.symbol}</b><span className={variation >= 0 ? 'ticker-up' : 'ticker-down'}>{variation >= 0 ? '▲' : '▼'} {Math.abs(variation).toFixed(2)}%</span><em className="scanner-activity-label">{activity}</em><small className="scanner-metrics"><i>Ops {analysis?.last_bar_time != null ? analysis.operations : '—'} · W {analysis?.last_bar_time != null ? analysis.wins : '—'} · L {analysis?.last_bar_time != null ? analysis.losses : '—'}</i><i>TP {analysis?.tp_optimal_percent != null ? `+${analysis.tp_optimal_percent.toFixed(2)}%` : '—'}</i><i>⌀ {analysis?.average_duration_minutes != null ? `${analysis.average_duration_minutes.toFixed(1)}m` : '—'}</i><i>USD {analysis?.final_result_usdt != null ? `${analysis.final_result_usdt >= 0 ? '+' : ''}${analysis.final_result_usdt.toFixed(2)}` : '—'} · {analysis?.profiling?.total_ms != null ? `${analysis.profiling.total_ms.toFixed(0)}ms` : '…'}</i></small></button></article>; })}</div> : null;
   const statusBarMessage = paperSyncError || binanceLeverageError || activeMarketError || productionWorkerError;
   const binanceReady = binanceOnline;
