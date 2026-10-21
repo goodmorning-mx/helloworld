@@ -14,6 +14,7 @@ from urllib.parse import urlencode
 from zoneinfo import ZoneInfoNotFoundError
 
 from fastapi import Depends, FastAPI, HTTPException, Query, WebSocket
+from fastapi.responses import StreamingResponse
 from fastapi.encoders import jsonable_encoder
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
@@ -605,6 +606,28 @@ def binance_runtime(identity: AuthIdentity = Depends(identity_dependency(auth_se
 def list_production_workers(identity: AuthIdentity = Depends(identity_dependency(auth_service))) -> list[dict[str, object]]:
     """Return strategy worker status without exposing credentials."""
     return production_workers.list(identity.user_id)
+
+
+@app.get("/trading/production/workers/events")
+async def production_worker_events(identity: AuthIdentity = Depends(identity_dependency(auth_service))) -> StreamingResponse:
+    """Stream only this user's worker activity and parameter updates."""
+    async def stream():
+        queue = backend_events.subscribe(identity.user_id)
+        try:
+            snapshot = {"type": "WORKER_SNAPSHOT", "workers": production_workers.list(identity.user_id)}
+            yield f"data: {json.dumps(snapshot, separators=(',', ':'))}\n\n"
+            while True:
+                try:
+                    event = await asyncio.wait_for(queue.get(), timeout=15)
+                    yield f"data: {json.dumps(event, separators=(',', ':'))}\n\n"
+                except TimeoutError:
+                    yield ": keep-alive\n\n"
+        finally:
+            backend_events.unsubscribe(identity.user_id, queue)
+
+    return StreamingResponse(stream(), media_type="text/event-stream", headers={
+        "Cache-Control": "no-cache, no-transform", "X-Accel-Buffering": "no",
+    })
 
 
 @app.post("/trading/production/workers")

@@ -71,6 +71,7 @@ def test_paper_worker_publishes_a_structured_tracker_signal(monkeypatch):
 
         signal = next(event for event in published if event["type"] == "TRACKER_SIGNAL")
         assert signal == {
+            "user_id": "user-1",
             "type": "TRACKER_SIGNAL",
             "signal_id": "BTCUSDT:1m:180:SHORT:H2",
             "symbol": "BTCUSDT",
@@ -85,6 +86,23 @@ def test_paper_worker_publishes_a_structured_tracker_signal(monkeypatch):
             "parameter_version": 0,
             "mode": "paper",
         }
+
+    asyncio.run(run())
+
+
+def test_worker_event_subscribers_only_receive_events_for_their_owner():
+    async def run():
+        from app.telegram_service import BackendEventBus
+
+        bus = BackendEventBus()
+        owner_queue = bus.subscribe("owner-1")
+        other_queue = bus.subscribe("owner-2")
+        await bus.publish({"user_id": "owner-1", "type": "TRACKER_SIGNAL", "symbol": "BTCUSDT"})
+        assert (await owner_queue.get())["symbol"] == "BTCUSDT"
+        assert other_queue.empty()
+        bus.unsubscribe("owner-1", owner_queue)
+        bus.unsubscribe("owner-2", other_queue)
+        assert not bus._subscribers
 
     asyncio.run(run())
 
