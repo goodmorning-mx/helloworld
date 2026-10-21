@@ -92,49 +92,42 @@ def test_api_exposes_authenticated_telegram_control_routes():
     assert ("/telegram/workers/{symbol}", ("DELETE",)) in paths
     assert ("/telegram/workers/{symbol}/mode", ("PATCH",)) in paths
     assert ("/trading/production/workers/events", ("GET",)) in paths
+    assert ("/market/binance/scanner-snapshot", ("GET",)) in paths
+    assert ("/market/binance/scanner-snapshot", ("POST",)) in paths
 
 
-def test_internal_scanner_snapshot_uses_shared_cached_analysis_and_compact_results(monkeypatch):
+def test_telegram_scan_reads_exact_latest_web_snapshot_without_recalculating(monkeypatch):
     from app import main
+    from datetime import datetime, timezone
 
-    calls = {}
+    row = {
+        "symbol": "ETHUSDT", "status": "VALID", "tp_optimal_percent": 2.5,
+        "loss_limit_percent": 3.0, "stop_percent": 0.4, "tracker_period": 9,
+        "leverage": 10, "risk_percent": 1.2, "final_result_usdt": 3.0,
+        "equity_final": 103.0, "operations": 2, "wins": 1, "losses": 1,
+        "win_rate": 50.0, "average_duration_minutes": 4.5,
+        "activity_state": "ACTIVA", "last_bar_time": 1_800_000_000,
+        "bars": 480, "window_seconds": 28_800,
+    }
+    class FakeSnapshotStore:
+        def get(self, user_id):
+            assert user_id == "owner"
+            return {
+                "scan_id": "scan-1", "config": {"tracker_period": 9, "leverage": 10},
+                "universe": [{"symbol": "ETHUSDT", "leverage": 10}], "symbols": [row],
+                "started_at": datetime.now(timezone.utc), "updated_at": datetime.now(timezone.utc),
+            }
 
-    def active_symbols(**kwargs):
-        calls["active"] = kwargs
-        return {"symbols": [
-            {"symbol": "BTCUSDT", "variation_average_pct": 0.5},
-            {"symbol": "ETHUSDT", "variation_average_pct": 0.7},
-        ]}
-
-    async def scanner_analysis(**kwargs):
-        calls["analysis"] = kwargs
-        return {
-            "updated_at": 1,
-            "config": {"tracker_period": 5},
-            "symbols": [
-                {"symbol": "BTCUSDT", "status": "VALID", "final_result_usdt": 2, "operations": 1, "profiling": {"secretly_large": True}},
-                {"symbol": "ETHUSDT", "status": "VALID", "final_result_usdt": 3, "operations": 2},
-            ],
-        }
-
-    class FakeWorkerManager:
-        def list(self, _user_id):
-            return [{
-                "symbol": "ETHUSDT", "running": True, "parameter_version": 7,
-                "adaptive_parameters": {"target_percent": 2.5, "stop_percent": 0.4, "tracker_period": 9, "risk_percent": 1.2, "risk_usdt": 1.2},
-            }]
-
-    monkeypatch.setattr(main, "binance_active_symbols", active_symbols)
-    monkeypatch.setattr(main, "binance_scanner_analysis", scanner_analysis)
-    monkeypatch.setattr(main, "production_workers", FakeWorkerManager())
+    monkeypatch.setattr(main, "scanner_snapshot_store", FakeSnapshotStore())
+    monkeypatch.setattr(main, "binance_active_symbols", lambda **_kwargs: pytest.fail("Telegram must not rebuild the universe"))
+    monkeypatch.setattr(main, "binance_scanner_analysis", lambda **_kwargs: pytest.fail("Telegram must not recalculate analysis"))
     snapshot = asyncio.run(main._telegram_scan_snapshot("owner", 2))
 
     assert snapshot["symbols"][0]["symbol"] == "ETHUSDT"
-    assert "profiling" not in snapshot["symbols"][0]
     assert snapshot["symbols"][0]["tracker_period"] == 9
-    assert snapshot["symbols"][0]["parameter_source"] == "TRACKER_WORKER"
+    assert snapshot["symbols"][0]["leverage"] == 10
     assert "N 9" in snapshot["text"]
     assert "SL 0.40%" in snapshot["text"]
-    assert calls["analysis"]["symbols"] == "BTCUSDT,ETHUSDT"
-    assert calls["analysis"]["limit"] == 480
+    assert "10.0x" in snapshot["text"]
+    assert "WR 50.0%" in snapshot["text"]
     assert "ETHUSDT" in snapshot["text"]

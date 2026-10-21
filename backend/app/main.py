@@ -6,6 +6,7 @@ import logging
 import math
 import json
 import time
+from datetime import datetime, timezone
 from collections import OrderedDict
 from concurrent.futures import ThreadPoolExecutor
 from decimal import Decimal, ROUND_CEILING, ROUND_FLOOR
@@ -46,6 +47,7 @@ from app.telegram_service import BackendEventBus, TelegramCommandService, Telegr
 from app.telegram_control import TelegramControlService, format_scanner_message
 from app.scanner_analysis import ScannerAnalysisConfig, activity_state, analyze_tracker, analyze_tracker_operations
 from app.scanner_cache import SCANNER_MAX_BARS, SCANNER_WINDOW_SECONDS, ScannerCache
+from app.scanner_snapshot import ScannerSnapshotStore, public_snapshot
 from app.profiling import Profiling
 
 settings = get_settings()
@@ -72,6 +74,7 @@ backend_events = BackendEventBus()
 if settings.telegram_signal_notifications_enabled:
     backend_events.add_sink(telegram_event_sink(telegram_sink))
 production_worker_config_store = ProductionWorkerConfigStore(engine)
+scanner_snapshot_store = ScannerSnapshotStore(engine)
 production_workers = ProductionWorkerManager(
     binance_market_gateway, paper_operation_store, backend_events, binance_manager,
     binance_execution_store, production_worker_config_store, settings.binance_base_url,
@@ -81,64 +84,21 @@ production_workers = ProductionWorkerManager(
 
 
 async def _telegram_scan_snapshot(user_id: str, limit: int) -> dict[str, object]:
-    identity = type("TelegramIdentity", (), {"user_id": user_id})()
-    universe = await asyncio.to_thread(
-        binance_active_symbols,
-        limit=limit,
-        min_quote_volume=50_000_000,
-        min_trades=100_000,
-        min_movement_pct=0.5,
-        horizon=10,
-        interval="5m",
-        identity=identity,
-    )
-    candidates = universe.get("symbols", [])
-    if not isinstance(candidates, list):
-        candidates = []
-    symbols = [str(item.get("symbol", "")) for item in candidates if isinstance(item, dict)]
-    movement = [str(item.get("variation_average_pct", 0)) for item in candidates if isinstance(item, dict)]
-    if not symbols:
-        return {"symbols": [], "updated_at": int(time.time()), "text": "Scanner: no hay símbolos elegibles ahora."}
-    analysis = await binance_scanner_analysis(
-        symbols=",".join(symbols),
-        tracker_period=5,
-        stop_percent=0.2,
-        initial_balance=100,
-        risk_percent=1,
-        leverage=1,
-        limit=480,
-        movement_averages=",".join(movement),
-        include_operations=False,
-        identity=identity,
-    )
-    source_rows = [item for item in analysis.get("symbols", []) if isinstance(item, dict)]
-    rows = [
-        {key: row.get(key) for key in (
-            "symbol", "status", "tp_optimal_percent", "average_duration_minutes",
-            "operations", "wins", "losses", "win_rate", "equity_final",
-            "final_result_usdt", "activity_state", "last_bar_time", "bars", "error", "loss_limit_percent",
-        ) if key in row}
-        for row in source_rows
-    ]
-    active_workers = {str(item.get("symbol", "")).upper(): item for item in production_workers.list(user_id)}
-    for row in rows:
-        worker = active_workers.get(str(row.get("symbol", "")).upper())
-        adaptive = worker.get("adaptive_parameters") if worker and isinstance(worker.get("adaptive_parameters"), dict) else None
-        if worker and worker.get("running") and adaptive:
-            row.update({
-                "tp_optimal_percent": adaptive.get("target_percent"),
-                "loss_limit_percent": adaptive.get("minroe_limit_percent"),
-                "stop_percent": adaptive.get("stop_percent"),
-                "minroe_limit_percent": adaptive.get("minroe_limit_percent"),
-                "tracker_period": adaptive.get("tracker_period"),
-                "risk_percent": adaptive.get("risk_percent"),
-                "risk_usdt": adaptive.get("risk_usdt"),
-                "parameter_version": worker.get("parameter_version"),
-                "parameter_source": "TRACKER_WORKER",
-                "worker_mode": worker.get("mode", "signals_only"),
-            })
-    rows.sort(key=lambda row: float(row.get("final_result_usdt") if row.get("final_result_usdt") is not None else -1_000_000), reverse=True)
-    return {"symbols": rows, "updated_at": analysis.get("updated_at"), "config": analysis.get("config"), "text": format_scanner_message(rows, updated_at=analysis.get("updated_at"))}
+    stored = await asyncio.to_thread(scanner_snapshot_store.get, user_id)
+    if not stored:
+        return {
+            "symbols": [], "updated_at": int(time.time()), "freshness": "EMPTY",
+            "text": "Todavía no hay un scan de la web. Abre el dashboard para generar el primer resultado compartido.",
+        }
+    snapshot = public_snapshot(stored)
+    rows = snapshot["symbols"][:max(1, min(int(limit), 30))]
+    return {
+        **snapshot,
+        "symbols": rows,
+        "text": format_scanner_message(
+            rows, updated_at=snapshot["updated_at"], freshness=snapshot["freshness"],
+        ),
+    }
 
 
 telegram_control = TelegramControlService(production_workers, _telegram_scan_snapshot)
@@ -398,6 +358,31 @@ class TelegramWorkerStartInput(BaseModel):
 
 class TelegramWorkerModeInput(BaseModel):
     mode: Literal["signals_only", "paper", "live"]
+
+
+class ScannerSnapshotSymbolInput(BaseModel):
+    symbol: str = Field(pattern=r"^[A-Z0-9]{3,32}USDT$")
+    variation_average_pct: float = Field(ge=0, le=1_000)
+    leverage: float = Field(ge=1, le=125)
+    last_price: float = 0
+    change_pct: float = 0
+    movement_pct: float = 0
+    range_pct: float = 0
+    quote_volume: float = 0
+    trades: int = 0
+    score: float = 0
+    max_leverage: int | None = None
+    horizon: int = 10
+    interval: Literal["1m", "5m"] = "5m"
+    variation_sum_pct: float = 0
+
+
+class ScannerSnapshotInput(BaseModel):
+    symbols: list[ScannerSnapshotSymbolInput] = Field(max_length=30)
+    tracker_period: int = Field(ge=1, le=50)
+    stop_percent: float = Field(gt=0, le=20)
+    initial_balance: float = Field(ge=1, le=1_000_000)
+    risk_percent: float = Field(gt=0, le=100)
 
 
 def _binance_public_execution_rules(symbol: str) -> tuple[float, float, float, float, int, int]:
@@ -666,6 +651,110 @@ async def stop_production_worker(symbol: str, identity: AuthIdentity = Depends(i
 async def telegram_scan_api(limit: int = Query(20, ge=1, le=30), identity: AuthIdentity = Depends(identity_dependency(auth_service))) -> dict[str, object]:
     """Return a ranked, formatted scanner snapshot for API clients and Telegram."""
     return await telegram_control.scan(identity.user_id, limit)
+
+
+@app.get("/market/binance/scanner-snapshot")
+def latest_scanner_snapshot(identity: AuthIdentity = Depends(identity_dependency(auth_service))) -> dict[str, object]:
+    """Read the one persisted scanner snapshot shared with Telegram."""
+    stored = scanner_snapshot_store.get(identity.user_id)
+    if not stored:
+        return {"scan_id": None, "freshness": "EMPTY", "symbols": [], "universe": [], "config": None, "updated_at": None, "window_seconds": SCANNER_WINDOW_SECONDS}
+    return public_snapshot(stored)
+
+
+@app.post("/market/binance/scanner-snapshot")
+async def update_scanner_snapshot(payload: ScannerSnapshotInput, identity: AuthIdentity = Depends(identity_dependency(auth_service))) -> dict[str, object]:
+    """Run the web-configured scan serially and atomically replace its latest snapshot."""
+    started_at = datetime.now(timezone.utc)
+    scan_id = str(uuid4())
+    config = {
+        "tracker_period": payload.tracker_period,
+        "stop_percent": payload.stop_percent,
+        "initial_balance": payload.initial_balance,
+        "risk_percent": payload.risk_percent,
+        "interval": "1m",
+        "window_seconds": SCANNER_WINDOW_SECONDS,
+        "max_bars": SCANNER_MAX_BARS,
+    }
+    universe = [item.model_dump() for item in payload.symbols]
+    rows: list[dict[str, object]] = []
+    previous_snapshot = await asyncio.to_thread(scanner_snapshot_store.get, identity.user_id)
+    previous_rows = {
+        str(row.get("symbol", "")).upper(): row
+        for row in (previous_snapshot or {}).get("symbols", [])
+        if isinstance(row, dict)
+    }
+    for candidate in payload.symbols:
+        try:
+            result = await binance_scanner_analysis(
+                symbols=candidate.symbol,
+                tracker_period=payload.tracker_period,
+                stop_percent=payload.stop_percent,
+                initial_balance=payload.initial_balance,
+                risk_percent=payload.risk_percent,
+                leverage=candidate.leverage,
+                limit=SCANNER_MAX_BARS,
+                movement_averages=str(candidate.variation_average_pct),
+                include_operations=False,
+                identity=identity,
+            )
+            row = next((item for item in result.get("symbols", []) if isinstance(item, dict)), None)
+            if row is None:
+                raise RuntimeError("El analizador no devolvió el símbolo.")
+            row = dict(row)
+        except Exception as exc:
+            logger.warning("Scanner snapshot failed for %s: %s", candidate.symbol, exc)
+            row = {
+                "symbol": candidate.symbol,
+                "status": "ERROR",
+                "error": "No se pudo completar el análisis de este símbolo.",
+                "tp_optimal_percent": None,
+                "average_duration_minutes": None,
+                "operations": 0,
+                "wins": 0,
+                "losses": 0,
+                "win_rate": None,
+                "equity_final": None,
+                "final_result_usdt": None,
+                "last_bar_time": None,
+                "bars": 0,
+            }
+        previous = previous_rows.get(candidate.symbol)
+        same_parameters = previous is not None and all(
+            previous.get(key) == expected
+            for key, expected in (
+                ("tracker_period", payload.tracker_period),
+                ("stop_percent", payload.stop_percent),
+                ("initial_balance", payload.initial_balance),
+                ("risk_percent", payload.risk_percent),
+                ("leverage", candidate.leverage),
+                ("variation_average_pct", candidate.variation_average_pct),
+            )
+        )
+        if row.get("status") == "ERROR" and same_parameters and previous and previous.get("last_bar_time") is not None:
+            row = {**previous, "status": "STALE", "error": row.get("error", "No se pudo actualizar este símbolo.")}
+        row.update({
+            "tracker_period": payload.tracker_period,
+            "stop_percent": payload.stop_percent,
+            "risk_percent": payload.risk_percent,
+            "initial_balance": payload.initial_balance,
+            "risk_usdt": payload.initial_balance * payload.risk_percent / 100,
+            "leverage": candidate.leverage,
+            "variation_average_pct": candidate.variation_average_pct,
+            "window_seconds": SCANNER_WINDOW_SECONDS,
+        })
+        rows.append(row)
+
+    stored = await asyncio.to_thread(
+        scanner_snapshot_store.replace,
+        identity.user_id,
+        scan_id=scan_id,
+        config=config,
+        universe=universe,
+        symbols=rows,
+        started_at=started_at,
+    )
+    return public_snapshot(stored)
 
 
 @app.get("/telegram/status")

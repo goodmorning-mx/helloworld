@@ -11,16 +11,22 @@ ScanProvider = Callable[[str, int], Awaitable[dict[str, object]]]
 SYMBOL_RE = re.compile(r"^[A-Z0-9]{3,32}USDT$")
 
 
-def format_scanner_message(rows: list[dict[str, object]], *, updated_at: object = None) -> str:
+def format_scanner_message(rows: list[dict[str, object]], *, updated_at: object = None, freshness: str = "FRESH") -> str:
     """Format the same bounded scanner snapshot returned by the REST API."""
     try:
         timestamp = datetime.fromtimestamp(float(updated_at), timezone.utc).strftime("%H:%M UTC")
     except (TypeError, ValueError, OverflowError, OSError):
         timestamp = "hora desconocida"
-    lines = [f"📊 Scanner Tracker · 1m · 8h · {timestamp}"]
+    freshness_label = "ACTUAL" if freshness == "FRESH" else "DESACTUALIZADO" if freshness == "STALE" else freshness
+    lines = [f"📊 Scan web · 1m/8h · {timestamp} · {freshness_label}"]
     if not rows:
         lines.append("No hay resultados disponibles en este ciclo.")
-    for index, row in enumerate(rows[:24], start=1):
+    ranked_rows = sorted(
+        rows,
+        key=lambda row: float(row.get("final_result_usdt") if row.get("final_result_usdt") is not None else -1_000_000),
+        reverse=True,
+    )
+    for index, row in enumerate(ranked_rows[:24], start=1):
         symbol = str(row.get("symbol", "?"))
         state = str(row.get("status", "?"))
         result = row.get("final_result_usdt")
@@ -31,7 +37,7 @@ def format_scanner_message(rows: list[dict[str, object]], *, updated_at: object 
         ops = row.get("operations", 0)
         wins = row.get("wins", 0)
         losses = row.get("losses", 0)
-        activity = row.get("activity_state", "—")
+        activity = row.get("activity_state", "—") if state == "VALID" else state
         if result is None:
             lines.append(f"{index}. {symbol} · {state}")
             continue
@@ -39,21 +45,25 @@ def format_scanner_message(rows: list[dict[str, object]], *, updated_at: object 
         sign = "+" if result_value >= 0 else ""
         tp_text = f"TP {float(tp):.2f}%" if tp is not None else "TP —"
         if tracker_period is not None:
-            tp_text += f" · N {int(tracker_period)}"
+            tp_text += f" N {int(tracker_period)}"
         if stop is not None:
-            if row.get("parameter_source") == "TRACKER_WORKER":
-                tp_text += f" · MINROE {float(stop):.2f}% ROE"
-            else:
-                tp_text += f" · MINROE {float(stop):.2f}% ROE"
+            tp_text += f" MINROE {float(stop):.1f}%"
         if execution_stop is not None:
-            tp_text += f" · SL {float(execution_stop):.2f}% precio"
-        if row.get("parameter_source") == "TRACKER_WORKER":
-            mode = str(row.get("worker_mode", "signals_only")).upper()
-            mode_label = {"SIGNALS_ONLY": "SOLO SEÑALES", "PAPER": "PAPER", "LIVE": "LIVE"}.get(mode, mode)
-            tp_text += f" · {mode_label}"
+            tp_text += f" SL {float(execution_stop):.2f}%"
+        if row.get("leverage") is not None:
+            tp_text += f" {float(row['leverage']):.1f}x"
+        risk_percent = row.get("risk_percent")
+        risk_usdt = row.get("risk_usdt")
+        risk_text = f" R{float(risk_percent):.1f}%" if risk_percent is not None else ""
+        if risk_usdt is not None:
+            risk_text += f" ${float(risk_usdt):.2f}"
+        win_rate = row.get("win_rate")
+        win_rate_text = f" · WR {float(win_rate):.1f}%" if win_rate is not None else ""
+        duration = row.get("average_duration_minutes")
+        duration_text = f" · ⌀ {float(duration):.1f}m" if duration is not None else ""
         lines.append(
-            f"{index}. {symbol} · {sign}{result_value:.2f} USDT · {tp_text} · "
-            f"Ops {ops} · W {wins}/L {losses} · {activity}"
+            f"{index}. {symbol} · {sign}{result_value:.2f} USDT · {tp_text}{risk_text} · "
+            f"Ops {ops} · W {wins}/L {losses}{win_rate_text}{duration_text} · {activity}"
         )
     return "\n".join(lines)[:3900]
 
