@@ -154,6 +154,12 @@ class BinanceAccountMonitor:
             params["reduceOnly"] = "true"
         return self._request("POST", "/fapi/v1/order", params, signed=True)
 
+    def order_by_client_order_id(self, symbol: str, client_order_id: str) -> dict:
+        return self._request("GET", "/fapi/v1/order", {"symbol": symbol.strip().upper(), "origClientOrderId": client_order_id}, signed=True)
+
+    def cancel_order_by_client_order_id(self, symbol: str, client_order_id: str) -> dict:
+        return self._request("DELETE", "/fapi/v1/order", {"symbol": symbol.strip().upper(), "origClientOrderId": client_order_id}, signed=True)
+
     def place_close_protection(self, symbol: str, side: str, stop_price: float, client_order_id: str, order_type: str, *, working_type: str = "MARK_PRICE") -> dict:
         """Place a server-side close-all Algo protective trigger."""
         requested = symbol.strip().upper()
@@ -177,6 +183,12 @@ class BinanceAccountMonitor:
         if not str(algo_id).strip():
             raise ValueError("Algo ID inválido.")
         return self._request("DELETE", "/fapi/v1/algoOrder", {"symbol": requested, "algoId": str(algo_id)}, signed=True)
+
+    def open_close_protections(self, symbol: str) -> list[dict]:
+        """Read active conditional protections for one symbol."""
+        requested = symbol.strip().upper()
+        payload = self._request("GET", "/fapi/v1/openAlgoOrders", {"symbol": requested}, signed=True)
+        return [row for row in payload if isinstance(row, dict)] if isinstance(payload, list) else []
 
     def _run(self) -> None:
         if connect is None:

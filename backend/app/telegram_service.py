@@ -111,8 +111,7 @@ class BackendEventBus:
 def telegram_event_sink(telegram: TelegramSink) -> Callable[[dict[str, object]], Awaitable[None]]:
     async def consume(event: dict[str, object]) -> None:
         kind = str(event.get("type", "EVENT")).upper()
-        if kind in {"PAPER_ENTRY", "LIVE_ENTRY"}:
-            # The richer TRACKER_SIGNAL event below represents these entries.
+        if kind in {"PAPER_ENTRY", "LIVE_ENTRY", "TRACKER_PARAMETERS_UPDATED", "WORKER_STARTED", "WORKER_STOPPED", "WORKER_MODE_CHANGED"}:
             return
         if kind == "TRACKER_SIGNAL":
             signal_id = str(event.get("signal_id", ""))
@@ -123,6 +122,7 @@ def telegram_event_sink(telegram: TelegramSink) -> Callable[[dict[str, object]],
             price = event.get("price", "?")
             bar_time = event.get("bar_time")
             mode = str(event.get("mode", "paper")).upper()
+            mode = {"SIGNALS_ONLY": "SEÑALES"}.get(mode, mode)
             stop = event.get("stop_percent")
             target = event.get("target_percent")
             try:
@@ -139,6 +139,8 @@ def telegram_event_sink(telegram: TelegramSink) -> Callable[[dict[str, object]],
             else:
                 await telegram.send(message)
             return
+        if kind not in {"TRACKER_OPERATION_CLOSED", "PAPER_EXIT", "LIVE_EXIT"}:
+            return
         symbol = str(event.get("symbol", ""))
         details = " · ".join(f"{key}={value}" for key, value in event.items() if key not in {"type", "symbol"})
         await telegram.send(f"{kind} {symbol}" + (f" · {details}" if details else ""))
@@ -147,7 +149,7 @@ def telegram_event_sink(telegram: TelegramSink) -> Callable[[dict[str, object]],
 
 
 class TelegramCommandService:
-    """Private-chat command client for the Paper engine and shared scanner API."""
+    """Private-chat control client for the realtime Tracker session."""
 
     def __init__(self, bot_token: str, chat_id: str, user_id: str, control: object, sink: TelegramSink, *, sender_id: str = "") -> None:
         self.bot_token = bot_token.strip()
@@ -208,9 +210,11 @@ class TelegramCommandService:
                 f"https://api.telegram.org/bot{self.bot_token}/setMyCommands",
                 json={"language_code": "es", "commands": [
                     {"command": "scan", "description": "Escanear y ordenar el mercado"},
-                    {"command": "start", "description": "Iniciar Paper: start BTCUSDT"},
-                    {"command": "stop", "description": "Detener Paper: stop BTCUSDT"},
-                    {"command": "status", "description": "Estado de workers y bot"},
+                    {"command": "start", "description": "Seguir señales Tracker: start BTCUSDT"},
+                    {"command": "paper", "description": "Ejecutar próximas señales en Paper"},
+                    {"command": "production", "description": "Solicitar producción Binance"},
+                    {"command": "stop", "description": "Detener sesión activa"},
+                    {"command": "status", "description": "Estado de sesión y bot"},
                     {"command": "help", "description": "Mostrar comandos disponibles"},
                 ]},
             )
@@ -276,7 +280,7 @@ class TelegramCommandService:
         if not parts:
             return
         command = parts[0].lstrip("/").split("@", 1)[0].lower()
-        if command not in {"scan", "start", "stop", "status", "help"}:
+        if command not in {"scan", "start", "stop", "status", "help", "paper", "production", "live"}:
             return
         if update_id >= 0:
             self._seen_updates.add(update_id)
@@ -290,9 +294,11 @@ class TelegramCommandService:
                 await self.sink.send(
                     "Comandos disponibles:\n"
                     "/scan — escanear y ordenar el mercado\n"
-                    "/start BTCUSDT — iniciar un worker Paper\n"
-                    "/stop BTCUSDT — detener el worker Paper\n"
-                    "/status — consultar el bot y los workers activos"
+                    "/start BTCUSDT — iniciar Tracker y recibir señales\n"
+                    "/paper — ejecutar en Paper las próximas señales\n"
+                    "/production — solicitar ejecución Binance (sujeta a validación)\n"
+                    "/stop — detener la sesión activa\n"
+                    "/status — consultar sesión, Tracker y modo"
                 )
             elif command == "scan":
                 if len(parts) != 1:
@@ -311,16 +317,25 @@ class TelegramCommandService:
                     f"comandos {receiver['commands_processed']} · errores poll {receiver['poll_errors']}"
                 )
                 await self.sink.send(receiver_line + "\n" + str(result.get("text", "Estado no disponible.")))
-            elif command in {"start", "stop"}:
+            elif command == "start":
                 if len(parts) != 2 or len(parts[1]) > 32:
-                    await self.sink.send(f"Uso: {command} BTCUSDT")
+                    await self.sink.send("Uso: start BTCUSDT")
                     return
-                if command == "start":
-                    result = await self.control.start(self.user_id, parts[1])
-                    await self.sink.send(f"Worker Paper iniciado: {result['symbol']} · {result.get('status', 'STARTING')}.")
-                else:
-                    result = await self.control.stop(self.user_id, parts[1])
-                    await self.sink.send(f"Worker detenido: {result['symbol']}.")
+                result = await self.control.start(self.user_id, parts[1])
+                await self.sink.send(f"Tracker activo para {result['symbol']} · señales Telegram habilitadas · {result.get('status', 'STARTING')}.")
+            elif command in {"paper", "production", "live"}:
+                if len(parts) != 1:
+                    await self.sink.send(f"Uso: {command}")
+                    return
+                mode = "paper" if command == "paper" else "live"
+                result = await self.control.set_mode(self.user_id, mode)
+                await self.sink.send(f"Modo {mode.upper()} activo para {result['symbol']}; aplica a señales nuevas.")
+            elif command == "stop":
+                if len(parts) > 2 or (len(parts) == 2 and len(parts[1]) > 32):
+                    await self.sink.send("Uso: stop [BTCUSDT]")
+                    return
+                result = await self.control.stop(self.user_id, parts[1] if len(parts) == 2 else "")
+                await self.sink.send(f"Sesión detenida: {result['symbol']}.")
         except ValueError as exc:
             await self.sink.send(str(exc)[:300])
         except Exception as exc:

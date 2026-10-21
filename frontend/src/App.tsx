@@ -1153,7 +1153,8 @@ function Workspace() {
   const pendingBinanceTpRef = useRef<{ symbol: string; price: number } | null>(null);
   const [binanceProductionAvailable, setBinanceProductionAvailable] = useState(false);
   const [productionWorkerRunning, setProductionWorkerRunning] = useState(false);
-  const [productionWorkerStatus, setProductionWorkerStatus] = useState<{ status?: string; queue_depth?: number; last_event_latency_ms?: number | null; p95_event_latency_ms?: number | null; last_error?: string | null; adaptive_parameters?: { status?: string; tracker_period?: number; target_percent?: number; stop_percent?: number; minroe_limit_percent?: number; risk_percent?: number; risk_usdt?: number; leverage?: number; initial_balance?: number; bars?: number; window_hours?: number; sample_operations?: number; last_bar_time?: number | null }; parameter_version?: number } | null>(null);
+  const [productionWorkerStatus, setProductionWorkerStatus] = useState<{ symbol?: string; mode?: string; status?: string; queue_depth?: number; last_event_latency_ms?: number | null; p95_event_latency_ms?: number | null; last_error?: string | null; adaptive_parameters?: { status?: string; tracker_period?: number; target_percent?: number; stop_percent?: number; minroe_limit_percent?: number; risk_percent?: number; risk_usdt?: number; leverage?: number; initial_balance?: number; bars?: number; window_hours?: number; sample_operations?: number; last_bar_time?: number | null }; parameter_version?: number } | null>(null);
+  const productionWorkerSwitchRef = useRef<string | null>(null);
   const [executionMode, setExecutionMode] = useState<'paper' | 'production'>('paper');
   const [binanceSizingMode, setBinanceSizingMode] = useState<BinanceSizingMode>(() => localStorage.getItem('helloworld-binance-sizing-mode') === 'maximum' ? 'maximum' : 'minimum');
   const [binanceStopPercent, setBinanceStopPercent] = useState(() => Number(localStorage.getItem('helloworld-binance-stop-percent') ?? FIXED_BINANCE_STOP_PERCENT) || FIXED_BINANCE_STOP_PERCENT);
@@ -1427,8 +1428,8 @@ function Workspace() {
     if (broker !== 'binance') { setBinanceProductionAvailable(false); setExecutionMode('paper'); return; }
     let active = true;
     const loadRuntime = () => fetch(`${apiUrl}/trading/binance/runtime`, { headers: auth.accessToken ? { Authorization: `Bearer ${auth.accessToken}` } : undefined, credentials: 'include' })
-      .then(response => response.ok ? response.json() as Promise<{ real_trading_enabled?: boolean; production_worker_live_enabled?: boolean }> : Promise.reject(new Error()))
-      .then(runtime => { if (active) { const liveAvailable = runtime.real_trading_enabled === true && runtime.production_worker_live_enabled === true; setBinanceProductionAvailable(liveAvailable); if (!liveAvailable) setExecutionMode('paper'); } })
+      .then(response => response.ok ? response.json() as Promise<{ real_trading_enabled?: boolean; production_worker_live_enabled?: boolean; production_worker_live_validated?: boolean }> : Promise.reject(new Error()))
+      .then(runtime => { if (active) { const liveAvailable = runtime.real_trading_enabled === true && runtime.production_worker_live_enabled === true && runtime.production_worker_live_validated === true; setBinanceProductionAvailable(liveAvailable); if (!liveAvailable) setExecutionMode('paper'); } })
       .catch(() => { if (active) { setBinanceProductionAvailable(false); setExecutionMode('paper'); } });
     void loadRuntime();
     const timer = window.setInterval(loadRuntime, 15_000);
@@ -1454,18 +1455,42 @@ function Workspace() {
     if (broker !== 'binance' || !auth.accessToken) { setProductionWorkerRunning(false); setProductionWorkerStatus(null); return; }
     let active = true;
     const refreshWorker = () => fetch(`${apiUrl}/trading/production/workers`, { headers: { Authorization: `Bearer ${auth.accessToken}` }, credentials: 'include' })
-      .then(response => response.ok ? response.json() as Promise<Array<{ symbol: string; running: boolean; status?: string; queue_depth?: number; last_event_latency_ms?: number | null; p95_event_latency_ms?: number | null; last_error?: string | null; adaptive_parameters?: { status?: string; tracker_period?: number; target_percent?: number; stop_percent?: number; minroe_limit_percent?: number; risk_percent?: number; risk_usdt?: number; leverage?: number; initial_balance?: number; bars?: number; window_hours?: number; sample_operations?: number; last_bar_time?: number | null }; parameter_version?: number }>> : Promise.reject(new Error('worker status unavailable')))
+      .then(response => response.ok ? response.json() as Promise<Array<{ symbol: string; mode?: string; running: boolean; status?: string; queue_depth?: number; last_event_latency_ms?: number | null; p95_event_latency_ms?: number | null; last_error?: string | null; adaptive_parameters?: { status?: string; tracker_period?: number; target_percent?: number; stop_percent?: number; minroe_limit_percent?: number; risk_percent?: number; risk_usdt?: number; leverage?: number; initial_balance?: number; bars?: number; window_hours?: number; sample_operations?: number; last_bar_time?: number | null }; parameter_version?: number }>> : Promise.reject(new Error('worker status unavailable')))
       .then(workers => {
         if (!active) return;
-        const selected = workers.find(worker => worker.symbol === symbol.toUpperCase() && worker.running);
+        const session = workers.find(worker => worker.running);
+        if (session && session.symbol !== symbol.toUpperCase()) {
+          const switchKey = `${session.symbol}->${symbol.toUpperCase()}`;
+          if (productionWorkerSwitchRef.current === switchKey) return;
+          productionWorkerSwitchRef.current = switchKey;
+          const params = session.adaptive_parameters;
+          void fetch(`${apiUrl}/trading/production/workers`, {
+            method: 'POST', headers: { Authorization: `Bearer ${auth.accessToken}`, 'Content-Type': 'application/json' }, credentials: 'include',
+            body: JSON.stringify({ symbol, mode: session.mode === 'paper' ? 'paper' : 'signals_only', interval: '1m', tracker_period: params?.tracker_period ?? trackerPeriod, stop_percent: params?.stop_percent ?? binanceStopPercent, target_percent: params?.target_percent ?? binanceTargetPercent, quantity: 0, risk_percent: params?.risk_percent ?? paperRiskPercent, leverage: params?.leverage ?? 1, initial_balance: params?.initial_balance ?? paperInitialBalance }),
+          }).then(async response => {
+            if (!response.ok) throw new Error((await response.json() as { detail?: string }).detail ?? 'No se pudo cambiar el worker al símbolo seleccionado.');
+            if (!active) return;
+            const switched = await response.json() as typeof session;
+            setProductionWorkerStatus(switched);
+            setProductionWorkerRunning(Boolean(switched.running));
+            setExecutionMode(switched.mode === 'live' ? 'production' : 'paper');
+            setProductionWorkerError('');
+          }).catch(error => {
+            if (active) setProductionWorkerError(error instanceof Error ? error.message : 'No se pudo cambiar el símbolo del worker.');
+          }).finally(() => { if (productionWorkerSwitchRef.current === switchKey) productionWorkerSwitchRef.current = null; });
+          return;
+        }
+        productionWorkerSwitchRef.current = null;
+        const selected = session?.symbol === symbol.toUpperCase() ? session : undefined;
         setProductionWorkerRunning(Boolean(selected));
         setProductionWorkerStatus(selected ?? null);
+        setExecutionMode(selected?.mode === 'live' ? 'production' : 'paper');
       })
       .catch(() => { if (active) { setProductionWorkerRunning(false); setProductionWorkerStatus(null); } });
     void refreshWorker();
     const timer = window.setInterval(refreshWorker, 10_000);
     return () => { active = false; window.clearInterval(timer); };
-  }, [auth.accessToken, broker, symbol]);
+  }, [auth.accessToken, broker, symbol, apiUrl, trackerPeriod, binanceStopPercent, binanceTargetPercent, paperRiskPercent, paperInitialBalance]);
 
   useEffect(() => {
     if (broker !== 'binance') { setBinanceRules(null); return; }

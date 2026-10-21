@@ -71,7 +71,12 @@ backend_events = BackendEventBus()
 if settings.telegram_signal_notifications_enabled:
     backend_events.add_sink(telegram_event_sink(telegram_sink))
 production_worker_config_store = ProductionWorkerConfigStore(engine)
-production_workers = ProductionWorkerManager(binance_market_gateway, paper_operation_store, backend_events, binance_manager, binance_execution_store, production_worker_config_store, settings.binance_base_url)
+production_workers = ProductionWorkerManager(
+    binance_market_gateway, paper_operation_store, backend_events, binance_manager,
+    binance_execution_store, production_worker_config_store, settings.binance_base_url,
+    live_enabled=(settings.binance_real_trading_enabled and settings.production_worker_live_enabled
+                  and settings.production_worker_live_validated),
+)
 
 
 async def _telegram_scan_snapshot(user_id: str, limit: int) -> dict[str, object]:
@@ -129,6 +134,7 @@ async def _telegram_scan_snapshot(user_id: str, limit: int) -> dict[str, object]
                 "risk_usdt": adaptive.get("risk_usdt"),
                 "parameter_version": worker.get("parameter_version"),
                 "parameter_source": "TRACKER_WORKER",
+                "worker_mode": worker.get("mode", "signals_only"),
             })
     rows.sort(key=lambda row: float(row.get("final_result_usdt") if row.get("final_result_usdt") is not None else -1_000_000), reverse=True)
     return {"symbols": rows, "updated_at": analysis.get("updated_at"), "config": analysis.get("config"), "text": format_scanner_message(rows, updated_at=analysis.get("updated_at"))}
@@ -370,7 +376,7 @@ class BinanceTakeProfitUpdateInput(BaseModel):
 
 class ProductionWorkerInput(BaseModel):
     symbol: str = Field(min_length=3, max_length=32)
-    mode: Literal["paper", "live"] = "paper"
+    mode: Literal["signals_only", "paper", "live"] = "paper"
     interval: Literal["1m", "3m", "5m", "15m"] = "1m"
     tracker_period: int = Field(default=5, ge=1, le=300)
     stop_percent: float = Field(default=0.2, gt=0, le=100)
@@ -387,6 +393,10 @@ class TelegramWorkerStartInput(BaseModel):
     risk_percent: float = Field(default=1.0, gt=0, le=100)
     leverage: float = Field(default=1.0, ge=1, le=125)
     initial_balance: float = Field(default=100.0, ge=1, le=1_000_000)
+
+
+class TelegramWorkerModeInput(BaseModel):
+    mode: Literal["signals_only", "paper", "live"]
 
 
 def _binance_public_execution_rules(symbol: str) -> tuple[float, float, float, float, int, int]:
@@ -588,7 +598,7 @@ def binance_account(identity: AuthIdentity = Depends(identity_dependency(auth_se
 def binance_runtime(identity: AuthIdentity = Depends(identity_dependency(auth_service))) -> dict[str, object]:
     """Expose backend worker health without exposing credentials or secrets."""
     snapshot = binance_manager.snapshot(identity.user_id)
-    return {"real_trading_enabled": settings.binance_real_trading_enabled, "production_worker_live_enabled": settings.production_worker_live_enabled, "worker": binance_execution_supervisor.status(), "account": snapshot}
+    return {"real_trading_enabled": settings.binance_real_trading_enabled, "production_worker_live_enabled": settings.production_worker_live_enabled, "production_worker_live_validated": settings.production_worker_live_validated, "worker": binance_execution_supervisor.status(), "account": snapshot}
 
 
 @app.get("/trading/production/workers")
@@ -605,11 +615,19 @@ async def start_production_worker(payload: ProductionWorkerInput, identity: Auth
     if payload.mode == "live":
         if not settings.binance_real_trading_enabled:
             raise HTTPException(status_code=503, detail="El trading real está bloqueado en este entorno.")
-        if not settings.production_worker_live_enabled:
+        if not settings.production_worker_live_enabled or not settings.production_worker_live_validated:
             raise HTTPException(status_code=503, detail="El adaptador Live del engine está bloqueado hasta completar la validación de reconciliación y protecciones.")
         if not payload.confirmed:
             raise HTTPException(status_code=409, detail="Confirma explícitamente el modo live.")
     try:
+        if payload.mode == "live":
+            return await production_workers.activate_live(
+                identity.user_id, payload.symbol,
+                interval=payload.interval, tracker_period=payload.tracker_period,
+                stop_percent=payload.stop_percent, target_percent=payload.target_percent,
+                quantity=payload.quantity, risk_percent=payload.risk_percent,
+                leverage=payload.leverage, initial_balance=payload.initial_balance,
+            )
         return await production_workers.start(identity.user_id, payload.symbol, mode=payload.mode, interval=payload.interval, tracker_period=payload.tracker_period, stop_percent=payload.stop_percent, target_percent=payload.target_percent, quantity=payload.quantity, risk_percent=payload.risk_percent, leverage=payload.leverage, initial_balance=payload.initial_balance)
     except ValueError as exc:
         code = 409 if "otra instancia" in str(exc) else 422
@@ -629,30 +647,40 @@ async def telegram_scan_api(limit: int = Query(20, ge=1, le=30), identity: AuthI
 
 @app.get("/telegram/status")
 def telegram_status_api(identity: AuthIdentity = Depends(identity_dependency(auth_service))) -> dict[str, object]:
-    """Return command receiver health and Paper worker metrics without secrets."""
+    """Return command receiver health and Tracker session metrics without secrets."""
     return {**telegram_control.status(identity.user_id), "command_receiver": telegram_commands.status()}
 
 
 @app.get("/telegram/workers")
 def telegram_workers_api(identity: AuthIdentity = Depends(identity_dependency(auth_service))) -> list[dict[str, object]]:
-    """List the caller's Paper worker runtime status and metrics."""
+    """List the caller's active Tracker session and runtime metrics."""
     return telegram_control.status(identity.user_id)["workers"]
 
 
 @app.post("/telegram/workers")
 async def telegram_start_worker_api(payload: TelegramWorkerStartInput, identity: AuthIdentity = Depends(identity_dependency(auth_service))) -> dict[str, object]:
-    """Start a Paper Tracker worker; this endpoint has no Live mode."""
+    """Start the Tracker signal session; execution is selected separately."""
     if not settings.production_worker_enabled:
-        raise HTTPException(status_code=503, detail="Los workers de Paper están deshabilitados.")
+        raise HTTPException(status_code=503, detail="Los workers Tracker están deshabilitados.")
     try:
         return await telegram_control.start(identity.user_id, payload.symbol, risk_percent=payload.risk_percent, leverage=payload.leverage, initial_balance=payload.initial_balance)
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
 
 
+@app.patch("/telegram/workers/{symbol}/mode")
+async def telegram_worker_mode_api(symbol: str, payload: TelegramWorkerModeInput, identity: AuthIdentity = Depends(identity_dependency(auth_service))) -> dict[str, object]:
+    """Select the executor for future Tracker signals on the active session."""
+    try:
+        return await telegram_control.set_mode(identity.user_id, payload.mode, symbol)
+    except ValueError as exc:
+        code = 503 if payload.mode == "live" else 409
+        raise HTTPException(status_code=code, detail=str(exc)) from exc
+
+
 @app.delete("/telegram/workers/{symbol}")
 async def telegram_stop_worker_api(symbol: str, identity: AuthIdentity = Depends(identity_dependency(auth_service))) -> dict[str, object]:
-    """Stop only the caller's named Paper worker."""
+    """Stop the caller's named Tracker session."""
     try:
         return await telegram_control.stop(identity.user_id, symbol)
     except ValueError as exc:

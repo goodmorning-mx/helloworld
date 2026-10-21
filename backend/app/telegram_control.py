@@ -1,4 +1,4 @@
-"""Paper-only Telegram controls shared by the bot and authenticated API."""
+"""Telegram controls shared by the realtime Tracker and authenticated API."""
 
 from __future__ import annotations
 
@@ -48,7 +48,9 @@ def format_scanner_message(rows: list[dict[str, object]], *, updated_at: object 
         if execution_stop is not None:
             tp_text += f" · SL {float(execution_stop):.2f}% precio"
         if row.get("parameter_source") == "TRACKER_WORKER":
-            tp_text += " · LIVE"
+            mode = str(row.get("worker_mode", "signals_only")).upper()
+            mode_label = {"SIGNALS_ONLY": "SOLO SEÑALES", "PAPER": "PAPER", "LIVE": "LIVE"}.get(mode, mode)
+            tp_text += f" · {mode_label}"
         lines.append(
             f"{index}. {symbol} · {sign}{result_value:.2f} USDT · {tp_text} · "
             f"Ops {ops} · W {wins}/L {losses} · {activity}"
@@ -68,10 +70,11 @@ class TelegramControlService:
 
     async def start(self, user_id: str, symbol: str, *, risk_percent: float = 1.0, leverage: float = 1.0, initial_balance: float = 100.0) -> dict[str, Any]:
         normalized = self._symbol(symbol)
-        return await self.worker_manager.start(
+        activate = getattr(self.worker_manager, "activate", self.worker_manager.start)
+        return await activate(
             user_id,
             normalized,
-            mode="paper",
+            mode="signals_only",
             interval="1m",
             tracker_period=5,
             stop_percent=0.2,
@@ -81,12 +84,26 @@ class TelegramControlService:
             initial_balance=initial_balance,
         )
 
+    async def set_mode(self, user_id: str, mode: str, symbol: str | None = None) -> dict[str, Any]:
+        normalized = self._symbol(symbol) if symbol else None
+        if normalized is None:
+            active = [worker for worker in self.worker_manager.list(user_id) if worker.get("running")]
+            if len(active) != 1:
+                raise ValueError("No hay una única sesión activa. Usa /start SYMBOL primero.")
+            normalized = self._symbol(str(active[0].get("symbol", "")))
+        return await self.worker_manager.set_mode(user_id, normalized, mode)
+
     async def stop(self, user_id: str, symbol: str) -> dict[str, Any]:
-        return await self.worker_manager.stop(user_id, self._symbol(symbol))
+        if symbol:
+            return await self.worker_manager.stop(user_id, self._symbol(symbol))
+        active = [worker for worker in self.worker_manager.list(user_id) if worker.get("running")]
+        if not active:
+            raise ValueError("No hay una sesión activa para detener.")
+        return await self.worker_manager.stop(user_id, self._symbol(str(active[0].get("symbol", ""))))
 
     def status(self, user_id: str) -> dict[str, object]:
         workers = self.worker_manager.list(user_id)
-        lines = ["🟢 Workers Paper"]
+        lines = ["🟢 Sesión Tracker"]
         if not workers:
             lines.append("No hay workers activos.")
         for worker in workers:
@@ -102,15 +119,21 @@ class TelegramControlService:
             ) if params else "parámetros pendientes"
             tracked = worker.get("tracker_operation") if isinstance(worker.get("tracker_operation"), dict) else None
             execution = worker.get("operation") if isinstance(worker.get("operation"), dict) else None
+            background = worker.get("background_operations") if isinstance(worker.get("background_operations"), list) else []
             tracker_state = f"{tracked.get('side')} {tracked.get('level')}" if tracked else "sin posición"
             execution_state = f"{execution.get('side')} {execution.get('status', 'OPEN')}" if execution else "sin posición"
+            background_state = ", ".join(
+                f"{item.get('side')} {item.get('status', 'OPEN')}" for item in background if isinstance(item, dict)
+            )
             error = worker.get("last_error")
             line = (
-                f"{worker.get('symbol', '?')} · {worker.get('status', '?')} · "
+                f"{worker.get('symbol', '?')} · {str(worker.get('mode', 'signals_only')).upper()} · {worker.get('status', '?')} · "
                 f"cola {worker.get('queue_depth', 0)} · velas {worker.get('events_processed', 0)} · {latency_text}\n"
                 f"  Tracker {tracker_state} · ejecución {execution_state}\n"
                 f"  Parámetros: {adaptive_text}"
             )
+            if background_state:
+                line += f"\n  Operaciones previas supervisadas: {background_state}"
             if error:
                 line += f" · error: {str(error)[:120]}"
             lines.append(line)

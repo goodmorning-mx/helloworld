@@ -8,12 +8,14 @@ itself never mutates the exchange.
 from __future__ import annotations
 
 from datetime import datetime, timezone
+import hashlib
 import logging
 import threading
 import time
 from uuid import uuid4
 
-from sqlalchemy import insert, select, update
+from sqlalchemy import insert, select, update, text
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.engine import Engine
 from sqlalchemy.sql import column, table
 
@@ -26,7 +28,7 @@ execution_intents_table = table(
     "binance_execution_intents",
     column("id"), column("user_id"), column("symbol"), column("side"), column("quantity"), column("entry_time"), column("entry_price"),
     column("stop_loss"), column("take_profit"), column("status"), column("exchange_order_id"),
-    column("client_order_id"), column("stop_algo_id"), column("take_profit_algo_id"), column("last_error"), column("created_at"), column("updated_at"),
+    column("client_order_id"), column("signal_id"), column("stop_algo_id"), column("take_profit_algo_id"), column("last_error"), column("created_at"), column("updated_at"),
 )
 
 
@@ -41,19 +43,45 @@ class BinanceExecutionStore:
         with self._engine.connect() as connection:
             return [dict(row) for row in connection.execute(query).mappings().all()]
 
+    def get(self, intent_id: str, user_id: str) -> dict[str, object] | None:
+        with self._engine.connect() as connection:
+            row = connection.execute(select(execution_intents_table).where(
+                execution_intents_table.c.id == intent_id,
+                execution_intents_table.c.user_id == user_id,
+            )).mappings().first()
+            return dict(row) if row else None
+
     def create(self, user_id: str, values: dict[str, object]) -> dict[str, object]:
         now = datetime.now(timezone.utc)
+        signal_id = str(values.get("signal_id") or "")
+        client_order_id = f"hw_{hashlib.sha256(signal_id.encode()).hexdigest()[:32]}" if signal_id else f"helloworld_{uuid4().hex[:20]}"
         intent = {
             **values,
             "id": str(uuid4()),
             "user_id": user_id,
             "status": "PENDING_APPROVAL",
-            "client_order_id": f"helloworld_{uuid4().hex[:20]}",
+            "client_order_id": client_order_id,
             "created_at": now,
             "updated_at": now,
         }
+        intent["signal_id"] = signal_id or None
         with self._engine.begin() as connection:
-            connection.execute(insert(execution_intents_table).values(**intent))
+            if signal_id:
+                statement = pg_insert(execution_intents_table).values(**intent).on_conflict_do_nothing(
+                    index_elements=[execution_intents_table.c.user_id, execution_intents_table.c.signal_id],
+                    index_where=text("signal_id IS NOT NULL"),
+                ).returning(*execution_intents_table.columns)
+                row = connection.execute(statement).mappings().first()
+                if row is not None:
+                    return dict(row)
+                existing = connection.execute(select(execution_intents_table).where(
+                    execution_intents_table.c.user_id == user_id,
+                    execution_intents_table.c.signal_id == signal_id,
+                )).mappings().first()
+                if existing is not None:
+                    return {**dict(existing), "reused": True}
+            else:
+                connection.execute(insert(execution_intents_table).values(**intent))
         return intent
 
     def update(self, intent_id: str, user_id: str, **values: object) -> dict[str, object] | None:
@@ -62,6 +90,21 @@ class BinanceExecutionStore:
             connection.execute(update(execution_intents_table).where(
                 execution_intents_table.c.id == intent_id,
                 execution_intents_table.c.user_id == user_id,
+            ).values(**values))
+            row = connection.execute(select(execution_intents_table).where(
+                execution_intents_table.c.id == intent_id,
+                execution_intents_table.c.user_id == user_id,
+            )).mappings().first()
+        return dict(row) if row else None
+
+    def mark_protected(self, intent_id: str, user_id: str, **values: object) -> dict[str, object] | None:
+        """Do not resurrect a Live intent already closed by the User Stream."""
+        values["updated_at"] = datetime.now(timezone.utc)
+        with self._engine.begin() as connection:
+            connection.execute(update(execution_intents_table).where(
+                execution_intents_table.c.id == intent_id,
+                execution_intents_table.c.user_id == user_id,
+                execution_intents_table.c.status != "CLOSED",
             ).values(**values))
             row = connection.execute(select(execution_intents_table).where(
                 execution_intents_table.c.id == intent_id,
@@ -81,7 +124,7 @@ class BinanceExecutionStore:
                 is_close = status in {"TRIGGERED", "FILLED"} and bool(event.get("is_close"))
                 client_matches = bool(root and client_id and client_id.startswith(root))
                 symbol_matches = symbol and symbol == str(intent.get("symbol") or "").upper()
-                if client_matches and client_id == root and status == "FILLED":
+                if client_matches and client_id == root and status == "FILLED" and str(intent.get("status", "")).upper() not in {"PROTECTED", "CLOSED", "ERROR"}:
                     self.update(intent["id"], user_id, status="ENTRY_FILLED", exchange_order_id=str(event.get("exchange_order_id") or intent.get("exchange_order_id")))
                 elif is_close and (client_matches and client_id != root or (not client_matches and symbol_matches and intent.get("status") not in {"CLOSED", "ERROR"})):
                     self.update(intent["id"], user_id, status="CLOSED", last_error=None)

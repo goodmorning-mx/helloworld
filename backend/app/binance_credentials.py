@@ -228,6 +228,14 @@ class BinanceMonitorManager:
         monitor = self._monitor_for_user(user_id)
         return monitor.place_market_order(symbol, side, quantity, client_order_id, reduce_only=reduce_only)
 
+    def order_by_client_order_id(self, user_id: str, symbol: str, client_order_id: str) -> dict:
+        monitor = self._monitor_for_user(user_id)
+        return monitor.order_by_client_order_id(symbol, client_order_id)
+
+    def cancel_order_by_client_order_id(self, user_id: str, symbol: str, client_order_id: str) -> dict:
+        monitor = self._monitor_for_user(user_id)
+        return monitor.cancel_order_by_client_order_id(symbol, client_order_id)
+
     def place_close_protection(self, user_id: str, symbol: str, side: str, stop_price: float, client_order_id: str, order_type: str, *, working_type: str = "MARK_PRICE") -> dict:
         monitor = self._monitor_for_user(user_id)
         return monitor.place_close_protection(symbol, side, stop_price, client_order_id, order_type, working_type=working_type)
@@ -235,6 +243,10 @@ class BinanceMonitorManager:
     def cancel_close_protection(self, user_id: str, symbol: str, algo_id: str | int) -> dict:
         monitor = self._monitor_for_user(user_id)
         return monitor.cancel_close_protection(symbol, algo_id)
+
+    def open_close_protections(self, user_id: str, symbol: str) -> list[dict]:
+        monitor = self._monitor_for_user(user_id)
+        return monitor.open_close_protections(symbol)
 
     def save(self, user_id: str, api_key: str, api_secret: str) -> dict[str, object]:
         self._validate(api_key, api_secret)

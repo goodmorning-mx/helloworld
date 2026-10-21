@@ -7,9 +7,11 @@ from datetime import datetime, timedelta, timezone
 import logging
 import asyncio
 import time
+from decimal import Decimal, ROUND_CEILING, ROUND_FLOOR
 from collections import deque
 from typing import Any, Protocol
 from uuid import uuid4
+import httpx
 
 from sqlalchemy import insert, or_, select, update
 from sqlalchemy.dialects.postgresql import JSONB, insert as pg_insert
@@ -38,6 +40,10 @@ production_worker_runtime_table = table(
     "production_worker_runtime", column("owner_id"), column("lease_until"),
     column("user_id"), column("symbol"), column("last_bar_time"), column("heartbeat_at"),
     column("status"), column("tracker_operation", JSONB), column("adaptive_parameters", JSONB), column("updated_at"),
+)
+production_worker_sessions_table = table(
+    "production_worker_sessions", column("user_id"), column("symbol"),
+    column("owner_id"), column("lease_until"), column("updated_at"),
 )
 
 
@@ -94,12 +100,57 @@ class ProductionWorkerConfigStore:
         with self._engine.begin() as connection:
             connection.execute(update(production_worker_runtime_table).where(production_worker_runtime_table.c.user_id == user_id, production_worker_runtime_table.c.symbol == symbol.upper(), production_worker_runtime_table.c.owner_id == owner_id).values(owner_id=None, lease_until=now, heartbeat_at=now, status=status, updated_at=now))
 
+    def claim_session(self, user_id: str, symbol: str, owner_id: str, lease_seconds: int = 45) -> bool:
+        now = datetime.now(timezone.utc)
+        statement = pg_insert(production_worker_sessions_table).values(
+            user_id=user_id, symbol=symbol.upper(), owner_id=owner_id,
+            lease_until=now + timedelta(seconds=lease_seconds), updated_at=now,
+        ).on_conflict_do_update(
+            index_elements=[production_worker_sessions_table.c.user_id],
+            set_={"symbol": symbol.upper(), "owner_id": owner_id,
+                  "lease_until": now + timedelta(seconds=lease_seconds), "updated_at": now},
+            where=or_(production_worker_sessions_table.c.lease_until < now,
+                      production_worker_sessions_table.c.owner_id == owner_id),
+        ).returning(production_worker_sessions_table.c.owner_id)
+        with self._engine.begin() as connection:
+            return connection.execute(statement).scalar_one_or_none() == owner_id
+
+    def renew_session(self, user_id: str, symbol: str, owner_id: str, lease_seconds: int = 45) -> bool:
+        now = datetime.now(timezone.utc)
+        with self._engine.begin() as connection:
+            result = connection.execute(update(production_worker_sessions_table).where(
+                production_worker_sessions_table.c.user_id == user_id,
+                production_worker_sessions_table.c.symbol == symbol.upper(),
+                production_worker_sessions_table.c.owner_id == owner_id,
+            ).values(lease_until=now + timedelta(seconds=lease_seconds), updated_at=now))
+            return result.rowcount == 1
+
+    def release_session(self, user_id: str, symbol: str, owner_id: str) -> None:
+        now = datetime.now(timezone.utc)
+        with self._engine.begin() as connection:
+            connection.execute(update(production_worker_sessions_table).where(
+                production_worker_sessions_table.c.user_id == user_id,
+                production_worker_sessions_table.c.symbol == symbol.upper(),
+                production_worker_sessions_table.c.owner_id == owner_id,
+            ).values(owner_id=None, lease_until=now, updated_at=now))
+
 
 class ExecutionAdapter(Protocol):
     mode: str
 
     async def open(self, worker: "SymbolWorker", side: str, price: float, bar: dict[str, Any]) -> dict[str, Any]: ...
     async def close(self, worker: "SymbolWorker", reason: str, price: float, bar: dict[str, Any]) -> dict[str, Any]: ...
+
+
+class SignalOnlyExecutionAdapter:
+    """Keep Tracker active and publish signals without placing operations."""
+    mode = "signals_only"
+
+    async def open(self, worker: "SymbolWorker", side: str, price: float, bar: dict[str, Any]) -> dict[str, Any]:
+        return {}
+
+    async def close(self, worker: "SymbolWorker", reason: str, price: float, bar: dict[str, Any]) -> dict[str, Any]:
+        return {}
 
 
 @dataclass
@@ -115,6 +166,8 @@ class SymbolWorker:
     events: BackendEventBus
     bars: list[dict[str, Any]] = field(default_factory=list)
     operation: dict[str, Any] | None = None
+    operation_adapter: ExecutionAdapter | None = None
+    background_operations: list[tuple[dict[str, Any], ExecutionAdapter]] = field(default_factory=list)
     tracker_operation: dict[str, Any] | None = None
     adaptive_parameters: dict[str, Any] = field(default_factory=dict)
     recalibration_task: asyncio.Task[None] | None = None
@@ -134,6 +187,10 @@ class SymbolWorker:
     latency_samples_ms: deque[float] = field(default_factory=lambda: deque(maxlen=100))
     last_error: str | None = None
     runtime_store: ProductionWorkerConfigStore | None = None
+    session_store: ProductionWorkerConfigStore | None = None
+    account_listener: Any = None
+    event_loop: asyncio.AbstractEventLoop | None = None
+    state_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     history_provider: Any = None
     pending_bar_times: set[int] = field(default_factory=set)
     lease_owner_id: str | None = None
@@ -222,8 +279,12 @@ class SymbolWorker:
         if self.runtime_store is None or self.lease_owner_id is None:
             return True
         owned = await asyncio.to_thread(self.runtime_store.save_runtime, self.user_id, self.symbol, self.lease_owner_id, last_bar_time=self.last_bar_time, status=self.status, tracker_operation=self.tracker_operation, adaptive_parameters=self.adaptive_parameters)
-        if owned:
+        if owned and (self.session_store is None or self.lease_owner_id is None):
             return True
+        if owned and await asyncio.to_thread(self.session_store.renew_session, self.user_id, self.symbol, self.lease_owner_id):
+            return True
+        if owned:
+            owned = False
         self.status = "LEASE_LOST"
         self.last_error = "worker lease was claimed by another backend instance"
         self.running = False
@@ -236,6 +297,10 @@ class SymbolWorker:
         await self.process_market_event(event)
 
     async def process_market_event(self, event: dict[str, Any]) -> None:
+        async with self.state_lock:
+            await self._process_market_event_locked(event)
+
+    async def _process_market_event_locked(self, event: dict[str, Any]) -> None:
         if not self.running or event.get("type") != "kline" or event.get("interval") != self.interval:
             return
         bar = event.get("bar")
@@ -250,8 +315,31 @@ class SymbolWorker:
             self.duplicate_events += 1
             return
         self.bars = [item for item in self.bars if int(item["time"]) != normalized["time"]][-WINDOW_BARS + 1:] + [normalized]
+        await self._process_background_operations(normalized)
         await self._evaluate(normalized)
         self.last_bar_time = normalized["time"]
+
+    async def _process_background_operations(self, bar: dict[str, Any]) -> None:
+        survivors: list[tuple[dict[str, Any], ExecutionAdapter]] = []
+        current_operation, current_adapter = self.operation, self.operation_adapter
+        for operation, adapter in self.background_operations:
+            reason = tracker_close_reason(
+                str(operation["side"]), float(operation["entry_price"]), float(bar["close"]),
+                float(operation.get("stop_percent", self.stop_percent)),
+                float(operation.get("target_percent", self.target_percent)),
+            )
+            if reason is None:
+                survivors.append((operation, adapter))
+                continue
+            self.operation, self.operation_adapter = operation, adapter
+            try:
+                await adapter.close(self, reason, float(bar["close"]), bar)
+            except Exception:
+                survivors.append((operation, adapter))
+                raise
+            finally:
+                self.operation, self.operation_adapter = current_operation, current_adapter
+        self.background_operations = survivors
 
     async def _evaluate(self, bar: dict[str, Any]) -> None:
         # Paper/Binance executions manage their own exits. These exits never
@@ -261,7 +349,9 @@ class SymbolWorker:
             operation_target = float(self.operation.get("target_percent", self.target_percent))
             execution_reason = tracker_close_reason(str(self.operation["side"]), float(self.operation["entry_price"]), float(bar["close"]), operation_stop, operation_target)
             if execution_reason is not None:
-                await self.adapter.close(self, execution_reason, float(bar["close"]), bar)
+                closing_adapter = self.operation_adapter or self.adapter
+                await closing_adapter.close(self, execution_reason, float(bar["close"]), bar)
+                self.operation_adapter = None
 
         if len(self.bars) <= self.tracker_period:
             return
@@ -296,12 +386,17 @@ class SymbolWorker:
             # Executions mirror Tracker entries but own their independent
             # operation lifecycle and cannot feed back into strategy state.
             if self.operation is None:
-                await self.adapter.open(self, side, close, {**bar, "level": level})
+                await self.adapter.open(self, side, close, {**bar, "level": level, "signal_id": signal_id})
+                if self.operation is not None:
+                    self.operation_adapter = self.adapter
         elif tracker_closed and self.tracker_operation is None and self.operation is None:
             # A Tracker SL can retry only when the same candle has a new signal.
             if signal_data is not None:
                 side, level = signal_data
-                await self.adapter.open(self, side, close, {**bar, "level": level})
+                signal_id = f"{self.symbol}:{self.interval}:{bar['time']}:{side}:{level}"
+                await self.adapter.open(self, side, close, {**bar, "level": level, "signal_id": signal_id})
+                if self.operation is not None:
+                    self.operation_adapter = self.adapter
 
     def _schedule_recalibration(self) -> None:
         if self.recalibration_task is not None and not self.recalibration_task.done():
@@ -332,9 +427,19 @@ class SymbolWorker:
                 "target_percent": self.target_percent,
                 "parameter_version": self.parameter_version,
             })
-        update_execution = getattr(self.adapter, "update_parameters", None)
+        update_execution = getattr(self.operation_adapter or self.adapter, "update_parameters", None)
         if update_execution is not None:
             await update_execution(self)
+        for operation, adapter in self.background_operations:
+            update_background = getattr(adapter, "update_parameters", None)
+            if update_background is None:
+                continue
+            current_operation, current_adapter = self.operation, self.operation_adapter
+            self.operation, self.operation_adapter = operation, adapter
+            try:
+                await update_background(self)
+            finally:
+                self.operation, self.operation_adapter = current_operation, current_adapter
         await self._persist_runtime_snapshot()
         await self.events.publish({"type": "TRACKER_PARAMETERS_UPDATED", "symbol": self.symbol, **params, "parameter_version": self.parameter_version})
 
@@ -413,34 +518,180 @@ class PaperExecutionAdapter:
 class BinanceExecutionAdapter:
     mode = "live"
 
-    def __init__(self, manager: BinanceMonitorManager, store: BinanceExecutionStore, quantity: float) -> None:
+    def __init__(self, manager: BinanceMonitorManager, store: BinanceExecutionStore, quantity: float = 0.0, base_url: str = "https://fapi.binance.com") -> None:
         self.manager = manager
         self.store = store
         self.quantity = quantity
+        self.base_url = base_url.rstrip("/")
+        self._rules_cache: dict[str, tuple[float, float, float, float, float, int, int]] = {}
+
+    def _rules(self, symbol: str) -> tuple[float, float, float, float, float, int, int]:
+        cached = self._rules_cache.get(symbol)
+        if cached is not None and time.monotonic() - cached[0] < 300:
+            return cached
+        response = httpx.get(f"{self.base_url}/fapi/v1/exchangeInfo", timeout=10)
+        response.raise_for_status()
+        payload = response.json()
+        item = next((row for row in payload.get("symbols", []) if str(row.get("symbol", "")).upper() == symbol), None)
+        if item is None:
+            raise RuntimeError(f"Binance no encontró el símbolo {symbol}.")
+        filters = {str(row.get("filterType")): row for row in item.get("filters", [])}
+        lot = filters.get("MARKET_LOT_SIZE") or filters.get("LOT_SIZE") or {}
+        notional = filters.get("NOTIONAL") or filters.get("MIN_NOTIONAL") or {}
+        price = filters.get("PRICE_FILTER") or {}
+        result = (time.monotonic(), float(lot.get("stepSize", 0) or 0), float(lot.get("minQty", 0) or 0),
+                  float(notional.get("notional", notional.get("minNotional", 0)) or 0),
+                  float(price.get("tickSize", 0) or 0), int(item.get("pricePrecision", 8)), int(item.get("quantityPrecision", 8)))
+        self._rules_cache[symbol] = result
+        return result
+
+    @staticmethod
+    def _align(value: float, step: float, precision: int, *, ceiling: bool) -> float:
+        if step <= 0:
+            return float(f"{value:.{precision}f}")
+        rounding = ROUND_CEILING if ceiling else ROUND_FLOOR
+        aligned = (Decimal(str(value)) / Decimal(str(step))).to_integral_value(rounding=rounding) * Decimal(str(step))
+        return float(f"{aligned:.{precision}f}")
+
+    def _sized_quantity(self, worker: "SymbolWorker", price: float) -> float:
+        if self.quantity > 0:
+            return self.quantity
+        snapshot = self.manager.snapshot(worker.user_id)
+        if not snapshot.get("healthy") or not snapshot.get("stream_connected"):
+            raise RuntimeError("El User Data Stream de Binance se desconectó; no se abrirá una nueva operación.")
+        available = float(snapshot.get("available_balance") or 0)
+        if available <= 0:
+            raise RuntimeError("Binance no reporta balance disponible para dimensionar la orden.")
+        parameters = worker.adaptive_parameters
+        leverage = max(1.0, min(float(parameters.get("leverage", 1)), 125.0))
+        risk_percent = max(.01, min(float(parameters.get("risk_percent", 1)), 100.0))
+        risk_amount = available * risk_percent / 100
+        notional = min(risk_amount / max(worker.stop_percent / 100, .000001), available * leverage)
+        _time, step, min_quantity, min_notional, _tick, _price_precision, quantity_precision = self._rules(worker.symbol)
+        quantity = self._align(notional / price, step, quantity_precision, ceiling=False)
+        if quantity <= 0 or quantity < min_quantity or quantity * price < min_notional:
+            raise RuntimeError("El riesgo calculado queda debajo del tamaño mínimo permitido por Binance.")
+        return quantity
 
     async def open(self, worker: SymbolWorker, side: str, price: float, bar: dict[str, Any]) -> dict[str, Any]:
+        quantity = await asyncio.to_thread(self._sized_quantity, worker, price)
         order_side = "BUY" if side == "LONG" else "SELL"
-        intent = await asyncio.to_thread(self.store.create, worker.user_id, {"symbol": worker.symbol, "side": side, "quantity": self.quantity, "entry_time": datetime.fromtimestamp(bar["time"], timezone.utc), "entry_price": price, "stop_loss": None, "take_profit": None})
+        intent = await asyncio.to_thread(self.store.create, worker.user_id, {"symbol": worker.symbol, "side": side, "quantity": quantity, "entry_time": datetime.fromtimestamp(bar["time"], timezone.utc), "entry_price": price, "stop_loss": None, "take_profit": None, "signal_id": bar.get("signal_id")})
+        if intent.get("reused"):
+            status = str(intent.get("status", "")).upper()
+            if status == "PROTECTED":
+                position = await asyncio.to_thread(self.manager.position_risk, worker.user_id, worker.symbol)
+                actual_quantity = abs(float(position.get("positionAmt", 0) or 0))
+                if actual_quantity > 0:
+                    worker.operation = {"id": intent["id"], "side": side, "level": bar.get("level"), "entry_price": float(intent.get("entry_price") or price), "quantity": actual_quantity, "notional": actual_quantity * float(intent.get("entry_price") or price), "stop_price": float(intent.get("stop_loss") or 0), "target_price": float(intent.get("take_profit") or 0), "stop_percent": worker.stop_percent, "target_percent": worker.target_percent, "parameter_version": worker.parameter_version, "status": "PROTECTED", "stop_algo_id": intent.get("stop_algo_id"), "take_profit_algo_id": intent.get("take_profit_algo_id")}
+                    worker.operation_adapter = self
+                else:
+                    worker.status = "DEGRADED"
+                    worker.last_error = "La intención Live ya existe; Binance todavía no confirma su posición. Requiere reconciliación."
+                return intent
+            worker.status = "DEGRADED"
+            worker.last_error = f"Señal Tracker ya registrada con estado Live {status or 'desconocido'}; no se repetirá la orden."
+            return intent
         close_side = "SELL" if side == "LONG" else "BUY"
         stop = price * (1 - (1 if side == "LONG" else -1) * worker.stop_percent / 100)
         target = price * (1 + (1 if side == "LONG" else -1) * worker.target_percent / 100)
         entry = None
+        order_submission_started = False
+        created_protections: list[dict[str, Any]] = []
         try:
-            entry = await asyncio.to_thread(self.manager.place_market_order, worker.user_id, worker.symbol, order_side, self.quantity, str(intent["client_order_id"]))
+            leverage = int(max(1, round(float(worker.adaptive_parameters.get("leverage", 1)))))
+            await asyncio.to_thread(self.manager.set_symbol_margin_type, worker.user_id, worker.symbol, "ISOLATED")
+            await asyncio.to_thread(self.manager.set_symbol_leverage, worker.user_id, worker.symbol, leverage)
+            order_submission_started = True
+            entry = await asyncio.to_thread(self.manager.place_market_order, worker.user_id, worker.symbol, order_side, quantity, str(intent["client_order_id"]))
+            if isinstance(entry, dict) and str(entry.get("status", "")).upper() not in {"FILLED", ""}:
+                raise RuntimeError(f"La entrada Binance no quedó completamente ejecutada: {entry.get('status')}.")
             average_open = float(entry.get("avgPrice") or entry.get("price") or price) if isinstance(entry, dict) else price
-            actual_quantity = abs(float(entry.get("executedQty") or self.quantity)) if isinstance(entry, dict) else self.quantity
-            await asyncio.to_thread(self.manager.place_close_protection, worker.user_id, worker.symbol, close_side, stop, f"{intent['client_order_id']}_sl", "STOP_MARKET")
-            await asyncio.to_thread(self.manager.place_close_protection, worker.user_id, worker.symbol, close_side, target, f"{intent['client_order_id']}_tp", "TAKE_PROFIT_MARKET", working_type="CONTRACT_PRICE")
-            await asyncio.to_thread(self.store.update, intent["id"], worker.user_id, status="PROTECTED", quantity=actual_quantity, entry_price=average_open, stop_loss=stop, take_profit=target)
+            actual_quantity = abs(float(entry.get("executedQty") or quantity)) if isinstance(entry, dict) else quantity
+            if actual_quantity <= 0:
+                raise RuntimeError("Binance no confirmó una cantidad ejecutada.")
+            _time, _step, _min_qty, _min_notional, tick, price_precision, _qty_precision = self._rules(worker.symbol)
+            stop = self._align(stop, tick, price_precision, ceiling=side == "SHORT")
+            target = self._align(target, tick, price_precision, ceiling=side == "LONG")
+            stop_order = await asyncio.to_thread(self.manager.place_close_protection, worker.user_id, worker.symbol, close_side, stop, f"{intent['client_order_id'][:26]}_sl", "STOP_MARKET")
+            created_protections.append(stop_order)
+            target_order = await asyncio.to_thread(self.manager.place_close_protection, worker.user_id, worker.symbol, close_side, target, f"{intent['client_order_id'][:25]}_tp", "TAKE_PROFIT_MARKET", working_type="CONTRACT_PRICE")
+            created_protections.append(target_order)
+            if not stop_order.get("algoId") or not target_order.get("algoId"):
+                raise RuntimeError("Binance no confirmó los identificadores de ambas protecciones.")
+            protected_intent = await asyncio.to_thread(self.store.mark_protected, intent["id"], worker.user_id, status="PROTECTED", exchange_order_id=str(entry.get("orderId") or "") if isinstance(entry, dict) else None, quantity=actual_quantity, entry_price=average_open, stop_loss=stop, take_profit=target, stop_algo_id=stop_order.get("algoId"), take_profit_algo_id=target_order.get("algoId"))
+            if protected_intent is not None and str(protected_intent.get("status", "")).upper() == "CLOSED":
+                for protection in created_protections:
+                    if protection.get("algoId"):
+                        await asyncio.to_thread(self.manager.cancel_close_protection, worker.user_id, worker.symbol, protection["algoId"])
+                return intent
         except Exception as exc:
-            if entry is not None:
+            if entry is None and order_submission_started:
                 try:
-                    await asyncio.to_thread(self.manager.place_market_order, worker.user_id, worker.symbol, close_side, self.quantity, f"{intent['client_order_id']}_emergency", reduce_only=True)
+                    entry = await asyncio.to_thread(self.manager.order_by_client_order_id, worker.user_id, worker.symbol, str(intent["client_order_id"]))
+                except Exception as lookup_error:
+                    await asyncio.to_thread(self.store.update, intent["id"], worker.user_id, status="RECONCILIATION_REQUIRED", last_error=f"order_lookup:{type(lookup_error).__name__}")
+                    worker.status = "DEGRADED"
+                    worker.last_error = "Binance no confirmó el resultado de la orden; se requiere reconciliación antes de reintentar."
+                    await worker.events.publish({"type": "LIVE_RECONCILIATION_REQUIRED", "symbol": worker.symbol, "signal_id": bar.get("signal_id")})
+                    logger.warning("live_worker_order_lookup_failed symbol=%s error_type=%s", worker.symbol, type(lookup_error).__name__)
+                    return intent
+            actual_quantity = abs(float(entry.get("executedQty") or 0)) if isinstance(entry, dict) else 0
+            if actual_quantity > 0:
+                average_open = float(entry.get("avgPrice") or entry.get("price") or price)
+                try:
+                    close_result = await asyncio.to_thread(self.manager.place_market_order, worker.user_id, worker.symbol, close_side, actual_quantity, f"{intent['client_order_id'][:24]}_emg", reduce_only=True)
+                    closed = not isinstance(close_result, dict) or str(close_result.get("status", "")).upper() in {"FILLED", ""}
+                except Exception as close_error:
+                    closed = False
+                    logger.warning("live_worker_emergency_close_failed symbol=%s error_type=%s", worker.symbol, type(close_error).__name__)
+                try:
+                    remaining = await asyncio.to_thread(self.manager.position_risk, worker.user_id, worker.symbol)
+                    closed = closed and abs(float(remaining.get("positionAmt", 0) or 0)) <= 1e-12
                 except Exception:
-                    logger.exception("live_worker_emergency_close_failed symbol=%s", worker.symbol)
-            await asyncio.to_thread(self.store.update, intent["id"], worker.user_id, status="ERROR", last_error=str(exc))
-            raise
-        worker.operation = {"id": intent["id"], "side": side, "level": bar.get("level"), "entry_price": average_open, "notional": actual_quantity * average_open, "stop_price": stop, "target_price": target, "stop_percent": worker.stop_percent, "target_percent": worker.target_percent, "parameter_version": worker.parameter_version, "status": "PROTECTED"}
+                    closed = False
+                if closed:
+                    for protection in created_protections:
+                        if protection.get("algoId"):
+                            try:
+                                await asyncio.to_thread(self.manager.cancel_close_protection, worker.user_id, worker.symbol, protection["algoId"])
+                            except Exception as cleanup_error:
+                                logger.warning("live_worker_protection_cleanup_failed symbol=%s error_type=%s", worker.symbol, type(cleanup_error).__name__)
+                    await asyncio.to_thread(self.store.update, intent["id"], worker.user_id, status="ERROR", last_error=f"entry_recovered_closed:{type(exc).__name__}")
+                    return intent
+                try:
+                    _time, _step, _min_qty, _min_notional, tick, precision, _qty_precision = self._rules(worker.symbol)
+                    direction = 1 if side == "LONG" else -1
+                    fallback_stop = self._align(average_open * (1 - direction * worker.stop_percent / 100), tick, precision, ceiling=side == "SHORT")
+                    fallback_target = self._align(average_open * (1 + direction * worker.target_percent / 100), tick, precision, ceiling=side == "LONG")
+                    stop_order = await asyncio.to_thread(self.manager.place_close_protection, worker.user_id, worker.symbol, close_side, fallback_stop, f"{intent['client_order_id'][:26]}_sl", "STOP_MARKET")
+                    created_protections.append(stop_order)
+                    target_order = await asyncio.to_thread(self.manager.place_close_protection, worker.user_id, worker.symbol, close_side, fallback_target, f"{intent['client_order_id'][:25]}_tp", "TAKE_PROFIT_MARKET", working_type="CONTRACT_PRICE")
+                    created_protections.append(target_order)
+                    if not stop_order.get("algoId") or not target_order.get("algoId"):
+                        raise RuntimeError("protection_ids_missing")
+                    protected = await asyncio.to_thread(self.store.mark_protected, intent["id"], worker.user_id, status="PROTECTED", quantity=actual_quantity, entry_price=average_open, stop_loss=fallback_stop, take_profit=fallback_target, stop_algo_id=stop_order["algoId"], take_profit_algo_id=target_order["algoId"], last_error=None)
+                    if protected is not None and str(protected.get("status", "")).upper() == "PROTECTED":
+                        worker.operation = {"id": intent["id"], "side": side, "level": bar.get("level"), "entry_price": average_open, "quantity": actual_quantity, "notional": actual_quantity * average_open, "stop_price": fallback_stop, "target_price": fallback_target, "stop_percent": worker.stop_percent, "target_percent": worker.target_percent, "parameter_version": worker.parameter_version, "status": "PROTECTED", "stop_algo_id": stop_order["algoId"], "take_profit_algo_id": target_order["algoId"]}
+                        worker.operation_adapter = self
+                        await worker.events.publish({"type": "LIVE_ENTRY", "symbol": worker.symbol, "side": side, "price": average_open})
+                        return intent
+                except Exception as protection_error:
+                    logger.warning("live_worker_fallback_protection_failed symbol=%s error_type=%s", worker.symbol, type(protection_error).__name__)
+            await asyncio.to_thread(self.store.update, intent["id"], worker.user_id, status="UNPROTECTED_ERROR" if order_submission_started else "ERROR", last_error=f"execution_failed:{type(exc).__name__}")
+            worker.status = "ERROR" if order_submission_started else worker.status
+            worker.last_error = "No se pudo confirmar una ejecución Live segura; requiere revisión antes de nuevos intentos."
+            await worker.events.publish({"type": "LIVE_RECONCILIATION_REQUIRED", "symbol": worker.symbol, "signal_id": bar.get("signal_id")})
+            logger.warning("live_worker_entry_failed symbol=%s error_type=%s", worker.symbol, type(exc).__name__)
+            return intent
+        worker.operation = {"id": intent["id"], "side": side, "level": bar.get("level"), "entry_price": average_open, "quantity": actual_quantity, "notional": actual_quantity * average_open, "stop_price": stop, "target_price": target, "stop_percent": worker.stop_percent, "target_percent": worker.target_percent, "parameter_version": worker.parameter_version, "status": "PROTECTED", "stop_algo_id": stop_order.get("algoId"), "take_profit_algo_id": target_order.get("algoId")}
+        worker.operation_adapter = self
+        refreshed_intent = await asyncio.to_thread(self.store.get, intent["id"], worker.user_id)
+        if refreshed_intent is not None and str(refreshed_intent.get("status", "")).upper() == "CLOSED":
+            worker.operation = None
+            worker.operation_adapter = None
+            await worker.events.publish({"type": "LIVE_EXIT", "symbol": worker.symbol, "side": side, "reason": "BINANCE_FILL"})
+            return intent
         await worker.events.publish({"type": "LIVE_ENTRY", "symbol": worker.symbol, "side": side, "price": price})
         return intent
 
@@ -449,11 +700,66 @@ class BinanceExecutionAdapter:
         if operation is None:
             return {}
         close_side = "SELL" if operation["side"] == "LONG" else "BUY"
-        await asyncio.to_thread(self.manager.place_market_order, worker.user_id, worker.symbol, close_side, self.quantity, f"{operation['id']}_close", reduce_only=True)
+        live_position = await asyncio.to_thread(self.manager.position_risk, worker.user_id, worker.symbol)
+        actual_quantity = abs(float(live_position.get("positionAmt", 0) or 0))
+        if actual_quantity > 0:
+            close_result = await asyncio.to_thread(self.manager.place_market_order, worker.user_id, worker.symbol, close_side, actual_quantity, f"hwc_{uuid4().hex[:20]}", reduce_only=True)
+            if isinstance(close_result, dict) and str(close_result.get("status", "")).upper() not in {"FILLED", ""}:
+                await asyncio.to_thread(self.store.update, operation["id"], worker.user_id, status="CLOSING", last_error=f"cierre parcial o pendiente: {close_result.get('status')}")
+                worker.status = "DEGRADED"
+                worker.last_error = "El cierre de Binance sigue pendiente de reconciliación."
+                return operation
+        for field_name in ("stop_algo_id", "take_profit_algo_id"):
+            algo_id = operation.get(field_name)
+            if algo_id:
+                try:
+                    await asyncio.to_thread(self.manager.cancel_close_protection, worker.user_id, worker.symbol, algo_id)
+                except Exception:
+                    logger.warning("live_worker_protection_cancel_failed symbol=%s", worker.symbol, exc_info=True)
         await asyncio.to_thread(self.store.update, operation["id"], worker.user_id, status="CLOSED", last_error=None)
         worker.operation = None
         await worker.events.publish({"type": "LIVE_EXIT", "symbol": worker.symbol, "reason": reason, "price": price})
         return operation
+
+    async def update_parameters(self, worker: "SymbolWorker") -> None:
+        operation = worker.operation
+        if operation is None:
+            return
+        direction = 1 if operation["side"] == "LONG" else -1
+        entry = float(operation["entry_price"])
+        stop = entry * (1 - direction * worker.stop_percent / 100)
+        target = entry * (1 + direction * worker.target_percent / 100)
+        _time, _step, _min_qty, _min_notional, tick, price_precision, _qty_precision = self._rules(worker.symbol)
+        stop = self._align(stop, tick, price_precision, ceiling=operation["side"] == "SHORT")
+        target = self._align(target, tick, price_precision, ceiling=operation["side"] == "LONG")
+        close_side = "SELL" if operation["side"] == "LONG" else "BUY"
+        new_orders: list[dict[str, Any]] = []
+        try:
+            new_orders.append(await asyncio.to_thread(self.manager.place_close_protection, worker.user_id, worker.symbol, close_side, stop, f"hwsl_{uuid4().hex[:18]}", "STOP_MARKET"))
+            new_orders.append(await asyncio.to_thread(self.manager.place_close_protection, worker.user_id, worker.symbol, close_side, target, f"hwtp_{uuid4().hex[:18]}", "TAKE_PROFIT_MARKET", working_type="CONTRACT_PRICE"))
+        except Exception:
+            for order in new_orders:
+                if order.get("algoId"):
+                    try:
+                        await asyncio.to_thread(self.manager.cancel_close_protection, worker.user_id, worker.symbol, order["algoId"])
+                    except Exception:
+                        logger.exception("live_worker_new_protection_cleanup_failed symbol=%s", worker.symbol)
+            worker.status = "DEGRADED"
+            worker.last_error = "No se pudieron reemplazar las protecciones Binance; se conservan las anteriores."
+            logger.exception("live_worker_protection_update_failed symbol=%s", worker.symbol)
+            return
+        old_ids = (operation.get("stop_algo_id"), operation.get("take_profit_algo_id"))
+        operation.update({"stop_price": stop, "target_price": target, "stop_percent": worker.stop_percent,
+                          "target_percent": worker.target_percent, "parameter_version": worker.parameter_version,
+                          "stop_algo_id": new_orders[0].get("algoId"), "take_profit_algo_id": new_orders[1].get("algoId")})
+        await asyncio.to_thread(self.store.update, operation["id"], worker.user_id, stop_loss=stop, take_profit=target,
+                                 stop_algo_id=operation["stop_algo_id"], take_profit_algo_id=operation["take_profit_algo_id"])
+        for algo_id in old_ids:
+            if algo_id:
+                try:
+                    await asyncio.to_thread(self.manager.cancel_close_protection, worker.user_id, worker.symbol, algo_id)
+                except Exception:
+                    logger.warning("live_worker_old_protection_cancel_failed symbol=%s", worker.symbol, exc_info=True)
 
 
 def _persist_open(worker: SymbolWorker, operation: dict[str, Any]) -> dict[str, Any]:
@@ -484,7 +790,7 @@ def _restore_paper_operation(row: dict[str, Any]) -> dict[str, Any]:
 
 
 class ProductionWorkerManager:
-    def __init__(self, gateway: BinanceMarketGateway, paper_store: PaperOperationStore, events: BackendEventBus, binance_manager: BinanceMonitorManager, execution_store: BinanceExecutionStore, config_store: ProductionWorkerConfigStore | None = None, base_url: str = "https://fapi.binance.com") -> None:
+    def __init__(self, gateway: BinanceMarketGateway, paper_store: PaperOperationStore, events: BackendEventBus, binance_manager: BinanceMonitorManager, execution_store: BinanceExecutionStore, config_store: ProductionWorkerConfigStore | None = None, base_url: str = "https://fapi.binance.com", live_enabled: bool = False) -> None:
         self.gateway = gateway
         self.paper_store = paper_store
         self.events = events
@@ -492,25 +798,48 @@ class ProductionWorkerManager:
         self.execution_store = execution_store
         self.config_store = config_store
         self.base_url = base_url
+        self.live_enabled = bool(live_enabled)
         self.owner_id = uuid4().hex
         self.workers: dict[tuple[str, str], SymbolWorker] = {}
+        self._user_locks: dict[str, asyncio.Lock] = {}
 
-    async def start(self, user_id: str, symbol: str, *, mode: str = "paper", interval: str = "1m", tracker_period: int = 5, stop_percent: float = 0.2, target_percent: float = 1.0, quantity: float = 0.0, risk_percent: float = 1.0, leverage: float = 1.0, initial_balance: float = 100.0) -> dict[str, Any]:
+    async def start(self, user_id: str, symbol: str, **settings: Any) -> dict[str, Any]:
+        lock = self._user_locks.setdefault(user_id, asyncio.Lock())
+        async with lock:
+            return await self._start_locked(user_id, symbol, **settings)
+
+    async def _start_locked(self, user_id: str, symbol: str, *, mode: str = "paper", interval: str = "1m", tracker_period: int = 5, stop_percent: float = 0.2, target_percent: float = 1.0, quantity: float = 0.0, risk_percent: float = 1.0, leverage: float = 1.0, initial_balance: float = 100.0) -> dict[str, Any]:
+        if mode not in {"signals_only", "paper", "live"}:
+            raise ValueError("Modo de worker inválido.")
+        if mode == "live":
+            raise ValueError("El modo Binance del worker sigue bloqueado hasta completar reconciliación de fills y protecciones.")
         key = (user_id, symbol.upper())
+        for other_key, other_worker in list(self.workers.items()):
+            if other_key[0] == user_id and other_key != key:
+                if other_worker.operation is not None or other_worker.background_operations:
+                    raise ValueError(f"Cierra la operación abierta de {other_worker.symbol} antes de cambiar el símbolo.")
+                await self._shutdown_worker(other_worker, status="SWITCHED")
+                self.workers.pop(other_key, None)
+                if self.config_store is not None:
+                    await asyncio.to_thread(self.config_store.disable, user_id, other_worker.symbol)
         existing = self.workers.get(key)
         if existing is not None:
             if existing.running:
                 return self.status(user_id, symbol)
             self.workers.pop(key, None)
-        if mode == "live" and quantity <= 0:
-            raise ValueError("quantity debe ser positiva para modo live")
         if self.config_store is not None:
+            session_claimed = await asyncio.to_thread(self.config_store.claim_session, user_id, symbol.upper(), self.owner_id)
+            if not session_claimed:
+                raise ValueError("Ya existe una sesión activa para este usuario en otra instancia.")
             claimed = await asyncio.to_thread(self.config_store.claim_lease, user_id, symbol.upper(), self.owner_id)
             if not claimed:
+                await asyncio.to_thread(self.config_store.release_session, user_id, symbol.upper(), self.owner_id)
                 raise ValueError("Ya existe un worker activo para este símbolo en otra instancia.")
-        adapter: ExecutionAdapter = PaperExecutionAdapter(initial_balance=max(1.0, float(initial_balance))) if mode == "paper" else BinanceExecutionAdapter(self.binance_manager, self.execution_store, quantity)
+        adapter: ExecutionAdapter = SignalOnlyExecutionAdapter() if mode == "signals_only" else PaperExecutionAdapter(initial_balance=max(1.0, float(initial_balance)))
         worker = SymbolWorker(user_id, symbol.upper(), interval, max(1, int(tracker_period)), abs(float(stop_percent)), abs(float(target_percent)), adapter, self.paper_store, self.events)
         worker.runtime_store = self.config_store
+        worker.session_store = self.config_store
+        worker.event_loop = asyncio.get_running_loop()
         worker.lease_owner_id = self.owner_id if self.config_store is not None else None
         worker.history_provider = lambda: self.gateway.snapshot(worker.symbol, worker.interval)
         worker.bars = self.gateway.snapshot(worker.symbol, interval)[-WINDOW_BARS:]
@@ -541,14 +870,23 @@ class ProductionWorkerManager:
                     "sample_operations": 0,
                     "last_bar_time": worker.bars[-1]["time"] if worker.bars else None,
                 }
-            open_operation = await asyncio.to_thread(self.paper_store.open_for_symbol, user_id, worker.symbol) if mode == "paper" else None
+            open_operation = await asyncio.to_thread(self.paper_store.open_for_symbol, user_id, worker.symbol)
             if open_operation is not None:
-                worker.operation = _restore_paper_operation(open_operation)
+                restored_operation = _restore_paper_operation(open_operation)
+                paper_adapter = adapter if mode == "paper" else PaperExecutionAdapter(
+                    initial_balance=max(1.0, float(worker.adaptive_parameters.get("initial_balance", initial_balance)))
+                )
+                if mode == "paper":
+                    worker.operation = restored_operation
+                    worker.operation_adapter = paper_adapter
+                else:
+                    worker.background_operations.append((restored_operation, paper_adapter))
             if self.config_store is not None:
                 await asyncio.to_thread(self.config_store.save, user_id, {"symbol": worker.symbol, "mode": mode, "interval": interval, "tracker_period": worker.tracker_period, "stop_percent": worker.stop_percent, "target_percent": worker.target_percent, "quantity": quantity, "risk_percent": worker.adaptive_parameters.get("risk_percent", risk_percent), "leverage": worker.adaptive_parameters.get("leverage", leverage), "initial_balance": worker.adaptive_parameters.get("initial_balance", initial_balance), "enabled": True})
         except Exception:
             if self.config_store is not None:
                 await asyncio.to_thread(self.config_store.release_lease, user_id, worker.symbol, self.owner_id, "ERROR")
+                await asyncio.to_thread(self.config_store.release_session, user_id, worker.symbol, self.owner_id)
             raise
         self.workers[key] = worker
         worker.on_lease_lost = lambda: (self.gateway.remove_listener(worker.symbol, worker.offer_market_event), self.workers.pop(key, None))
@@ -614,23 +952,239 @@ class ProductionWorkerManager:
             worker.ready.set()
 
     async def stop(self, user_id: str, symbol: str) -> dict[str, Any]:
+        lock = self._user_locks.setdefault(user_id, asyncio.Lock())
+        async with lock:
+            return await self._stop_locked(user_id, symbol)
+
+    async def _stop_locked(self, user_id: str, symbol: str) -> dict[str, Any]:
         key = (user_id, symbol.upper())
+        active = self.workers.get(key)
+        if active is not None and (active.operation is not None or active.background_operations):
+            raise ValueError("La sesión tiene una operación abierta; espera su cierre para detenerla sin dejarla sin supervisión.")
         worker = self.workers.pop(key, None)
         if worker is not None:
             await self._shutdown_worker(worker, status="STOPPED")
             await self.events.publish({"type": "WORKER_STOPPED", "symbol": worker.symbol})
         if self.config_store is not None:
             await asyncio.to_thread(self.config_store.disable, user_id, symbol)
+            await asyncio.to_thread(self.config_store.release_lease, user_id, symbol, self.owner_id, "STOPPED")
+            await asyncio.to_thread(self.config_store.release_session, user_id, symbol, self.owner_id)
         return self.status(user_id, symbol)
+
+    async def activate(self, user_id: str, symbol: str, mode: str = "signals_only", **settings: Any) -> dict[str, Any]:
+        """Activate the user's single Tracker session for the requested symbol."""
+        current = self.workers.get((user_id, symbol.upper()))
+        if current is not None and current.running:
+            if current.adapter.mode != mode:
+                return await self.set_mode(user_id, symbol, mode)
+            return self.status(user_id, symbol)
+        return await self.start(user_id, symbol, mode=mode, **settings)
+
+    async def activate_live(self, user_id: str, symbol: str, **settings: Any) -> dict[str, Any]:
+        """Start or retain Tracker, wait until ready, then arm Live for future signals."""
+        status = await self.activate(user_id, symbol, mode="signals_only", **settings)
+        worker = self.workers.get((user_id, symbol.upper()))
+        if worker is None:
+            raise RuntimeError("No se pudo crear la sesión Tracker para producción.")
+        await worker.ready.wait()
+        return await self.set_mode(user_id, symbol, "live")
+
+    async def set_mode(self, user_id: str, symbol: str, mode: str) -> dict[str, Any]:
+        lock = self._user_locks.setdefault(user_id, asyncio.Lock())
+        async with lock:
+            return await self._set_mode_locked(user_id, symbol, mode)
+
+    async def _set_mode_locked(self, user_id: str, symbol: str, mode: str) -> dict[str, Any]:
+        if mode not in {"signals_only", "paper", "live"}:
+            raise ValueError("Modo inválido.")
+        worker = self.workers.get((user_id, symbol.upper()))
+        if worker is None or not worker.running:
+            raise ValueError("No hay una sesión activa para ese símbolo.")
+        if mode == "live":
+            next_adapter = await self._prepare_live_adapter(worker)
+            if worker.event_loop is None or worker.event_loop.is_closed():
+                raise ValueError("No hay un event loop activo para vigilar las órdenes Binance.")
+        elif mode == "signals_only":
+            next_adapter = SignalOnlyExecutionAdapter()
+        else:
+            next_adapter = PaperExecutionAdapter(initial_balance=max(1.0, float(worker.adaptive_parameters.get("initial_balance", 100.0))))
+        async with worker.state_lock:
+            return await self._apply_mode_locked(worker, mode, next_adapter)
+
+    async def _apply_mode_locked(self, worker: SymbolWorker, mode: str, next_adapter: ExecutionAdapter) -> dict[str, Any]:
+        # Keep an existing operation supervised by the adapter that opened it,
+        # while freeing the active slot for the next mode's future signal.
+        if self.config_store is not None:
+            await asyncio.to_thread(self.config_store.save, worker.user_id, {
+                "symbol": worker.symbol, "mode": mode, "interval": worker.interval,
+                "tracker_period": worker.tracker_period, "stop_percent": worker.stop_percent,
+                "target_percent": worker.target_percent, "quantity": 0,
+                "risk_percent": worker.adaptive_parameters.get("risk_percent", 1.0),
+                "leverage": worker.adaptive_parameters.get("leverage", 1.0),
+                "initial_balance": worker.adaptive_parameters.get("initial_balance", 100.0), "enabled": True,
+            })
+        if worker.operation is not None and worker.operation_adapter is not None and worker.operation_adapter.mode != mode:
+            worker.background_operations.append((worker.operation, worker.operation_adapter))
+            worker.operation = None
+            worker.operation_adapter = None
+        restore_index = next((index for index, (_operation, adapter) in enumerate(worker.background_operations) if adapter.mode == mode), None)
+        if worker.operation is None and restore_index is not None:
+            worker.operation, worker.operation_adapter = worker.background_operations.pop(restore_index)
+        worker.adapter = next_adapter
+        if mode == "live":
+            self._subscribe_live_events(worker)
+        await self.events.publish({"type": "WORKER_MODE_CHANGED", "symbol": worker.symbol, "mode": mode})
+        return self.status(worker.user_id, worker.symbol)
+
+    async def _prepare_live_adapter(self, worker: SymbolWorker) -> ExecutionAdapter:
+        if not self.live_enabled:
+            raise ValueError("Producción Binance sigue bloqueada por configuración hasta aprobar la validación Live.")
+        snapshot = await asyncio.to_thread(self.binance_manager.snapshot, worker.user_id)
+        if not snapshot.get("configured") or not snapshot.get("healthy") or not snapshot.get("stream_connected"):
+            raise ValueError("La cuenta Binance debe estar configurada y su User Data Stream conectado antes de activar producción.")
+        if float(snapshot.get("available_balance") or 0) <= 0:
+            raise ValueError("Binance no reporta balance disponible para ejecutar producción.")
+        positions = snapshot.get("positions") if isinstance(snapshot.get("positions"), list) else []
+        same_symbol_positions = [position for position in positions if isinstance(position, dict) and str(position.get("symbol", "")).upper() == worker.symbol and abs(float(position.get("quantity", 0) or 0)) > 0]
+        leverage = int(max(1, round(float(worker.adaptive_parameters.get("leverage", 1)))))
+        if same_symbol_positions:
+            managed_live = [(operation, adapter) for operation, adapter in worker.background_operations if adapter.mode == "live"]
+            if worker.operation is not None and worker.operation_adapter is not None and worker.operation_adapter.mode == "live":
+                managed_live.append((worker.operation, worker.operation_adapter))
+            if len(managed_live) != 1:
+                raise ValueError("Ya existe una posición Binance para este símbolo que no pertenece a esta sesión.")
+            operation, _adapter = managed_live[0]
+            intent = await asyncio.to_thread(self.execution_store.get, str(operation["id"]), worker.user_id)
+            protections = await asyncio.to_thread(self.binance_manager.open_close_protections, worker.user_id, worker.symbol)
+            position = await asyncio.to_thread(self.binance_manager.position_risk, worker.user_id, worker.symbol)
+            exchange_quantity = float(position.get("positionAmt", 0) or 0)
+            expected_side = str(operation.get("side", "")).upper()
+            side_matches = exchange_quantity > 0 if expected_side == "LONG" else exchange_quantity < 0
+            quantity_matches = abs(abs(exchange_quantity) - abs(float(operation.get("quantity", 0) or 0))) <= max(1e-9, abs(exchange_quantity) * .001)
+            symbol_config = await asyncio.to_thread(self.binance_manager.symbol_config, worker.user_id, worker.symbol)
+            active_ids = {str(item.get("algoId")) for item in protections}
+            expected_ids = {str(operation.get("stop_algo_id")), str(operation.get("take_profit_algo_id"))}
+            if (intent is None or str(intent.get("status", "")).upper() != "PROTECTED" or
+                    not expected_ids.issubset(active_ids) or not side_matches or not quantity_matches or
+                    str(symbol_config.get("margin_type", "")).upper() != "ISOLATED" or
+                    int(symbol_config.get("leverage") or 0) != leverage):
+                raise ValueError("La posición Binance no tiene sus dos protecciones activas y reconciliadas.")
+        else:
+            margin = await asyncio.to_thread(self.binance_manager.set_symbol_margin_type, worker.user_id, worker.symbol, "ISOLATED")
+            leverage_config = await asyncio.to_thread(self.binance_manager.set_symbol_leverage, worker.user_id, worker.symbol, leverage)
+            if str(margin.get("margin_type", "")).upper() != "ISOLATED" or int(leverage_config.get("leverage") or 0) != leverage:
+                raise ValueError("Binance no confirmó el margen aislado y leverage solicitados.")
+        adapter = BinanceExecutionAdapter(self.binance_manager, self.execution_store, 0, self.base_url)
+        await asyncio.to_thread(adapter._rules, worker.symbol)
+        return adapter
+
+    async def _restore_live_operation(self, worker: SymbolWorker) -> None:
+        intents = await asyncio.to_thread(self.execution_store.list, worker.user_id)
+        active = [item for item in intents if str(item.get("symbol", "")).upper() == worker.symbol and str(item.get("status", "")).upper() not in {"CLOSED", "ERROR"}]
+        if not active:
+            return
+        if len(active) != 1 or str(active[0].get("status", "")).upper() != "PROTECTED":
+            raise ValueError("Hay una intención Live sin cierre reconciliado; no se reanudará producción automáticamente.")
+        intent = active[0]
+        snapshot = await asyncio.to_thread(self.binance_manager.snapshot, worker.user_id)
+        if not snapshot.get("healthy") or not snapshot.get("stream_connected"):
+            raise ValueError("User Data Stream no está listo para reconciliar la posición Live.")
+        position = await asyncio.to_thread(self.binance_manager.position_risk, worker.user_id, worker.symbol)
+        quantity = abs(float(position.get("positionAmt", 0) or 0))
+        if quantity <= 0 or abs(quantity - abs(float(intent.get("quantity", 0) or 0))) > max(1e-9, quantity * .001):
+            raise ValueError("La posición del exchange no coincide con la intención Live persistida.")
+        position_amount = float(position.get("positionAmt", 0) or 0)
+        expected_side = str(intent.get("side", "")).upper()
+        if (expected_side == "LONG" and position_amount <= 0) or (expected_side == "SHORT" and position_amount >= 0):
+            raise ValueError("El lado de la posición del exchange no coincide con la intención Live.")
+        protections = await asyncio.to_thread(self.binance_manager.open_close_protections, worker.user_id, worker.symbol)
+        active_ids = {str(item.get("algoId")) for item in protections}
+        expected_ids = {str(intent.get("stop_algo_id")), str(intent.get("take_profit_algo_id"))}
+        if not expected_ids.issubset(active_ids):
+            raise ValueError("La posición Live no tiene SL y TP activos; queda en modo seguro para reconciliación.")
+        price = float(intent.get("entry_price") or 0)
+        adapter = BinanceExecutionAdapter(self.binance_manager, self.execution_store, 0, self.base_url)
+        worker.operation = {"id": intent["id"], "side": str(intent.get("side", "LONG")).upper(), "entry_price": price,
+                            "quantity": quantity, "notional": quantity * price, "stop_price": float(intent.get("stop_loss") or 0),
+                            "target_price": float(intent.get("take_profit") or 0), "stop_percent": worker.stop_percent,
+                            "target_percent": worker.target_percent, "parameter_version": worker.parameter_version,
+                            "status": "PROTECTED", "stop_algo_id": intent.get("stop_algo_id"),
+                            "take_profit_algo_id": intent.get("take_profit_algo_id")}
+        worker.operation_adapter = adapter
+
+    def _subscribe_live_events(self, worker: SymbolWorker) -> None:
+        if worker.account_listener is not None:
+            return
+        loop = worker.event_loop
+        if loop is None:
+            raise RuntimeError("No hay event loop activo para reconciliar eventos Binance.")
+
+        def receive(event: dict[str, object]) -> None:
+            if loop.is_closed():
+                return
+            loop.call_soon_threadsafe(lambda: asyncio.create_task(self._reconcile_live_event(worker, event)))
+
+        worker.account_listener = receive
+        self.binance_manager.subscribe_events(worker.user_id, receive)
+
+    async def _reconcile_live_event(self, worker: SymbolWorker, event: dict[str, object]) -> None:
+        async with worker.state_lock:
+            await self._reconcile_live_event_locked(worker, event)
+
+    async def _reconcile_live_event_locked(self, worker: SymbolWorker, event: dict[str, object]) -> None:
+        event_type = str(event.get("type", "")).upper()
+        if event_type not in {"ORDER_TRADE_UPDATE", "ALGO_UPDATE"}:
+            return
+        await asyncio.to_thread(self.execution_store.reconcile_account_event, worker.user_id, event)
+        operations = ([worker.operation, worker.operation_adapter] if worker.operation is not None else [None, None])
+        candidates: list[tuple[dict[str, Any], ExecutionAdapter]] = []
+        if isinstance(operations[0], dict) and operations[1] is not None:
+            candidates.append((operations[0], operations[1]))
+        candidates.extend(worker.background_operations)
+        for operation, adapter in list(candidates):
+            if adapter.mode != "live":
+                continue
+            intent = await asyncio.to_thread(self.execution_store.get, str(operation["id"]), worker.user_id)
+            if intent is None or str(intent.get("status", "")).upper() != "CLOSED":
+                continue
+            if worker.operation is operation:
+                worker.operation = None
+                worker.operation_adapter = None
+            else:
+                worker.background_operations = [(op, item_adapter) for op, item_adapter in worker.background_operations if op is not operation]
+            await worker.events.publish({"type": "LIVE_EXIT", "symbol": worker.symbol, "side": operation.get("side"), "reason": "BINANCE_FILL"})
+            await worker._persist_runtime_snapshot()
 
     async def restore(self, *, resume_live: bool = False) -> None:
         if self.config_store is None:
             return
         for config in await asyncio.to_thread(self.config_store.enabled):
-            if config.get("mode") == "live" and not resume_live:
-                continue
             try:
-                await self.start(str(config["user_id"]), str(config["symbol"]), mode=str(config["mode"]), interval=str(config["interval"]), tracker_period=int(config["tracker_period"]), stop_percent=float(config["stop_percent"]), target_percent=float(config["target_percent"]), quantity=float(config["quantity"]), risk_percent=float(config.get("risk_percent", 1.0)), leverage=float(config.get("leverage", 1.0)), initial_balance=float(config.get("initial_balance", 100.0)))
+                user_id, symbol = str(config["user_id"]), str(config["symbol"])
+                saved_mode = str(config["mode"])
+                settings = {
+                    "interval": str(config["interval"]), "tracker_period": int(config["tracker_period"]),
+                    "stop_percent": float(config["stop_percent"]), "target_percent": float(config["target_percent"]),
+                    "quantity": float(config["quantity"]), "risk_percent": float(config.get("risk_percent", 1.0)),
+                    "leverage": float(config.get("leverage", 1.0)), "initial_balance": float(config.get("initial_balance", 100.0)),
+                }
+                if saved_mode != "live":
+                    await self.start(user_id, symbol, mode=saved_mode, **settings)
+                    continue
+                if not resume_live:
+                    continue
+                await self.start(user_id, symbol, mode="signals_only", **settings)
+                worker = self.workers.get((user_id, symbol.upper()))
+                if worker is None:
+                    continue
+                await worker.ready.wait()
+                try:
+                    await self._restore_live_operation(worker)
+                    await self.set_mode(user_id, symbol, "live")
+                except Exception as exc:
+                    worker.status = "DEGRADED"
+                    worker.last_error = f"Live recovery blocked: {exc}"[:300]
+                    logger.warning("production_worker_live_recovery_blocked symbol=%s", symbol, exc_info=True)
             except Exception:
                 logger.exception("production_worker_restore_failed symbol=%s", config.get("symbol"))
 
@@ -642,6 +1196,9 @@ class ProductionWorkerManager:
 
     async def _shutdown_worker(self, worker: SymbolWorker, *, status: str) -> None:
         self.gateway.remove_listener(worker.symbol, worker.offer_market_event)
+        if worker.account_listener is not None:
+            self.binance_manager.unsubscribe_events(worker.user_id, worker.account_listener)
+            worker.account_listener = None
         if worker.initialization_task is not None and not worker.initialization_task.done():
             worker.initialization_task.cancel()
             await asyncio.gather(worker.initialization_task, return_exceptions=True)
@@ -660,6 +1217,7 @@ class ProductionWorkerManager:
             await asyncio.gather(worker.task, return_exceptions=True)
         if self.config_store is not None and worker.lease_owner_id is not None:
             await asyncio.to_thread(self.config_store.release_lease, worker.user_id, worker.symbol, worker.lease_owner_id, status)
+            await asyncio.to_thread(self.config_store.release_session, worker.user_id, worker.symbol, worker.lease_owner_id)
 
     def status(self, user_id: str, symbol: str) -> dict[str, Any]:
         worker = self.workers.get((user_id, symbol.upper()))

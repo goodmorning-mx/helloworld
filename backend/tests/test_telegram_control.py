@@ -24,14 +24,14 @@ class FakeWorkers:
         return self.workers
 
 
-def test_control_starts_only_paper_and_normalizes_symbols():
+def test_control_starts_signal_session_and_normalizes_symbols():
     async def run():
         workers = FakeWorkers()
         control = TelegramControlService(workers, lambda *_: asyncio.sleep(0, result={"symbols": []}))
         result = await control.start("owner", "btcUsdt")
-        assert result["mode"] == "paper"
+        assert result["mode"] == "signals_only"
         assert workers.started == [("owner", "BTCUSDT", {
-            "mode": "paper", "interval": "1m", "tracker_period": 5,
+            "mode": "signals_only", "interval": "1m", "tracker_period": 5,
             "stop_percent": 0.2, "target_percent": 1.0,
             "risk_percent": 1.0, "leverage": 1.0, "initial_balance": 100.0,
         })]
@@ -77,8 +77,8 @@ def test_status_contains_worker_runtime_metrics():
     assert "p95 18.5 ms" in result["text"]
 
 
-def test_automatic_telegram_signal_messages_are_disabled_by_default():
-    assert Settings(_env_file=None).telegram_signal_notifications_enabled is False
+def test_automatic_telegram_signal_messages_are_enabled_by_default():
+    assert Settings(_env_file=None).telegram_signal_notifications_enabled is True
 
 
 def test_api_exposes_authenticated_telegram_control_routes():
@@ -90,6 +90,7 @@ def test_api_exposes_authenticated_telegram_control_routes():
     assert ("/telegram/workers", ("GET",)) in paths
     assert ("/telegram/workers", ("POST",)) in paths
     assert ("/telegram/workers/{symbol}", ("DELETE",)) in paths
+    assert ("/telegram/workers/{symbol}/mode", ("PATCH",)) in paths
 
 
 def test_internal_scanner_snapshot_uses_shared_cached_analysis_and_compact_results(monkeypatch):

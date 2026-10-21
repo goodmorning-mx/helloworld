@@ -104,3 +104,15 @@ def test_telegram_sink_deduplicates_signal_only_after_queue_accepts(monkeypatch)
         assert sent == ["message"]
 
     asyncio.run(run())
+
+
+def test_parameter_events_are_suppressed_but_tracker_close_summary_is_sent():
+    async def run():
+        telegram = RecordingTelegram()
+        sink = telegram_event_sink(telegram)
+        await sink({"type": "TRACKER_PARAMETERS_UPDATED", "symbol": "BTCUSDT", "target_percent": 2})
+        await sink({"type": "TRACKER_OPERATION_CLOSED", "symbol": "BTCUSDT", "side": "LONG", "reason": "TP"})
+        assert len(telegram.messages) == 1
+        assert "TRACKER_OPERATION_CLOSED BTCUSDT" in telegram.messages[0]
+
+    asyncio.run(run())

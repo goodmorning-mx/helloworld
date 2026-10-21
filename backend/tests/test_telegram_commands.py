@@ -16,6 +16,7 @@ class FakeControl:
         self.started = []
         self.stopped = []
         self.scanned = []
+        self.modes = []
 
     def status(self, user_id):
         return {"workers": [], "text": "🟢 Workers Paper\nNo hay workers activos."}
@@ -28,12 +29,18 @@ class FakeControl:
         self.started.append((user_id, symbol))
         return {"symbol": symbol, "status": "RUNNING"}
 
+    async def set_mode(self, user_id, mode, symbol=None):
+        self.modes.append((user_id, mode, symbol))
+        if mode == "live":
+            raise ValueError("Producción Binance está bloqueada.")
+        return {"symbol": symbol or "BTCUSDT", "mode": mode}
+
     async def stop(self, user_id, symbol):
         self.stopped.append((user_id, symbol))
         return {"symbol": symbol}
 
 
-def test_telegram_commands_are_private_chat_allowlisted_and_paper_only():
+def test_telegram_commands_are_private_allowlisted_and_select_future_execution_mode():
     async def scenario():
         sink = FakeSink()
         control = FakeControl()
@@ -45,7 +52,7 @@ def test_telegram_commands_are_private_chat_allowlisted_and_paper_only():
 
         await service._handle_update({"update_id": 3, "message": {"chat": {"id": 12345, "type": "group"}, "from": {"id": 56789}, "text": "/start BTCUSDT"}})
         assert control.started == [("user-1", "BTCUSDT")]
-        assert "Worker Paper iniciado" in sink.messages[-1]
+        assert "Tracker activo" in sink.messages[-1]
 
         await service._handle_update({"update_id": 4, "message": {"chat": {"id": 12345, "type": "group"}, "from": {"id": 56789}, "text": "stop BTCUSDT"}})
         assert control.stopped == [("user-1", "BTCUSDT")]
@@ -61,10 +68,19 @@ def test_telegram_commands_are_private_chat_allowlisted_and_paper_only():
         await service._handle_update({"update_id": 7, "message": {"chat": {"id": 12345, "type": "group"}, "from": {"id": 56789}, "text": "/help"}})
         assert "/scan" in sink.messages[-1]
         assert "/start BTCUSDT" in sink.messages[-1]
-        assert "/stop BTCUSDT" in sink.messages[-1]
+        assert "/stop" in sink.messages[-1]
+        assert "/paper" in sink.messages[-1]
+        assert "/production" in sink.messages[-1]
         assert "/status" in sink.messages[-1]
         assert "Paper" in sink.messages[-1]
         assert service.commands_processed == 5
+
+        await service._handle_update({"update_id": 8, "message": {"chat": {"id": 12345, "type": "group"}, "from": {"id": 56789}, "text": "/paper"}})
+        assert control.modes[-1] == ("user-1", "paper", None)
+        assert "señales nuevas" in sink.messages[-1]
+
+        await service._handle_update({"update_id": 9, "message": {"chat": {"id": 12345, "type": "group"}, "from": {"id": 56789}, "text": "/production"}})
+        assert "bloqueada" in sink.messages[-1]
 
     asyncio.run(scenario())
 
@@ -99,7 +115,7 @@ def test_telegram_command_menu_includes_help():
         task.cancel()
         await asyncio.gather(task, return_exceptions=True)
         commands = [item["command"] for item in client.payload["commands"]]
-        assert commands == ["scan", "start", "stop", "status", "help"]
+        assert commands == ["scan", "start", "paper", "production", "stop", "status", "help"]
 
     asyncio.run(scenario())
 

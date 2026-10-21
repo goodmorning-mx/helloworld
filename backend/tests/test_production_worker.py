@@ -1,6 +1,7 @@
 import asyncio
+import pytest
 
-from app.production_worker import PaperExecutionAdapter, ProductionWorkerManager, SymbolWorker
+from app.production_worker import BinanceExecutionAdapter, PaperExecutionAdapter, ProductionWorkerManager, SignalOnlyExecutionAdapter, SymbolWorker
 from app.telegram_service import BackendEventBus
 
 
@@ -40,6 +41,7 @@ class FakeRuntimeStore:
         self.states = {}
         self.configs = {}
         self.leases = set()
+        self.sessions = {}
 
     def runtime(self, user_id, symbol):
         return self.states.get((user_id, symbol))
@@ -61,6 +63,20 @@ class FakeRuntimeStore:
 
     def release_lease(self, user_id, symbol, owner_id, status):
         self.leases.discard((user_id, symbol))
+
+    def claim_session(self, user_id, symbol, owner_id, lease_seconds=45):
+        current = self.sessions.get(user_id)
+        if current is not None and current != owner_id:
+            return False
+        self.sessions[user_id] = owner_id
+        return True
+
+    def renew_session(self, user_id, symbol, owner_id, lease_seconds=45):
+        return self.sessions.get(user_id) == owner_id
+
+    def release_session(self, user_id, symbol, owner_id):
+        if self.sessions.get(user_id) == owner_id:
+            self.sessions.pop(user_id, None)
 
     def save(self, user_id, config):
         self.configs[(user_id, config["symbol"])] = config
@@ -96,6 +112,66 @@ def test_tracker_worker_uses_previous_bars_and_one_open_operation():
         assert worker.operation["side"] == "LONG"
         assert len(store.rows) == 2
         assert store.rows[opened_id]["status"] == "CLOSED - WIN"
+
+    asyncio.run(scenario())
+
+
+def test_signal_only_worker_keeps_tracker_alive_without_creating_paper_operations():
+    async def scenario():
+        events = []
+
+        class RecordingEvents:
+            async def publish(self, event):
+                events.append(event)
+
+        store = FakePaperStore()
+        worker = SymbolWorker("user", "TESTUSDT", "1m", 2, .2, 1.0, SignalOnlyExecutionAdapter(), store, RecordingEvents())
+        for candle in [
+            bar(1, 100, 100, 100, 100),
+            bar(2, 100, 100, 100, 100),
+            bar(3, 100, 101, 99, 101),
+        ]:
+            candle["closed"] = True
+            await worker.on_market_event({"type": "kline", "interval": "1m", "bar": candle})
+        signal = next(event for event in events if event["type"] == "TRACKER_SIGNAL")
+        assert signal["side"] == "SHORT"
+        assert signal["mode"] == "signals_only"
+        assert worker.tracker_operation is not None
+        assert worker.operation is None
+        assert store.rows == {}
+
+    asyncio.run(scenario())
+
+
+def test_mode_switch_keeps_open_paper_trade_on_its_original_adapter():
+    async def scenario():
+        worker = SymbolWorker("user", "TESTUSDT", "1m", 2, .2, 1.0, PaperExecutionAdapter(), FakePaperStore(), BackendEventBus())
+        worker.operation = {"id": "paper-open", "side": "LONG", "entry_price": 100, "stop_percent": .2, "target_percent": 1}
+        original_adapter = worker.adapter
+        worker.operation_adapter = original_adapter
+        manager = ProductionWorkerManager(FakeGateway(), FakePaperStore(), BackendEventBus(), object(), object())
+        manager.workers[("user", "TESTUSDT")] = worker
+        result = await manager.set_mode("user", "TESTUSDT", "signals_only")
+        assert result["mode"] == "signals_only"
+        assert worker.operation is None
+        assert worker.operation_adapter is None
+        assert worker.background_operations == [({"id": "paper-open", "side": "LONG", "entry_price": 100, "stop_percent": .2, "target_percent": 1}, original_adapter)]
+        assert worker.adapter is not original_adapter
+
+    asyncio.run(scenario())
+
+
+def test_background_paper_operation_keeps_closing_after_mode_switch():
+    async def scenario():
+        store = FakePaperStore()
+        operation = {"id": "paper-open", "symbol": "TESTUSDT", "side": "LONG", "entry_price": 100, "stop_percent": .2, "target_percent": 1, "notional": 100, "status": "OPEN"}
+        store.rows[operation["id"]] = dict(operation)
+        adapter = PaperExecutionAdapter()
+        worker = SymbolWorker("user", "TESTUSDT", "1m", 5, .2, 1, SignalOnlyExecutionAdapter(), store, BackendEventBus())
+        worker.background_operations.append((operation, adapter))
+        await worker.on_market_event({"type": "kline", "interval": "1m", "bar": bar(60, 100, 100, 99.7, 99.7)})
+        assert store.rows["paper-open"]["status"] == "CLOSED - FAILED"
+        assert worker.background_operations == []
 
     asyncio.run(scenario())
 
@@ -233,6 +309,153 @@ def test_manager_starts_and_stops_supervised_paper_worker_and_releases_lease():
         assert gateway.listeners["TESTUSDT"] == set()
         assert ("user", "TESTUSDT") not in runtime.leases
         assert ("user", "TESTUSDT") not in runtime.configs
+
+    asyncio.run(scenario())
+
+
+def test_manager_switches_one_user_session_to_new_symbol_and_releases_old_listener():
+    async def scenario():
+        gateway = FakeGateway()
+        gateway.bars["OTHERUSDT"] = {"1m": [bar(index * 60, 100, 100, 100, 100) for index in range(1500)]}
+        manager = ProductionWorkerManager(gateway, FakePaperStore(), BackendEventBus(), object(), object(), FakeRuntimeStore())
+        await manager.start("user", "TESTUSDT", mode="signals_only")
+        old_worker = manager.workers[("user", "TESTUSDT")]
+        await manager.start("user", "OTHERUSDT", mode="signals_only")
+        assert list(manager.workers) == [("user", "OTHERUSDT")]
+        assert old_worker.running is False
+        assert gateway.listeners["TESTUSDT"] == set()
+        assert len(gateway.listeners["OTHERUSDT"]) == 1
+        await manager.stop("user", "OTHERUSDT")
+
+    asyncio.run(scenario())
+
+
+def test_open_execution_prevents_symbol_switch_and_stop_without_orphaning_it():
+    async def scenario():
+        manager = ProductionWorkerManager(FakeGateway(), FakePaperStore(), BackendEventBus(), object(), object())
+        worker = SymbolWorker("user", "TESTUSDT", "1m", 5, .2, 1.0, PaperExecutionAdapter(), FakePaperStore(), BackendEventBus())
+        worker.operation = {"id": "open", "side": "LONG", "entry_price": 100}
+        manager.workers[("user", "TESTUSDT")] = worker
+        with pytest.raises(ValueError, match="Cierra la operación abierta"):
+            await manager.start("user", "OTHERUSDT", mode="signals_only")
+        with pytest.raises(ValueError, match="operación abierta"):
+            await manager.stop("user", "TESTUSDT")
+        assert manager.workers[("user", "TESTUSDT")] is worker
+
+    asyncio.run(scenario())
+
+
+def test_signals_only_session_restores_open_paper_operation_for_supervision():
+    async def scenario():
+        store = FakePaperStore()
+        store.rows["paper-1"] = {
+            "id": "paper-1", "symbol": "TESTUSDT", "side": "long", "entry_price": 100,
+            "stop_price": 99.8, "target_price": 101, "status": "OPEN", "source": "realtime-engine",
+        }
+        manager = ProductionWorkerManager(FakeGateway(), store, BackendEventBus(), object(), object())
+        await manager.start("user", "TESTUSDT", mode="signals_only")
+        worker = manager.workers[("user", "TESTUSDT")]
+        assert worker.adapter.mode == "signals_only"
+        assert worker.operation is None
+        assert len(worker.background_operations) == 1
+        assert worker.background_operations[0][1].mode == "paper"
+        await manager._shutdown_worker(worker, status="PAUSED")
+
+    asyncio.run(scenario())
+
+
+def test_live_mode_fails_closed_when_deployment_gate_is_off():
+    async def scenario():
+        manager = ProductionWorkerManager(FakeGateway(), FakePaperStore(), BackendEventBus(), object(), object())
+        worker = SymbolWorker("user", "TESTUSDT", "1m", 5, .2, 1, SignalOnlyExecutionAdapter(), FakePaperStore(), BackendEventBus())
+        manager.workers[("user", "TESTUSDT")] = worker
+        with pytest.raises(ValueError, match="bloqueada por configuración"):
+            await manager.set_mode("user", "TESTUSDT", "live")
+        assert worker.adapter.mode == "signals_only"
+
+    asyncio.run(scenario())
+
+
+def test_live_promotion_requires_ready_user_stream_and_keeps_paper_operation_independent(monkeypatch):
+    async def scenario():
+        class FakeBinanceManager:
+            def __init__(self):
+                self.listeners = set()
+
+            def snapshot(self, user_id):
+                return {"configured": True, "healthy": True, "stream_connected": True, "available_balance": 100, "positions": []}
+
+            def set_symbol_margin_type(self, user_id, symbol, margin_type):
+                return {"margin_type": "ISOLATED"}
+
+            def set_symbol_leverage(self, user_id, symbol, leverage):
+                return {"leverage": leverage}
+
+            def subscribe_events(self, user_id, listener):
+                self.listeners.add(listener)
+
+            def unsubscribe_events(self, user_id, listener):
+                self.listeners.discard(listener)
+
+        monkeypatch.setattr(BinanceExecutionAdapter, "_rules", lambda self, symbol: (0, .001, .001, 5, .01, 8, 3))
+        binance = FakeBinanceManager()
+        manager = ProductionWorkerManager(FakeGateway(), FakePaperStore(), BackendEventBus(), binance, object(), live_enabled=True)
+        worker = SymbolWorker("user", "TESTUSDT", "1m", 5, .2, 1, PaperExecutionAdapter(), FakePaperStore(), BackendEventBus())
+        worker.event_loop = asyncio.get_running_loop()
+        paper_operation = {"id": "paper-1", "side": "LONG", "entry_price": 100, "status": "OPEN"}
+        worker.operation = paper_operation
+        paper_adapter = worker.adapter
+        worker.operation_adapter = paper_adapter
+        manager.workers[("user", "TESTUSDT")] = worker
+
+        result = await manager.set_mode("user", "TESTUSDT", "live")
+        assert result["mode"] == "live"
+        assert isinstance(worker.adapter, BinanceExecutionAdapter)
+        assert worker.operation is None
+        assert worker.background_operations == [(paper_operation, paper_adapter)]
+        assert len(binance.listeners) == 1
+        await manager._shutdown_worker(worker, status="PAUSED")
+        assert binance.listeners == set()
+
+    asyncio.run(scenario())
+
+
+def test_live_adapter_sizes_from_risk_leverage_balance_and_exchange_step(monkeypatch):
+    class FakeBinance:
+        def snapshot(self, _user_id):
+            return {"healthy": True, "stream_connected": True, "available_balance": 100}
+
+    adapter = BinanceExecutionAdapter(FakeBinance(), object())
+    monkeypatch.setattr(adapter, "_rules", lambda _symbol: (0, .1, .1, 5, .01, 8, 2))
+    worker = SymbolWorker("user", "TESTUSDT", "1m", 5, .2, 1, adapter, FakePaperStore(), BackendEventBus())
+    worker.adaptive_parameters = {"risk_percent": 1, "leverage": 10}
+    assert adapter._sized_quantity(worker, 100) == 5
+
+
+def test_live_user_stream_close_event_clears_matching_worker_operation():
+    async def scenario():
+        class FakeIntentStore:
+            def reconcile_account_event(self, _user_id, _event):
+                pass
+
+            def get(self, _intent_id, _user_id):
+                return {"id": "intent-1", "status": "CLOSED"}
+
+        events = []
+
+        class RecordingEvents:
+            async def publish(self, event):
+                events.append(event)
+
+        manager = ProductionWorkerManager(FakeGateway(), FakePaperStore(), RecordingEvents(), object(), FakeIntentStore())
+        live_adapter = BinanceExecutionAdapter(object(), FakeIntentStore())
+        worker = SymbolWorker("user", "TESTUSDT", "1m", 5, .2, 1, live_adapter, FakePaperStore(), RecordingEvents())
+        worker.operation = {"id": "intent-1", "side": "LONG"}
+        worker.operation_adapter = live_adapter
+        await manager._reconcile_live_event(worker, {"type": "ALGO_UPDATE", "event": {"e": "ALGO_UPDATE"}})
+        assert worker.operation is None
+        assert worker.operation_adapter is None
+        assert events[-1]["type"] == "LIVE_EXIT"
 
     asyncio.run(scenario())
 
