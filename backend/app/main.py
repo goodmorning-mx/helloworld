@@ -361,7 +361,8 @@ class TelegramWorkerModeInput(BaseModel):
 
 
 class ScannerSnapshotSymbolInput(BaseModel):
-    symbol: str = Field(pattern=r"^[A-Z0-9]{3,32}USDT$")
+    # Binance has valid markets with two-character bases, such as OPUSDT.
+    symbol: str = Field(pattern=r"^[A-Z0-9]{1,32}USDT$")
     variation_average_pct: float = Field(ge=0, le=1_000)
     leverage: float = Field(ge=1, le=125)
     last_price: float = 0
