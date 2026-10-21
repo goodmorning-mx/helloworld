@@ -98,14 +98,35 @@ class BackendEventBus:
 
     def __init__(self) -> None:
         self._sinks: list[Callable[[dict[str, object]], Awaitable[None]]] = []
+        self._subscribers: dict[str, set[asyncio.Queue[dict[str, object]]]] = {}
 
     def add_sink(self, sink: Callable[[dict[str, object]], Awaitable[None]]) -> None:
         self._sinks.append(sink)
 
-    async def publish(self, event: dict[str, object]) -> None:
-        if not self._sinks:
+    def subscribe(self, user_id: str, *, maxsize: int = 128) -> asyncio.Queue[dict[str, object]]:
+        queue: asyncio.Queue[dict[str, object]] = asyncio.Queue(maxsize=maxsize)
+        self._subscribers.setdefault(user_id, set()).add(queue)
+        return queue
+
+    def unsubscribe(self, user_id: str, queue: asyncio.Queue[dict[str, object]]) -> None:
+        subscribers = self._subscribers.get(user_id)
+        if subscribers is None:
             return
-        await asyncio.gather(*(sink(event) for sink in self._sinks), return_exceptions=True)
+        subscribers.discard(queue)
+        if not subscribers:
+            self._subscribers.pop(user_id, None)
+
+    async def publish(self, event: dict[str, object]) -> None:
+        user_id = str(event.get("user_id", ""))
+        for queue in self._subscribers.get(user_id, ()):
+            if queue.full():
+                try:
+                    queue.get_nowait()
+                except asyncio.QueueEmpty:
+                    pass
+            queue.put_nowait(dict(event))
+        if self._sinks:
+            await asyncio.gather(*(sink(event) for sink in self._sinks), return_exceptions=True)
 
 
 def telegram_event_sink(telegram: TelegramSink) -> Callable[[dict[str, object]], Awaitable[None]]:

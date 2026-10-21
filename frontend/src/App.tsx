@@ -19,6 +19,19 @@ const apiUrl = configuredApiUrl === '/api' && window.location.hostname === 'dev.
   : configuredApiUrl;
 const marketWsUrl = apiUrl.replace(/^http/, 'ws');
 
+type ProductionWorkerView = {
+  symbol: string;
+  mode?: string;
+  running?: boolean;
+  status?: string;
+  queue_depth?: number;
+  last_event_latency_ms?: number | null;
+  p95_event_latency_ms?: number | null;
+  last_error?: string | null;
+  adaptive_parameters?: { status?: string; tracker_period?: number; target_percent?: number; stop_percent?: number; minroe_limit_percent?: number; risk_percent?: number; risk_usdt?: number; leverage?: number; initial_balance?: number; bars?: number; window_hours?: number; sample_operations?: number; last_bar_time?: number | null };
+  parameter_version?: number;
+};
+
 async function fetchJson<T>(input: RequestInfo | URL, init?: RequestInit, retries = 2): Promise<T> {
   let lastError: unknown;
   for (let attempt = 0; attempt <= retries; attempt += 1) {
@@ -1153,8 +1166,8 @@ function Workspace() {
   const pendingBinanceTpRef = useRef<{ symbol: string; price: number } | null>(null);
   const [binanceProductionAvailable, setBinanceProductionAvailable] = useState(false);
   const [productionWorkerRunning, setProductionWorkerRunning] = useState(false);
-  const [productionWorkerStatus, setProductionWorkerStatus] = useState<{ symbol?: string; mode?: string; status?: string; queue_depth?: number; last_event_latency_ms?: number | null; p95_event_latency_ms?: number | null; last_error?: string | null; adaptive_parameters?: { status?: string; tracker_period?: number; target_percent?: number; stop_percent?: number; minroe_limit_percent?: number; risk_percent?: number; risk_usdt?: number; leverage?: number; initial_balance?: number; bars?: number; window_hours?: number; sample_operations?: number; last_bar_time?: number | null }; parameter_version?: number } | null>(null);
-  const productionWorkerSwitchRef = useRef<string | null>(null);
+  const [productionWorkerStatus, setProductionWorkerStatus] = useState<ProductionWorkerView | null>(null);
+  const [lastWorkerSignal, setLastWorkerSignal] = useState<{ symbol: string; side: string; level: string; price: number; bar_time: number; parameter_version: number } | null>(null);
   const [executionMode, setExecutionMode] = useState<'paper' | 'production'>('paper');
   const [binanceSizingMode, setBinanceSizingMode] = useState<BinanceSizingMode>(() => localStorage.getItem('helloworld-binance-sizing-mode') === 'maximum' ? 'maximum' : 'minimum');
   const [binanceStopPercent, setBinanceStopPercent] = useState(() => Number(localStorage.getItem('helloworld-binance-stop-percent') ?? FIXED_BINANCE_STOP_PERCENT) || FIXED_BINANCE_STOP_PERCENT);
@@ -1455,42 +1468,62 @@ function Workspace() {
     if (broker !== 'binance' || !auth.accessToken) { setProductionWorkerRunning(false); setProductionWorkerStatus(null); return; }
     let active = true;
     const refreshWorker = () => fetch(`${apiUrl}/trading/production/workers`, { headers: { Authorization: `Bearer ${auth.accessToken}` }, credentials: 'include' })
-      .then(response => response.ok ? response.json() as Promise<Array<{ symbol: string; mode?: string; running: boolean; status?: string; queue_depth?: number; last_event_latency_ms?: number | null; p95_event_latency_ms?: number | null; last_error?: string | null; adaptive_parameters?: { status?: string; tracker_period?: number; target_percent?: number; stop_percent?: number; minroe_limit_percent?: number; risk_percent?: number; risk_usdt?: number; leverage?: number; initial_balance?: number; bars?: number; window_hours?: number; sample_operations?: number; last_bar_time?: number | null }; parameter_version?: number }>> : Promise.reject(new Error('worker status unavailable')))
+      .then(response => response.ok ? response.json() as Promise<ProductionWorkerView[]> : Promise.reject(new Error('worker status unavailable')))
       .then(workers => {
         if (!active) return;
         const session = workers.find(worker => worker.running);
-        if (session && session.symbol !== symbol.toUpperCase()) {
-          const switchKey = `${session.symbol}->${symbol.toUpperCase()}`;
-          if (productionWorkerSwitchRef.current === switchKey) return;
-          productionWorkerSwitchRef.current = switchKey;
-          const params = session.adaptive_parameters;
-          void fetch(`${apiUrl}/trading/production/workers`, {
-            method: 'POST', headers: { Authorization: `Bearer ${auth.accessToken}`, 'Content-Type': 'application/json' }, credentials: 'include',
-            body: JSON.stringify({ symbol, mode: session.mode === 'paper' ? 'paper' : 'signals_only', interval: '1m', tracker_period: params?.tracker_period ?? trackerPeriod, stop_percent: params?.stop_percent ?? binanceStopPercent, target_percent: params?.target_percent ?? binanceTargetPercent, quantity: 0, risk_percent: params?.risk_percent ?? paperRiskPercent, leverage: params?.leverage ?? 1, initial_balance: params?.initial_balance ?? paperInitialBalance }),
-          }).then(async response => {
-            if (!response.ok) throw new Error((await response.json() as { detail?: string }).detail ?? 'No se pudo cambiar el worker al símbolo seleccionado.');
-            if (!active) return;
-            const switched = await response.json() as typeof session;
-            setProductionWorkerStatus(switched);
-            setProductionWorkerRunning(Boolean(switched.running));
-            setExecutionMode(switched.mode === 'live' ? 'production' : 'paper');
-            setProductionWorkerError('');
-          }).catch(error => {
-            if (active) setProductionWorkerError(error instanceof Error ? error.message : 'No se pudo cambiar el símbolo del worker.');
-          }).finally(() => { if (productionWorkerSwitchRef.current === switchKey) productionWorkerSwitchRef.current = null; });
-          return;
-        }
-        productionWorkerSwitchRef.current = null;
-        const selected = session?.symbol === symbol.toUpperCase() ? session : undefined;
-        setProductionWorkerRunning(Boolean(selected));
-        setProductionWorkerStatus(selected ?? null);
-        setExecutionMode(selected?.mode === 'live' ? 'production' : 'paper');
+        setProductionWorkerRunning(Boolean(session));
+        setProductionWorkerStatus(session ?? null);
+        setExecutionMode(session?.mode === 'live' ? 'production' : 'paper');
       })
       .catch(() => { if (active) { setProductionWorkerRunning(false); setProductionWorkerStatus(null); } });
     void refreshWorker();
     const timer = window.setInterval(refreshWorker, 10_000);
-    return () => { active = false; window.clearInterval(timer); };
-  }, [auth.accessToken, broker, symbol, apiUrl, trackerPeriod, binanceStopPercent, binanceTargetPercent, paperRiskPercent, paperInitialBalance]);
+    const controller = new AbortController();
+    const streamEvents = async () => {
+      while (active) {
+        try {
+          const response = await fetch(`${apiUrl}/trading/production/workers/events`, { headers: { Authorization: `Bearer ${auth.accessToken}` }, credentials: 'include', signal: controller.signal });
+          if (!response.ok || !response.body) throw new Error('worker event stream unavailable');
+          const reader = response.body.getReader();
+          const decoder = new TextDecoder();
+          let buffer = '';
+          while (active) {
+            const chunk = await reader.read();
+            if (chunk.done) break;
+            buffer += decoder.decode(chunk.value, { stream: true });
+            const frames = buffer.split('\n\n');
+            buffer = frames.pop() ?? '';
+            for (const frame of frames) {
+              const data = frame.split('\n').find(line => line.startsWith('data: '))?.slice(6);
+              if (!data) continue;
+              try {
+                const event = JSON.parse(data) as { type?: string; workers?: ProductionWorkerView[]; symbol?: string; side?: string; level?: string; price?: number; bar_time?: number; parameter_version?: number };
+                if (event.type === 'WORKER_SNAPSHOT' && event.workers) {
+                  const session = event.workers.find(worker => worker.running);
+                  setProductionWorkerRunning(Boolean(session));
+                  setProductionWorkerStatus(session ?? null);
+                  setExecutionMode(session?.mode === 'live' ? 'production' : 'paper');
+                  setLastWorkerSignal(current => session && current?.symbol === session.symbol ? current : null);
+                } else {
+                  if (event.type === 'TRACKER_SIGNAL' && event.symbol && event.side && event.level && event.price != null && event.bar_time != null) {
+                    setLastWorkerSignal({ symbol: event.symbol, side: event.side, level: event.level, price: event.price, bar_time: event.bar_time, parameter_version: event.parameter_version ?? 0 });
+                  }
+                  if (event.type === 'WORKER_STOPPED') setLastWorkerSignal(null);
+                  void refreshWorker();
+                }
+              } catch { /* Ignore malformed frames and keep the stream alive. */ }
+            }
+          }
+        } catch {
+          if (!active || controller.signal.aborted) return;
+        }
+        if (active) await new Promise(resolve => window.setTimeout(resolve, 1500));
+      }
+    };
+    void streamEvents();
+    return () => { active = false; controller.abort(); window.clearInterval(timer); };
+  }, [auth.accessToken, broker, apiUrl]);
 
   useEffect(() => {
     if (broker !== 'binance') { setBinanceRules(null); return; }
@@ -3770,7 +3803,8 @@ function Workspace() {
     const headers = { ...(auth.accessToken ? { Authorization: `Bearer ${auth.accessToken}` } : {}), 'Content-Type': 'application/json' };
     try {
       if (productionWorkerRunning) {
-        const response = await fetch(`${apiUrl}/trading/production/workers/${encodeURIComponent(symbol)}`, { method: 'DELETE', headers, credentials: 'include' });
+        const activeSymbol = productionWorkerStatus?.symbol ?? symbol;
+        const response = await fetch(`${apiUrl}/trading/production/workers/${encodeURIComponent(activeSymbol)}`, { method: 'DELETE', headers, credentials: 'include' });
         if (!response.ok) throw new Error((await response.json() as { detail?: string }).detail ?? 'No se pudo detener el worker.');
         setProductionWorkerRunning(false);
         setExecutionMode('paper');
@@ -3898,7 +3932,9 @@ function Workspace() {
     };
   const parameterAnalysis = trackerScannerDetail?.symbol === symbol ? trackerScannerDetail : scannerAnalysisBySymbol[symbol] ?? null;
   const liveAdaptiveParameters = productionWorkerRunning ? productionWorkerStatus?.adaptive_parameters : null;
-  const parameterStatus = replayState.active
+  const parameterStatus = productionWorkerRunning
+    ? productionWorkerStatus?.status === 'ERROR' || productionWorkerStatus?.status === 'DEGRADED' ? 'ERROR' : 'SINCRONIZADO'
+    : replayState.active
     ? 'REPLAY'
     : trackerDetailStatus === 'loading'
       ? 'ACTUALIZANDO'
@@ -3912,8 +3948,8 @@ function Workspace() {
   const parameterLastBar = parameterAnalysis?.last_bar_time
     ? new Date(parameterAnalysis.last_bar_time * 1000).toLocaleTimeString('es-MX', { timeZone: timezone, hour: '2-digit', minute: '2-digit' })
     : '—';
-  const parameterCard = <aside className={`parameter-card parameter-card-${parameterStatus.toLowerCase()}`} aria-label={`Parámetros activos de ${symbol}`}>
-    <div className="parameter-card-head"><div><span className="positions-kicker">PARÁMETROS · {symbol}</span><strong>Ventana de ajuste</strong></div><b role="status">{parameterStatus}</b></div>
+  const parameterCard = <aside className={`parameter-card parameter-card-${parameterStatus.toLowerCase()}`} aria-label={`Parámetros activos de ${productionWorkerStatus?.symbol ?? symbol}`}>
+    <div className="parameter-card-head"><div><span className="positions-kicker">PARÁMETROS · {productionWorkerStatus?.symbol ?? symbol}</span><strong>{productionWorkerRunning ? `Worker ${productionWorkerStatus?.status ?? 'ACTIVO'} · ${productionWorkerStatus?.mode ?? 'signals_only'}` : 'Ventana de ajuste'}</strong></div><b role="status">{parameterStatus}</b></div>
     <div className="parameter-card-grid">
       <div className="parameter-value parameter-value-tp"><small>{liveAdaptiveParameters ? 'TP TRACKER ACTIVO' : 'TP SCANNER'}</small><strong>{liveAdaptiveParameters?.target_percent != null ? `+${liveAdaptiveParameters.target_percent.toFixed(2)}%` : parameterAnalysis?.tp_optimal_percent != null ? `+${parameterAnalysis.tp_optimal_percent.toFixed(2)}%` : '—'}</strong><em>{liveAdaptiveParameters ? `versión ${productionWorkerStatus?.parameter_version ?? 0}` : `activo +${binanceTargetPercent.toFixed(2)}%`}</em></div>
       <div className="parameter-value parameter-value-sl"><small>SL TRACKER ACTIVO</small><strong>−{(liveAdaptiveParameters?.stop_percent ?? binanceStopPercent).toFixed(2)}%</strong><em>{liveAdaptiveParameters ? 'parámetro adaptativo vigente' : 'ejecución Paper/Live'}</em></div>
@@ -3922,7 +3958,7 @@ function Workspace() {
       <div className="parameter-value parameter-value-risk"><small>RISK ENGINE</small><strong>{(liveAdaptiveParameters?.risk_percent ?? activeRiskPercent).toFixed(2)}% · {liveAdaptiveParameters?.leverage ?? productionPreviewData?.leverage ?? scannerSelectedLeverage}x</strong><em>{liveAdaptiveParameters ? `${(liveAdaptiveParameters.risk_usdt ?? 0).toFixed(2)} USDT · balance ${(liveAdaptiveParameters.initial_balance ?? 0).toFixed(2)}` : `${riskPreviewUsd.toFixed(2)} USDT de riesgo estimado`}</em></div>
       <div className="parameter-value parameter-value-window"><small>VENTANA RODANTE</small><strong>{liveAdaptiveParameters ? `${(liveAdaptiveParameters.window_hours ?? 0).toFixed(1)}h · ${liveAdaptiveParameters.bars ?? 0}/480` : `8h · ${parameterAnalysis?.bars ?? 0}/480`}</strong><em>{liveAdaptiveParameters ? `${liveAdaptiveParameters.sample_operations ?? 0} ops · versión ${productionWorkerStatus?.parameter_version ?? 0}` : `${parameterAnalysis?.operations ?? 0} ops · última vela ${parameterLastBar}`}</em></div>
     </div>
-    <small className="parameter-card-foot">{liveAdaptiveParameters ? 'Tracker gobierna señales y parámetros; Paper conserva salidas propias y no modifica el estado Tracker.' : 'Con worker activo, Tracker recalibra N/TP/SL al cerrar una operación sobre la ventana 8h.'}</small>
+    <small className="parameter-card-foot">{lastWorkerSignal ? `Última señal del worker: ${lastWorkerSignal.side} ${lastWorkerSignal.symbol} · ${lastWorkerSignal.level} · ${lastWorkerSignal.price} · v${lastWorkerSignal.parameter_version}. ` : ''}{liveAdaptiveParameters ? 'Tracker gobierna señales y parámetros; Paper conserva salidas propias y no modifica el estado Tracker.' : 'Con worker activo, Tracker recalibra N/TP/SL al cerrar una operación sobre la ventana 8h.'}</small>
   </aside>;
   const marketScanner = broker === 'binance' ? <section className="market-overview" aria-label="Resumen de operación Binance"><div className="market-scanner-training"><div className="training-card-content"><span className="positions-kicker">TRAINING OPERATOR · PNL NETO DIARIO</span><strong>${trainingPnl.toFixed(2)} / $40.00</strong><div className="training-progress-track"><span style={{ width: `${trainingProgress * 100}%` }} /></div><small>{trainingPnl >= 40 ? 'Meta diaria completada' : `Faltan $${Math.max(0, 40 - trainingPnl).toFixed(2)}`}</small></div><div className="binance-balance-card"><span className="positions-kicker">BINANCE · BALANCE</span><strong>{binanceLiveAccount?.futures_balance != null ? `${Number(binanceLiveAccount.futures_balance).toFixed(2)} USDT` : '—'}</strong><small>Disponible {binanceLiveAccount?.available_balance != null ? `${Number(binanceLiveAccount.available_balance).toFixed(2)} USDT` : '—'}</small><small>PNL abierto {binanceLiveAccount?.total_unrealized_pnl != null ? `${Number(binanceLiveAccount.total_unrealized_pnl) >= 0 ? '+' : ''}${Number(binanceLiveAccount.total_unrealized_pnl).toFixed(4)} USDT` : '—'}</small></div><div className="replay-card"><span className="positions-kicker">REPLAY · VELA A VELA</span>{replayControls}</div>{levelAdjustCard}{parameterCard}</div><div className="market-preview-slot"><div className="market-preview-card">{previewControls}{productionOrderPreview}</div></div></section> : null;
   const tradingAgent = <TradingAgentChat activeSymbol={symbol} interval={interval} apiUrl={apiUrl} accessToken={auth.accessToken} />;

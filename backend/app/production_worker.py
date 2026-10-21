@@ -197,6 +197,10 @@ class SymbolWorker:
     on_lease_lost: Any = None
     started: asyncio.Event = field(default_factory=asyncio.Event)
 
+    async def publish(self, event: dict[str, object]) -> None:
+        """Attach the owner to worker events for authenticated stream fanout."""
+        await self.events.publish({**event, "user_id": self.user_id})
+
     def offer_market_event(self, event: dict[str, Any]) -> None:
         """Enqueue closed candles quickly so market fanout never waits on trading work."""
         if not self.running or event.get("type") != "kline" or event.get("interval") != self.interval:
@@ -366,7 +370,7 @@ class SymbolWorker:
             reason = raw_reason if raw_reason != "TP" or opposite_signal else None
             if reason is not None:
                 tracker_closed = True
-                await self.events.publish({"type": "TRACKER_OPERATION_CLOSED", "symbol": self.symbol, "side": tracked["side"], "reason": reason, "price": close, "bar_time": int(bar["time"]), "parameter_version": tracked.get("parameter_version")})
+                await self.publish({"type": "TRACKER_OPERATION_CLOSED", "symbol": self.symbol, "side": tracked["side"], "reason": reason, "price": close, "bar_time": int(bar["time"]), "parameter_version": tracked.get("parameter_version")})
                 self.tracker_operation = None
                 self._schedule_recalibration()
                 if reason == "TP":
@@ -382,7 +386,7 @@ class SymbolWorker:
                 "parameter_version": self.parameter_version,
             }
             signal_id = f"{self.symbol}:{self.interval}:{bar['time']}:{side}:{level}"
-            await self.events.publish({"type": "TRACKER_SIGNAL", "signal_id": signal_id, "symbol": self.symbol, "side": side, "level": level, "interval": self.interval, "bar_time": int(bar["time"]), "price": close, "stop_percent": self.stop_percent, "target_percent": self.target_percent, "tracker_period": self.tracker_period, "parameter_version": self.parameter_version, "mode": self.adapter.mode})
+            await self.publish({"type": "TRACKER_SIGNAL", "signal_id": signal_id, "symbol": self.symbol, "side": side, "level": level, "interval": self.interval, "bar_time": int(bar["time"]), "price": close, "stop_percent": self.stop_percent, "target_percent": self.target_percent, "tracker_period": self.tracker_period, "parameter_version": self.parameter_version, "mode": self.adapter.mode})
             # Executions mirror Tracker entries but own their independent
             # operation lifecycle and cannot feed back into strategy state.
             if self.operation is None:
@@ -441,7 +445,7 @@ class SymbolWorker:
             finally:
                 self.operation, self.operation_adapter = current_operation, current_adapter
         await self._persist_runtime_snapshot()
-        await self.events.publish({"type": "TRACKER_PARAMETERS_UPDATED", "symbol": self.symbol, **params, "parameter_version": self.parameter_version})
+        await self.publish({"type": "TRACKER_PARAMETERS_UPDATED", "symbol": self.symbol, **params, "parameter_version": self.parameter_version})
 
     async def _persist_runtime_snapshot(self) -> None:
         if self.runtime_store is None or self.lease_owner_id is None:
@@ -477,7 +481,7 @@ class PaperExecutionAdapter:
         notional = min(risk_usdt / max(worker.stop_percent / 100, 0.000001), self.initial_balance * leverage)
         operation = {"id": f"paper-worker-{uuid4().hex[:12]}", "symbol": worker.symbol, "side": side, "chart": "entry", "level": bar.get("level"), "entry_time": int(bar["time"]), "entry_price": price, "current_time": int(bar["time"]), "current_price": price, "stop_time": int(bar["time"]), "stop_price": stop, "target_time": int(bar["time"]), "target_price": target, "stop_percent": worker.stop_percent, "target_percent": worker.target_percent, "parameter_version": worker.parameter_version, "status": "OPEN", "close_reason": None, "risk_percent": risk_percent, "notional": notional, "margin": notional / leverage, "pnl": 0.0, "source": "realtime-engine", "idempotency_key": f"tracker:{worker.symbol}:{worker.interval}:{bar['time']}:{side}:{bar.get('level', 'H1')}"}
         worker.operation = await asyncio.to_thread(_persist_open, worker, operation)
-        await worker.events.publish({"type": "PAPER_ENTRY", "symbol": worker.symbol, "side": side, "price": price})
+        await worker.publish({"type": "PAPER_ENTRY", "symbol": worker.symbol, "side": side, "price": price})
         return worker.operation
 
     async def update_parameters(self, worker: SymbolWorker) -> None:
@@ -511,7 +515,7 @@ class PaperExecutionAdapter:
         pnl = gross_pnl - fees
         result = await asyncio.to_thread(_persist_close, worker, operation, reason, price, bar, pnl)
         worker.operation = None
-        await worker.events.publish({"type": "PAPER_EXIT", "symbol": worker.symbol, "side": operation["side"], "reason": reason, "pnl": round(pnl, 6)})
+        await worker.publish({"type": "PAPER_EXIT", "symbol": worker.symbol, "side": operation["side"], "reason": reason, "pnl": round(pnl, 6)})
         return result
 
 
@@ -633,7 +637,7 @@ class BinanceExecutionAdapter:
                     await asyncio.to_thread(self.store.update, intent["id"], worker.user_id, status="RECONCILIATION_REQUIRED", last_error=f"order_lookup:{type(lookup_error).__name__}")
                     worker.status = "DEGRADED"
                     worker.last_error = "Binance no confirmó el resultado de la orden; se requiere reconciliación antes de reintentar."
-                    await worker.events.publish({"type": "LIVE_RECONCILIATION_REQUIRED", "symbol": worker.symbol, "signal_id": bar.get("signal_id")})
+                    await worker.publish({"type": "LIVE_RECONCILIATION_REQUIRED", "symbol": worker.symbol, "signal_id": bar.get("signal_id")})
                     logger.warning("live_worker_order_lookup_failed symbol=%s error_type=%s", worker.symbol, type(lookup_error).__name__)
                     return intent
             actual_quantity = abs(float(entry.get("executedQty") or 0)) if isinstance(entry, dict) else 0
@@ -674,14 +678,14 @@ class BinanceExecutionAdapter:
                     if protected is not None and str(protected.get("status", "")).upper() == "PROTECTED":
                         worker.operation = {"id": intent["id"], "side": side, "level": bar.get("level"), "entry_price": average_open, "quantity": actual_quantity, "notional": actual_quantity * average_open, "stop_price": fallback_stop, "target_price": fallback_target, "stop_percent": worker.stop_percent, "target_percent": worker.target_percent, "parameter_version": worker.parameter_version, "status": "PROTECTED", "stop_algo_id": stop_order["algoId"], "take_profit_algo_id": target_order["algoId"]}
                         worker.operation_adapter = self
-                        await worker.events.publish({"type": "LIVE_ENTRY", "symbol": worker.symbol, "side": side, "price": average_open})
+                        await worker.publish({"type": "LIVE_ENTRY", "symbol": worker.symbol, "side": side, "price": average_open})
                         return intent
                 except Exception as protection_error:
                     logger.warning("live_worker_fallback_protection_failed symbol=%s error_type=%s", worker.symbol, type(protection_error).__name__)
             await asyncio.to_thread(self.store.update, intent["id"], worker.user_id, status="UNPROTECTED_ERROR" if order_submission_started else "ERROR", last_error=f"execution_failed:{type(exc).__name__}")
             worker.status = "ERROR" if order_submission_started else worker.status
             worker.last_error = "No se pudo confirmar una ejecución Live segura; requiere revisión antes de nuevos intentos."
-            await worker.events.publish({"type": "LIVE_RECONCILIATION_REQUIRED", "symbol": worker.symbol, "signal_id": bar.get("signal_id")})
+            await worker.publish({"type": "LIVE_RECONCILIATION_REQUIRED", "symbol": worker.symbol, "signal_id": bar.get("signal_id")})
             logger.warning("live_worker_entry_failed symbol=%s error_type=%s", worker.symbol, type(exc).__name__)
             return intent
         worker.operation = {"id": intent["id"], "side": side, "level": bar.get("level"), "entry_price": average_open, "quantity": actual_quantity, "notional": actual_quantity * average_open, "stop_price": stop, "target_price": target, "stop_percent": worker.stop_percent, "target_percent": worker.target_percent, "parameter_version": worker.parameter_version, "status": "PROTECTED", "stop_algo_id": stop_order.get("algoId"), "take_profit_algo_id": target_order.get("algoId")}
@@ -690,9 +694,9 @@ class BinanceExecutionAdapter:
         if refreshed_intent is not None and str(refreshed_intent.get("status", "")).upper() == "CLOSED":
             worker.operation = None
             worker.operation_adapter = None
-            await worker.events.publish({"type": "LIVE_EXIT", "symbol": worker.symbol, "side": side, "reason": "BINANCE_FILL"})
+            await worker.publish({"type": "LIVE_EXIT", "symbol": worker.symbol, "side": side, "reason": "BINANCE_FILL"})
             return intent
-        await worker.events.publish({"type": "LIVE_ENTRY", "symbol": worker.symbol, "side": side, "price": price})
+        await worker.publish({"type": "LIVE_ENTRY", "symbol": worker.symbol, "side": side, "price": price})
         return intent
 
     async def close(self, worker: SymbolWorker, reason: str, price: float, bar: dict[str, Any]) -> dict[str, Any]:
@@ -718,7 +722,7 @@ class BinanceExecutionAdapter:
                     logger.warning("live_worker_protection_cancel_failed symbol=%s", worker.symbol, exc_info=True)
         await asyncio.to_thread(self.store.update, operation["id"], worker.user_id, status="CLOSED", last_error=None)
         worker.operation = None
-        await worker.events.publish({"type": "LIVE_EXIT", "symbol": worker.symbol, "reason": reason, "price": price})
+        await worker.publish({"type": "LIVE_EXIT", "symbol": worker.symbol, "reason": reason, "price": price})
         return operation
 
     async def update_parameters(self, worker: "SymbolWorker") -> None:
@@ -894,7 +898,7 @@ class ProductionWorkerManager:
         await asyncio.wait_for(worker.started.wait(), timeout=1)
         self.gateway.add_listener(worker.symbol, worker.offer_market_event)
         worker.initialization_task = asyncio.create_task(self._initialize_worker(worker, runtime), name=f"production-worker-init-{user_id}-{worker.symbol}")
-        await self.events.publish({"type": "WORKER_STARTED", "symbol": worker.symbol, "mode": mode})
+        await self.events.publish({"user_id": user_id, "type": "WORKER_STARTED", "symbol": worker.symbol, "mode": mode})
         return self.status(user_id, symbol)
 
     async def _initialize_worker(self, worker: SymbolWorker, runtime: dict[str, Any] | None) -> None:
@@ -942,7 +946,7 @@ class ProductionWorkerManager:
                 worker.target_percent = float(params["target_percent"])
                 worker.parameter_version += 1
                 worker.adaptive_parameters["parameter_version"] = worker.parameter_version
-                await self.events.publish({"type": "TRACKER_PARAMETERS_UPDATED", "symbol": worker.symbol, **params, "parameter_version": worker.parameter_version})
+                await self.events.publish({"user_id": worker.user_id, "type": "TRACKER_PARAMETERS_UPDATED", "symbol": worker.symbol, **params, "parameter_version": worker.parameter_version})
                 await worker._persist_runtime_snapshot()
         except Exception as exc:
             worker.status = "ERROR"
@@ -964,7 +968,7 @@ class ProductionWorkerManager:
         worker = self.workers.pop(key, None)
         if worker is not None:
             await self._shutdown_worker(worker, status="STOPPED")
-            await self.events.publish({"type": "WORKER_STOPPED", "symbol": worker.symbol})
+            await self.events.publish({"user_id": user_id, "type": "WORKER_STOPPED", "symbol": worker.symbol})
         if self.config_store is not None:
             await asyncio.to_thread(self.config_store.disable, user_id, symbol)
             await asyncio.to_thread(self.config_store.release_lease, user_id, symbol, self.owner_id, "STOPPED")
@@ -1033,7 +1037,7 @@ class ProductionWorkerManager:
         worker.adapter = next_adapter
         if mode == "live":
             self._subscribe_live_events(worker)
-        await self.events.publish({"type": "WORKER_MODE_CHANGED", "symbol": worker.symbol, "mode": mode})
+        await self.events.publish({"user_id": worker.user_id, "type": "WORKER_MODE_CHANGED", "symbol": worker.symbol, "mode": mode})
         return self.status(worker.user_id, worker.symbol)
 
     async def _prepare_live_adapter(self, worker: SymbolWorker) -> ExecutionAdapter:
@@ -1152,7 +1156,7 @@ class ProductionWorkerManager:
                 worker.operation_adapter = None
             else:
                 worker.background_operations = [(op, item_adapter) for op, item_adapter in worker.background_operations if op is not operation]
-            await worker.events.publish({"type": "LIVE_EXIT", "symbol": worker.symbol, "side": operation.get("side"), "reason": "BINANCE_FILL"})
+            await worker.publish({"type": "LIVE_EXIT", "symbol": worker.symbol, "side": operation.get("side"), "reason": "BINANCE_FILL"})
             await worker._persist_runtime_snapshot()
 
     async def restore(self, *, resume_live: bool = False) -> None:

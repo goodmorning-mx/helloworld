@@ -91,6 +91,7 @@ def test_api_exposes_authenticated_telegram_control_routes():
     assert ("/telegram/workers", ("POST",)) in paths
     assert ("/telegram/workers/{symbol}", ("DELETE",)) in paths
     assert ("/telegram/workers/{symbol}/mode", ("PATCH",)) in paths
+    assert ("/trading/production/workers/events", ("GET",)) in paths
 
 
 def test_internal_scanner_snapshot_uses_shared_cached_analysis_and_compact_results(monkeypatch):
