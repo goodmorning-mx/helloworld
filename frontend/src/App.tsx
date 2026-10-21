@@ -19,6 +19,34 @@ const apiUrl = configuredApiUrl === '/api' && window.location.hostname === 'dev.
   : configuredApiUrl;
 const marketWsUrl = apiUrl.replace(/^http/, 'ws');
 
+function formatApiErrorDetail(detail: unknown): string | null {
+  if (typeof detail === 'string') return detail;
+  if (Array.isArray(detail)) {
+    const messages = detail.map(item => {
+      if (typeof item === 'string') return item;
+      if (!item || typeof item !== 'object') return null;
+      const record = item as { loc?: unknown; msg?: unknown; message?: unknown; error?: unknown };
+      const message = typeof record.msg === 'string' ? record.msg
+        : typeof record.message === 'string' ? record.message
+          : typeof record.error === 'string' ? record.error : null;
+      if (!message) return null;
+      const location = Array.isArray(record.loc)
+        ? record.loc.filter(part => typeof part === 'string' || typeof part === 'number').join(' → ')
+        : '';
+      return location ? `${location}: ${message}` : message;
+    }).filter((message): message is string => Boolean(message));
+    return messages.length ? messages.join('; ') : null;
+  }
+  if (detail && typeof detail === 'object') {
+    const record = detail as { msg?: unknown; message?: unknown; error?: unknown };
+    for (const value of [record.msg, record.message, record.error]) {
+      if (typeof value === 'string') return value;
+    }
+    try { return JSON.stringify(detail); } catch { return null; }
+  }
+  return null;
+}
+
 type ProductionWorkerView = {
   symbol: string;
   mode?: string;
@@ -40,7 +68,10 @@ async function fetchJson<T>(input: RequestInfo | URL, init?: RequestInit, retrie
       const text = await response.text();
       let payload: unknown;
       try { payload = text ? JSON.parse(text) : null; } catch { throw new Error(`Respuesta inválida del servidor (${response.status}).`); }
-      if (!response.ok) throw new Error((payload as { detail?: string } | null)?.detail ?? `El servidor respondió ${response.status}.`);
+      if (!response.ok) {
+        const detail = formatApiErrorDetail((payload as { detail?: unknown } | null)?.detail);
+        throw new Error(detail ?? `El servidor respondió ${response.status}.`);
+      }
       return payload as T;
     } catch (error) {
       lastError = error;
