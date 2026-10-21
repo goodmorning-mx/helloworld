@@ -210,31 +210,6 @@ function applyTrackerLossLimit(operations: TrackerVirtualOperation[], summary: T
   });
 }
 
-type TrackerOptimizationResult = { targetPercent: number; equity: number; lossLimit: number; wins: number; losses: number };
-
-function optimizeTrackerConfiguration(
-  source: Array<{ time: number; open: number; high: number; low: number; close: number }>,
-  trackerPeriod: number,
-  stopPercent: number,
-  initialBalance: number,
-  riskPercent: number,
-  leverage: number,
-): TrackerOptimizationResult | null {
-  if (source.length <= trackerPeriod) return null;
-  let best: TrackerOptimizationResult | null = null;
-  for (let step = 1; step <= 200; step += 1) {
-    const targetPercent = Number((step / 10).toFixed(2));
-    const operations = runTrackerVisualSimulation(source, trackerPeriod, stopPercent, targetPercent, initialBalance, riskPercent, leverage).filter(operation => operation.closed);
-    const lossLimit = findBestTrackerLossLimit(operations);
-    const adjustedPnls = applyTrackerLossLimit(operations, lossLimit);
-    const equity = initialBalance + adjustedPnls.reduce((sum, pnl) => sum + pnl, 0);
-    const wins = operations.filter(operation => operation.status === 'CLOSED - WIN').length;
-    const losses = operations.filter(operation => operation.status === 'CLOSED - FAILED').length;
-    if (!best || equity > best.equity || (equity === best.equity && targetPercent < best.targetPercent)) best = { targetPercent, equity, lossLimit: lossLimit.limit, wins, losses };
-  }
-  return best;
-}
-
 function runTrackerVisualSimulation(
   bars: Array<{ time: number; open: number; high: number; low: number; close: number }>,
   trackerPeriod: number,
@@ -1203,8 +1178,6 @@ function Workspace() {
   const [binanceSizingMode, setBinanceSizingMode] = useState<BinanceSizingMode>(() => localStorage.getItem('helloworld-binance-sizing-mode') === 'maximum' ? 'maximum' : 'minimum');
   const [binanceStopPercent, setBinanceStopPercent] = useState(() => Number(localStorage.getItem('helloworld-binance-stop-percent') ?? FIXED_BINANCE_STOP_PERCENT) || FIXED_BINANCE_STOP_PERCENT);
   const [binanceTargetPercent, setBinanceTargetPercent] = useState(() => Number(localStorage.getItem('helloworld-binance-target-percent') ?? FIXED_BINANCE_TARGET_PERCENT) || FIXED_BINANCE_TARGET_PERCENT);
-  const [tpOptimizationResult, setTpOptimizationResult] = useState<{ targetPercent: number; equity: number; lossLimit: number; wins: number; losses: number } | null>(null);
-  const [riskBalancePreview, setRiskBalancePreview] = useState<number | null>(null);
   const [binanceLiveAccount, setBinanceLiveAccount] = useState<BinanceAccount | null>(null);
   const [binanceExecutionIntents, setBinanceExecutionIntents] = useState<BinanceExecutionIntent[]>([]);
   const [broker, setBroker] = useState<'binance' | 'ctrader'>('binance');
@@ -1731,7 +1704,6 @@ function Workspace() {
   useEffect(() => {
     setSymbolHistoryReady(false);
     setTrackerLossLimitEnabled(false);
-    setTpOptimizationResult(null);
   }, [symbol, broker]);
 
   useEffect(() => {
@@ -1746,7 +1718,6 @@ function Workspace() {
       setBinanceTargetPercent(current => current === cachedSummary.tp_optimal_percent ? current : cachedSummary.tp_optimal_percent!);
       localStorage.setItem('helloworld-binance-target-percent', String(cachedSummary.tp_optimal_percent));
       setTrackerLossLimitEnabled(true);
-      setTpOptimizationResult({ targetPercent: cachedSummary.tp_optimal_percent, equity: cachedSummary.equity_final ?? paperInitialBalance, lossLimit: cachedSummary.loss_limit_percent ?? 0, wins: cachedSummary.wins, losses: cachedSummary.losses });
     }
     let active = true;
     let hasLoadedOnce = false;
@@ -1782,7 +1753,6 @@ function Workspace() {
           setBinanceTargetPercent(current => current === row.tp_optimal_percent ? current : row.tp_optimal_percent!);
           localStorage.setItem('helloworld-binance-target-percent', String(row.tp_optimal_percent));
           setTrackerLossLimitEnabled(true);
-          setTpOptimizationResult({ targetPercent: row.tp_optimal_percent, equity: row.equity_final ?? paperInitialBalance, lossLimit: row.loss_limit_percent ?? 0, wins: row.wins, losses: row.losses });
         }
       } catch (error) {
         if (!active) return;
@@ -3154,6 +3124,10 @@ function Workspace() {
   }
 
   async function openSimulatedPosition(type: 'long' | 'short') {
+    if (broker === 'binance' && scannerTargetPercent == null) {
+      setPaperSyncError(`El scanner todavía no tiene un TP vigente para ${symbol}.`);
+      return;
+    }
     if (!auth.accessToken || !paperReadyRef.current) {
       setPaperSyncError('La cuenta paper todavía está cargando.');
       return;
@@ -3178,7 +3152,7 @@ function Workspace() {
           ? (storedAssist.stopPercent as number) / 100
           : 0.00087;
     const targetDistance = broker === 'binance'
-      ? binanceTargetPercent / 100
+      ? (scannerTargetPercent ?? binanceTargetPercent) / 100
       : recommendation?.mfe ? recommendation.mfe / 100 : Number.isFinite(storedAssist.targetPercent) && (storedAssist.targetPercent ?? 0) > 0 ? (storedAssist.targetPercent as number) / 100 : stopDistance * 4;
     const rawTarget = entry * (1 + direction * targetDistance);
     const rawStop = entry * (1 - direction * stopDistance);
@@ -3252,7 +3226,7 @@ function Workspace() {
             stop_loss: stop,
             take_profit: target,
             stop_percent: binanceStopPercent,
-            target_percent: binanceTargetPercent,
+            target_percent: scannerTargetPercent ?? binanceTargetPercent,
             leverage: effectiveLeverage,
             confirmed: true,
           }),
@@ -3723,11 +3697,15 @@ function Workspace() {
     : paperEquity;
   const riskBalanceForSizing = availableRiskBalance;
   const activeRiskPercent = Number((JSON.parse(localStorage.getItem('helloworld-paper-assist') ?? '{}') as { riskPercent?: number }).riskPercent) || paperRiskPercent;
-  const binancePreview = broker === 'binance' && binanceRules && liveReferencePrice > 0 ? (['LONG', 'SHORT'] as const).map(side => {
+  const selectedScannerAnalysis = trackerScannerDetail?.symbol === symbol && (trackerScannerDetail.status === 'VALID' || trackerScannerDetail.status === 'STALE')
+    ? trackerScannerDetail
+    : scannerAnalysisBySymbol[symbol] ?? null;
+  const scannerTargetPercent = selectedScannerAnalysis?.tp_optimal_percent ?? null;
+  const binancePreview = broker === 'binance' && binanceRules && liveReferencePrice > 0 && scannerTargetPercent != null ? (['LONG', 'SHORT'] as const).map(side => {
     const direction = side === 'LONG' ? 1 : -1;
     const entry = roundToBinance(liveReferencePrice, binanceRules.tick_size, binanceRules.price_precision);
     const stop = roundToBinance(entry * (1 - direction * binanceStopPercent / 100), binanceRules.tick_size, binanceRules.price_precision);
-    const targetPercent = binanceTargetPercent;
+    const targetPercent = scannerTargetPercent;
     const target = roundToBinance(entry * (1 + direction * targetPercent / 100), binanceRules.tick_size, binanceRules.price_precision);
     const availableBalance = binanceOnline
       ? Number(binanceLiveAccount?.available_balance ?? binanceSymbolConfig?.futures_balance ?? 0)
@@ -3801,7 +3779,7 @@ function Workspace() {
   const chartStageView = <div ref={chartStage} className={`chart-stage ${tool ? 'drawing-mode' : ''}`} onPointerDownCapture={startDrawing} onPointerMoveCapture={updateDrawing} onPointerUpCapture={event => finishDrawingAndCapture(event, 'entry')} onPointerCancelCapture={() => { setDrawingStart(null); setDrawingEnd(null); setMoveStart(null); panStartRef.current = null; setResizeStart(null); setLassoStart(null); setLassoEnd(null); }}><div className="chart-viewport-snapshot" aria-label="Snapshot del viewport de entrada">X {entryViewportSnapshot.bars} · Futuro {entryViewportSnapshot.futureBars} · Y− {entryViewportSnapshot.yBelow}% · Y+ {entryViewportSnapshot.yAbove}%</div>
     {pendingBinanceTp && <div className="binance-tp-confirm" role="status"><span>Nuevo TP {pendingBinanceTp.symbol}: {formatPaperPrice(pendingBinanceTp.price)}</span><button type="button" onClick={() => void confirmBinanceTakeProfit()}>Confirmar TP</button><button type="button" onClick={() => { pendingBinanceTpRef.current = null; setPendingBinanceTp(null); }} aria-label="Cancelar cambio de TP">Cancelar</button></div>}{renderOhlcOverlay(entryOhlcHover)}
     <div ref={chartContainer} className="candlestick-chart" /><svg className="drawing-overlay" viewBox={`0 0 ${stageSize.width} ${stageSize.height}`} preserveAspectRatio="none" aria-hidden="true">{renderSessionIndicator()}{renderInterestMarkers()}{renderPriceLineHitAreas('entry')}{[...drawings, ...productionDrawings, ...backtestVisualDrawings].map((drawing, index) => (!drawing.paper || !drawing.closed || drawing.id === visibleClosedId) && (!drawing.paper || !drawing.symbol || drawing.symbol === symbol) && (drawing.chart !== 'context' || drawing.paper) ? renderDrawing(drawing, index, 'entry') : null)}{tool && tool !== 'pan' && drawingStart && drawingEnd && drawingCanvas === 'entry' && renderDrawing({ type: tool, chart: 'entry', start: drawingStart, end: drawingEnd }, 'preview', 'entry')}{lassoStart && lassoEnd && drawingCanvas === 'entry' && <rect x={Math.min(lassoStart.x, lassoEnd.x)} y={Math.min(lassoStart.y, lassoEnd.y)} width={Math.abs(lassoStart.x - lassoEnd.x)} height={Math.abs(lassoStart.y - lassoEnd.y)} className="selection-lasso" />}</svg><div className="chart-bottom-controls"><span className="timezone-icon" aria-hidden="true">◷</span><select className="timezone-select" value={timezone} onChange={event => setTimezone(event.target.value)} aria-label="Zona horaria">{TIMEZONES.map(([label, value]) => <option key={value} value={value}>{label}</option>)}</select></div>
-    <div className="floating-order-buttons" aria-label="Abrir operación simulada"><button className="open-long-button" disabled={!paperReady} onClick={() => void openSimulatedPosition('long')}>▲ <span>Abrir Long</span><small>{binancePreview.find(preview => preview.side === 'LONG') ? `SL -${binanceStopPercent.toFixed(2)}% · TP +${binancePreview.find(preview => preview.side === 'LONG')!.targetPercent.toFixed(2)}% · N ${binancePreview.find(preview => preview.side === 'LONG')!.notional.toFixed(2)} · M ${binancePreview.find(preview => preview.side === 'LONG')!.margin.toFixed(4)} · ${binancePreview.find(preview => preview.side === 'LONG')!.leverage}x` : labRecommendations ? `${labRecommendations.long.label} · R:R ${labRecommendations.long.rr.toFixed(2)}:1` : 'Calculando recomendación…'}</small></button><button className="open-short-button" disabled={!paperReady} onClick={() => void openSimulatedPosition('short')}>▼ <span>Abrir Short</span><small>{binancePreview.find(preview => preview.side === 'SHORT') ? `SL -${binanceStopPercent.toFixed(2)}% · TP +${binancePreview.find(preview => preview.side === 'SHORT')!.targetPercent.toFixed(2)}% · N ${binancePreview.find(preview => preview.side === 'SHORT')!.notional.toFixed(2)} · M ${binancePreview.find(preview => preview.side === 'SHORT')!.margin.toFixed(4)} · ${binancePreview.find(preview => preview.side === 'SHORT')!.leverage}x` : labRecommendations ? `${labRecommendations.short.label} · R:R ${labRecommendations.short.rr.toFixed(2)}:1` : 'Calculando recomendación…'}</small></button></div>
+    <div className="floating-order-buttons" aria-label="Abrir operación simulada"><button className="open-long-button" disabled={!paperReady || (broker === 'binance' && scannerTargetPercent == null)} onClick={() => void openSimulatedPosition('long')}>▲ <span>Abrir Long</span><small>{binancePreview.find(preview => preview.side === 'LONG') ? `SL -${binanceStopPercent.toFixed(2)}% · TP +${binancePreview.find(preview => preview.side === 'LONG')!.targetPercent.toFixed(2)}% · N ${binancePreview.find(preview => preview.side === 'LONG')!.notional.toFixed(2)} · M ${binancePreview.find(preview => preview.side === 'LONG')!.margin.toFixed(4)} · ${binancePreview.find(preview => preview.side === 'LONG')!.leverage}x` : labRecommendations ? `${labRecommendations.long.label} · R:R ${labRecommendations.long.rr.toFixed(2)}:1` : 'Calculando recomendación…'}</small></button><button className="open-short-button" disabled={!paperReady || (broker === 'binance' && scannerTargetPercent == null)} onClick={() => void openSimulatedPosition('short')}>▼ <span>Abrir Short</span><small>{binancePreview.find(preview => preview.side === 'SHORT') ? `SL -${binanceStopPercent.toFixed(2)}% · TP +${binancePreview.find(preview => preview.side === 'SHORT')!.targetPercent.toFixed(2)}% · N ${binancePreview.find(preview => preview.side === 'SHORT')!.notional.toFixed(2)} · M ${binancePreview.find(preview => preview.side === 'SHORT')!.margin.toFixed(4)} · ${binancePreview.find(preview => preview.side === 'SHORT')!.leverage}x` : labRecommendations ? `${labRecommendations.short.label} · R:R ${labRecommendations.short.rr.toFixed(2)}:1` : 'Calculando recomendación…'}</small></button></div>
   </div>;
 
   const avatarLabel = (auth.identity?.name ?? auth.identity?.email ?? 'U').slice(0, 1).toUpperCase();
@@ -3810,16 +3788,8 @@ function Workspace() {
   const riskEngineButton = <button className="indicator-bar-button" onClick={() => setShowRiskEngine(true)} aria-label="Abrir Risk Engine" title="Risk Engine">⚖</button>;
   const pnlCalendarButton = <button className="indicator-bar-button" onClick={() => setShowPnlCalendar(true)} aria-label="Abrir calendario PNL" title="Calendario PNL">▦</button>;
   const eventMarkersButton = <><button className={`indicator-bar-button ${chartEventRules.some(event => event.symbol === symbol) ? 'indicator-toggle-active' : ''}`} onClick={() => setShowEventMarkers(true)} aria-label="Abrir eventos condicionales" title="Eventos condicionales">✦</button><button className={`indicator-bar-button ${chartEventsPaused ? 'event-rules-paused' : ''}`} onClick={() => setChartEventsPaused(value => !value)} aria-pressed={chartEventsPaused} aria-label={chartEventsPaused ? 'Mostrar recomendaciones' : 'Ocultar recomendaciones'} title={chartEventsPaused ? 'Mostrar recomendaciones' : 'Ocultar recomendaciones'}>{chartEventsPaused ? '▶' : '✕'}</button></>;
-  const trainingTodayKey = calendarDayKey(Math.floor(Date.now() / 1000) as UTCTimestamp);
-  const trainingOperations = paperPositions.filter(position => calendarDayKey(position.end.time) === trainingTodayKey);
-  const trainingPnl = trainingOperations.filter(position => position.closed).reduce((sum, position) => sum + paperPnl(position), 0);
-  const trainingProgress = Math.max(0, Math.min(1, trainingPnl / 40));
   const productionPreviewData = binancePreview.find(preview => preview.side === 'LONG');
-  const productionPnl = productionPositions.reduce((sum, position) => sum + Number(position.unrealized_pnl ?? 0), 0);
   const riskPreviewBalance = riskBalanceForSizing;
-  const riskPreviewUsd = riskPreviewBalance * activeRiskPercent / 100;
-  const targetSlUsd = riskPreviewUsd;
-  const targetTpUsd = binanceStopPercent > 0 ? riskPreviewUsd * binanceTargetPercent / binanceStopPercent : 0;
   const toggleProductionWorker = async () => {
     setProductionWorkerError('');
     const headers = { ...(auth.accessToken ? { Authorization: `Bearer ${auth.accessToken}` } : {}), 'Content-Type': 'application/json' };
@@ -3834,7 +3804,8 @@ function Workspace() {
       }
       const mode = binanceProductionAvailable ? 'live' : 'paper';
       if (mode === 'live' && !window.confirm('Producción enviará órdenes reales a Binance. ¿Continuar?')) return;
-      const response = await fetch(`${apiUrl}/trading/production/workers`, { method: 'POST', headers, credentials: 'include', body: JSON.stringify({ symbol, mode, interval: '1m', tracker_period: trackerPeriod, stop_percent: binanceStopPercent, target_percent: binanceTargetPercent, quantity: productionPreviewData?.quantity ?? 0, risk_percent: activeRiskPercent, leverage: productionPreviewData?.leverage ?? 1, initial_balance: riskPreviewBalance, confirmed: mode === 'live' }) });
+      if (scannerTargetPercent == null) throw new Error(`Espera a que el scanner calcule el TP de ${symbol} antes de iniciar el worker.`);
+      const response = await fetch(`${apiUrl}/trading/production/workers`, { method: 'POST', headers, credentials: 'include', body: JSON.stringify({ symbol, mode, interval: '1m', tracker_period: trackerPeriod, stop_percent: binanceStopPercent, target_percent: scannerTargetPercent, quantity: productionPreviewData?.quantity ?? 0, risk_percent: activeRiskPercent, leverage: productionPreviewData?.leverage ?? 1, initial_balance: riskPreviewBalance, confirmed: mode === 'live' }) });
       if (!response.ok) throw new Error((await response.json() as { detail?: string }).detail ?? 'No se pudo iniciar el worker de producción.');
       setProductionWorkerRunning(true);
       setExecutionMode(mode === 'live' ? 'production' : 'paper');
@@ -3842,51 +3813,7 @@ function Workspace() {
       setProductionWorkerError(error instanceof Error ? error.message : 'No se pudo cambiar el modo de ejecución.');
     }
   };
-  const adjustRiskBalance = (delta: number) => setRiskBalancePreview(Math.max(.01, Number((riskPreviewBalance + delta).toFixed(4))));
-  const adjustRiskPercent = (delta: number) => {
-    const next = Math.max(.05, Math.min(100, Number((activeRiskPercent + delta).toFixed(2))));
-    const current = JSON.parse(localStorage.getItem('helloworld-paper-assist') ?? '{}');
-    localStorage.setItem('helloworld-paper-assist', JSON.stringify({ ...current, riskPercent: next }));
-    setPaperRiskPercent(next);
-  };
-  const adjustRiskUsd = (delta: number) => {
-    const nextRiskUsd = Math.max(.01, Number((riskPreviewUsd + delta).toFixed(4)));
-    const nextPercent = Math.max(.05, Math.min(100, Number((nextRiskUsd / riskPreviewBalance * 100).toFixed(2))));
-    const current = JSON.parse(localStorage.getItem('helloworld-paper-assist') ?? '{}');
-    localStorage.setItem('helloworld-paper-assist', JSON.stringify({ ...current, riskPercent: nextPercent }));
-    setPaperRiskPercent(nextPercent);
-  };
-  const adjustProtectionPercent = (kind: 'sl' | 'tp', delta: number) => {
-    if (kind === 'tp' && broker === 'binance' && !replayState.active && trackerScannerDetail?.symbol === symbol) return;
-    const setter = kind === 'sl' ? setBinanceStopPercent : setBinanceTargetPercent;
-    const current = kind === 'sl' ? binanceStopPercent : binanceTargetPercent;
-    const next = Math.max(.05, Math.min(20, Number((current + delta).toFixed(2))));
-    setter(next);
-    localStorage.setItem(kind === 'sl' ? 'helloworld-binance-stop-percent' : 'helloworld-binance-target-percent', String(next));
-  };
-  const optimizeTrackerTarget = () => {
-    if (broker === 'binance' && !replayState.active) {
-      if (trackerScannerDetail?.symbol === symbol && trackerScannerDetail.tp_optimal_percent != null) {
-        setBinanceTargetPercent(trackerScannerDetail.tp_optimal_percent);
-        setTrackerLossLimitEnabled(true);
-        setTpOptimizationResult({ targetPercent: trackerScannerDetail.tp_optimal_percent, equity: trackerScannerDetail.equity_final ?? paperInitialBalance, lossLimit: trackerScannerDetail.loss_limit_percent ?? 0, wins: trackerScannerDetail.wins, losses: trackerScannerDetail.losses });
-      }
-      return;
-    }
-    const source = renderBars(candleBarsRef.current, Math.max(300, Math.round(trackerPeriod) + 1));
-    if (!showTracker) return;
-    const best = optimizeTrackerConfiguration(source, trackerPeriod, binanceStopPercent, paperInitialBalance, paperRiskPercent, paperLeverage);
-    if (!best) return;
-    setBinanceTargetPercent(best.targetPercent);
-    localStorage.setItem('helloworld-binance-target-percent', String(best.targetPercent));
-    setTrackerLossLimitEnabled(true);
-    setTpOptimizationResult(best);
-    setTrackerRevision(value => value + 1);
-  };
-  const productionOrderPreview = broker === 'binance'
-    ? <span className={`production-order-preview ${productionPositions.length > 0 ? 'production-preview-active' : ''}`} aria-label="Preview de la próxima operación Binance"><span className="preview-mode"><small>MODO</small><strong>{binanceSizingMode === 'minimum' ? 'MÍNIMO' : 'MÁXIMO'}</strong></span><span className="preview-risk"><small>BALANCE <button type="button" className="preview-adjust-button" onClick={() => adjustRiskBalance(.1)} aria-label="Aumentar balance">↑</button><button type="button" className="preview-adjust-button" onClick={() => adjustRiskBalance(-.1)} aria-label="Disminuir balance">↓</button></small><strong>{riskPreviewBalance.toFixed(4)} USDT</strong></span><span className="preview-risk"><small>RISK % <button type="button" className="preview-adjust-button" onClick={() => adjustRiskPercent(.1)} aria-label="Aumentar riesgo porcentual">↑</button><button type="button" className="preview-adjust-button" onClick={() => adjustRiskPercent(-.1)} aria-label="Disminuir riesgo porcentual">↓</button></small><strong>{activeRiskPercent.toFixed(2)}%</strong></span><span className="preview-risk"><small>RISK $ <button type="button" className="preview-adjust-button" onClick={() => adjustRiskUsd(.01)} aria-label="Aumentar riesgo en dólares">↑</button><button type="button" className="preview-adjust-button" onClick={() => adjustRiskUsd(-.01)} aria-label="Disminuir riesgo en dólares">↓</button></small><strong>{riskPreviewUsd.toFixed(4)} USDT</strong></span><span><small>MARGIN</small><strong>{productionPreviewData ? `${productionPreviewData.margin.toFixed(4)} USDT` : '—'}</strong></span><span><small>MULTIPLICADOR</small><strong>{productionPreviewData ? `×${productionPreviewData.marginMultiplier.toFixed(2)}` : '—'}</strong></span><span><small>NOTIONAL</small><strong>{productionPreviewData ? `${productionPreviewData.notional.toFixed(4)} USDT` : '—'}</strong></span><span><small>LEVERAGE</small><strong>{productionPreviewData ? `${productionPreviewData.leverage}x` : '—'}</strong></span><span><small>FEE</small><strong>{productionPreviewData ? `${productionPreviewData.fees.toFixed(4)} USDT` : '—'}</strong></span><span className="preview-sl"><small>SL <button type="button" className="preview-adjust-button" onClick={() => adjustProtectionPercent('sl', .05)} aria-label="Aumentar SL">↑</button><button type="button" className="preview-adjust-button" onClick={() => adjustProtectionPercent('sl', -.05)} aria-label="Disminuir SL">↓</button></small><strong>−{binanceStopPercent.toFixed(2)}% · REAL −{productionPreviewData ? productionPreviewData.slAmount.toFixed(4) : '—'} $</strong><em>OBJ −{targetSlUsd.toFixed(4)} $</em></span><span className="preview-tp"><small>TP <button type="button" className="preview-adjust-button" onClick={() => adjustProtectionPercent('tp', .05)} aria-label="Aumentar TP">↑</button><button type="button" className="preview-adjust-button" onClick={() => adjustProtectionPercent('tp', -.05)} aria-label="Disminuir TP">↓</button><button type="button" className="preview-optimize-button" onClick={optimizeTrackerTarget} disabled={!showTracker} title="Probar TP de 0.10% a 20.00% con límite de pérdidas" aria-label="Optimizar TP">↗</button></small><strong>+{binanceTargetPercent.toFixed(2)}% · REAL +{productionPreviewData ? productionPreviewData.tpAmount.toFixed(4) : '—'} $</strong><em>OBJ +{targetTpUsd.toFixed(4)} $</em>{tpOptimizationResult && <i className="tp-optimizer-result">BEST {tpOptimizationResult.targetPercent.toFixed(2)}% · EQ {tpOptimizationResult.equity.toFixed(2)} · LIM −{tpOptimizationResult.lossLimit.toFixed(2)}%</i>}</span><span className="preview-pnl"><small>PNL</small><strong>{productionPositions.length > 0 ? `${productionPnl >= 0 ? '+' : ''}${productionPnl.toFixed(4)} USDT` : '—'}</strong></span></span>
-    : null;
-  const previewControls = <div className="preview-controls"><button type="button" className={`binance-sizing-toggle ${binanceSizingMode === 'maximum' ? 'binance-sizing-maximum' : ''}`} onClick={() => setBinanceSizingMode(current => { const next = current === 'minimum' ? 'maximum' : 'minimum'; localStorage.setItem('helloworld-binance-sizing-mode', next); return next; })} aria-label="Cambiar modo de sizing Binance" title="Alternar modo mínimo/máximo">{binanceSizingMode === 'minimum' ? 'MÍN' : 'MÁX'}</button><button type="button" className={`production-mode-icon ${productionWorkerRunning ? 'production-mode-active' : ''}`} onClick={() => void toggleProductionWorker()} aria-label="Iniciar o detener worker Paper/Producción" title={productionWorkerRunning ? `Worker ${productionWorkerStatus?.status ?? 'RUNNING'} · cola ${productionWorkerStatus?.queue_depth ?? 0} · p95 ${productionWorkerStatus?.p95_event_latency_ms ?? '—'} ms${productionWorkerStatus?.last_error ? ` · ${productionWorkerStatus.last_error}` : ''}` : binanceProductionAvailable ? 'Iniciar Producción' : 'Iniciar Paper'}>◉</button></div>;
+  const previewControls = <div className="parameter-card-actions"><button type="button" className={`binance-sizing-toggle ${binanceSizingMode === 'maximum' ? 'binance-sizing-maximum' : ''}`} onClick={() => setBinanceSizingMode(current => { const next = current === 'minimum' ? 'maximum' : 'minimum'; localStorage.setItem('helloworld-binance-sizing-mode', next); return next; })} aria-label="Cambiar modo de sizing Binance" title="Alternar modo mínimo/máximo">{binanceSizingMode === 'minimum' ? 'MÍN' : 'MÁX'}</button><button type="button" className={`production-mode-icon ${productionWorkerRunning ? 'production-mode-active' : ''}`} onClick={() => void toggleProductionWorker()} disabled={!productionWorkerRunning && scannerTargetPercent == null} aria-label="Iniciar o detener worker Paper/Producción" title={productionWorkerRunning ? `Worker ${productionWorkerStatus?.status ?? 'RUNNING'} · cola ${productionWorkerStatus?.queue_depth ?? 0} · p95 ${productionWorkerStatus?.p95_event_latency_ms ?? '—'} ms${productionWorkerStatus?.last_error ? ` · ${productionWorkerStatus.last_error}` : ''}` : scannerTargetPercent == null ? `Esperando el TP de ${symbol}` : binanceProductionAvailable ? 'Iniciar Producción' : 'Iniciar Paper'}>◉</button></div>;
   const productionPositionLabel = productionPositions.length > 0
     ? productionPositions.map(position => {
       const pnl = Number(position.unrealized_pnl ?? 0);
@@ -3925,21 +3852,6 @@ function Workspace() {
   const binanceStatusClass = binanceReady
     ? executionMode === 'production' ? 'broker-production-connected' : 'broker-paper-ready'
     : 'broker-not-ready';
-  const adjustTrackerPeriod = (delta: number) => {
-    setTrackerPeriod(current => {
-      const next = Math.max(1, Math.min(50, current + delta));
-      localStorage.setItem('helloworld-tracker-period', String(next));
-      return next;
-    });
-    setTrackerRevision(value => value + 1);
-  };
-  const adjustWickPeriod = (delta: number) => setWickPeriod(current => { const next = Math.max(1, Math.min(50, current + delta)); localStorage.setItem('helloworld-wick-period', String(next)); return next; });
-  const adjustWickDisplayPeriod = (delta: number) => setWickDisplayPeriod(current => { const next = Math.max(1, Math.min(300, current + delta)); localStorage.setItem('helloworld-wick-display-period', String(next)); return next; });
-  const adjustWickMultiplier = (delta: number) => setWickMultiplier(current => { const next = Math.max(0, Math.min(10, Number((current + delta).toFixed(1)))); localStorage.setItem('helloworld-wick-multiplier', String(next)); return next; });
-  const quickArrows = (label: string, value: string | number, onUp: () => void, onDown: () => void, description: string) => <span className="quick-indicator-control"><span>{label}</span><button type="button" className="level-adjust-button" onClick={onUp} aria-label={`Aumentar ${description}`}>↑</button><b>{value}</b><button type="button" className="level-adjust-button" onClick={onDown} aria-label={`Disminuir ${description}`}>↓</button></span>;
-  const adjustSslRegimeWindow = (delta: number) => setSslRegimeWindow(current => { const next = Math.max(2, Math.min(20, current + delta)); localStorage.setItem('helloworld-ssl-regime-window', String(next)); return next; });
-  const adjustSslPeriod = (delta: number) => setSslPeriod(current => { const next = Math.max(2, Math.min(200, current + delta)); localStorage.setItem('helloworld-ssl-period', String(next)); return next; });
-  const levelAdjustCard = <div className="indicator-settings-card"><span className="positions-kicker">AJUSTES DE INDICADORES</span><div className="level-adjust-controls" aria-label="Ajustar niveles e indicadores">{quickArrows('LEVELS N', trackerPeriod, () => adjustTrackerPeriod(1), () => adjustTrackerPeriod(-1), 'período de niveles')}{quickArrows('SSL P', sslPeriod, () => adjustSslPeriod(1), () => adjustSslPeriod(-1), 'período del indicador SSL')}{quickArrows('SSL N', sslRegimeWindow, () => adjustSslRegimeWindow(1), () => adjustSslRegimeWindow(-1), 'ventana de régimen SSL')}{showWickExtensions && <>{quickArrows('WICK N', wickPeriod, () => adjustWickPeriod(1), () => adjustWickPeriod(-1), 'período de mechazos')}{quickArrows('SHOW', wickDisplayPeriod, () => adjustWickDisplayPeriod(1), () => adjustWickDisplayPeriod(-1), 'velas visibles')}{quickArrows('×', wickMultiplier.toFixed(1), () => adjustWickMultiplier(.1), () => adjustWickMultiplier(-.1), 'multiplicador de mechazos')}</>}{showTracker && <button type="button" className={`tracker-visibility-toggle ${showTrackerFails ? 'tracker-visibility-show-fails' : ''}`} onClick={() => setShowTrackerFails(value => !value)} aria-pressed={showTrackerFails} title="Alternar operaciones Tracker visibles">{showTrackerFails ? 'WIN + FAIL' : 'WIN ONLY'}</button>}</div></div>;
   const replayControls = <div className={`replay-controls ${replayState.active ? 'replay-active' : ''}`} aria-label="Repetición vela a vela"><button type="button" onClick={() => replayState.active ? setReplaySnapshot({ ...replayState, running: !replayState.running }) : undefined} disabled={!replayState.active} title="Reproducir o pausar la repetición">{replayState.running ? 'Ⅱ' : '▶'}</button><button type="button" onClick={() => advanceReplay(-1)} disabled={!replayState.active || replayState.cursor <= replayState.start} title="Vela anterior">‹</button><button type="button" onClick={() => advanceReplay(1)} disabled={!replayState.active || replayState.cursor >= replayState.total - 1} title="Siguiente vela">›</button><button type="button" onClick={stopReplay} disabled={!replayState.active} title="Salir de repetición">×</button><small>{replayState.active ? `REPLAY ${replayState.cursor + 1}/${replayState.total}` : 'CLICK EN VELA · REPLAY'}</small></div>;
   const desktopHeader = <div className="symbol-bar"><select className={`broker-select ${broker === 'binance' ? binanceStatusClass : ''}`} value={broker} onChange={event => { const next = event.target.value as 'binance' | 'ctrader'; setBroker(next); setSymbol(next === 'ctrader' ? 'AUDUSD' : 'BTCUSDT'); }} aria-label="Broker"><option value="binance">Binance</option><option value="ctrader">cTrader</option></select><select className="symbol-select" value={symbol} onChange={event => setSymbol(event.target.value)} aria-label="Símbolo">
     {selectableSymbols.map(option => <option key={option}>{option}</option>)}
@@ -3949,43 +3861,34 @@ function Workspace() {
     <button onClick={() => setDrawings(current => current.filter(drawing => drawing.paper))} aria-label="Borrar dibujos" title="Borrar dibujos">×</button>
   </div>{profileButton}{showRiskEngine && <RiskEngineModal onClose={() => setShowRiskEngine(false)} />}{showEventMarkers && <EventMarkersPanel activeSymbol={symbol} apiUrl={apiUrl} accessToken={auth.accessToken} rules={chartEventRules} occurrences={chartEventOccurrences} onChange={setChartEventRules} onDeleteOccurrence={id => setChartEventOccurrences(current => current.filter(event => event.id !== id))} onClose={() => setShowEventMarkers(false)} />}<button className="logout-button" onClick={() => void auth.logout()} aria-label="Cerrar sesión">Salir</button></div>;
 
-    const scannerStatus = (candidateSymbol: string) => {
-      const operation = trainingOperations.filter(position => position.symbol === candidateSymbol).sort((a, b) => Number(b.start.time) - Number(a.start.time))[0];
-      if (!operation) return { label: 'NOT OPENED', className: 'scanner-status-not-opened' };
-      if (!operation.closed) return { label: 'IN PROGRESS', className: 'scanner-status-in-progress' };
-      return { label: 'DONE', className: 'scanner-status-done' };
-    };
-  const parameterAnalysis = trackerScannerDetail?.symbol === symbol ? trackerScannerDetail : scannerAnalysisBySymbol[symbol] ?? null;
+  const parameterAnalysis = selectedScannerAnalysis;
   const liveAdaptiveParameters = productionWorkerRunning ? productionWorkerStatus?.adaptive_parameters : null;
   const parameterStatus = productionWorkerRunning
     ? productionWorkerStatus?.status === 'ERROR' || productionWorkerStatus?.status === 'DEGRADED' ? 'ERROR' : 'SINCRONIZADO'
     : replayState.active
-    ? 'REPLAY'
-    : trackerDetailStatus === 'loading'
-      ? 'ACTUALIZANDO'
-      : trackerDetailStatus === 'error'
-        ? 'ERROR'
-        : parameterAnalysis?.status === 'STALE'
-          ? 'DESACTUALIZADO'
-          : parameterAnalysis?.status === 'VALID'
-            ? 'SINCRONIZADO'
-            : 'ESPERANDO';
+      ? 'REPLAY'
+      : trackerDetailStatus === 'loading' && scannerTargetPercent == null
+        ? 'ACTUALIZANDO'
+        : trackerDetailStatus === 'error' && scannerTargetPercent == null
+          ? 'ERROR'
+          : parameterAnalysis?.status === 'STALE'
+            ? 'DESACTUALIZADO'
+            : scannerTargetPercent != null ? 'SINCRONIZADO' : 'ESPERANDO';
   const parameterLastBar = parameterAnalysis?.last_bar_time
     ? new Date(parameterAnalysis.last_bar_time * 1000).toLocaleTimeString('es-MX', { timeZone: timezone, hour: '2-digit', minute: '2-digit' })
     : '—';
-  const parameterCard = <aside className={`parameter-card parameter-card-${parameterStatus.toLowerCase()}`} aria-label={`Parámetros activos de ${productionWorkerStatus?.symbol ?? symbol}`}>
-    <div className="parameter-card-head"><div><span className="positions-kicker">PARÁMETROS · {productionWorkerStatus?.symbol ?? symbol}</span><strong>{productionWorkerRunning ? `Worker ${productionWorkerStatus?.status ?? 'ACTIVO'} · ${productionWorkerStatus?.mode ?? 'signals_only'}` : 'Ventana de ajuste'}</strong></div><b role="status">{parameterStatus}</b></div>
-    <div className="parameter-card-grid">
-      <div className="parameter-value parameter-value-tp"><small>{liveAdaptiveParameters ? 'TP TRACKER ACTIVO' : 'TP SCANNER'}</small><strong>{liveAdaptiveParameters?.target_percent != null ? `+${liveAdaptiveParameters.target_percent.toFixed(2)}%` : parameterAnalysis?.tp_optimal_percent != null ? `+${parameterAnalysis.tp_optimal_percent.toFixed(2)}%` : '—'}</strong><em>{liveAdaptiveParameters ? `versión ${productionWorkerStatus?.parameter_version ?? 0}` : `activo +${binanceTargetPercent.toFixed(2)}%`}</em></div>
-      <div className="parameter-value parameter-value-sl"><small>SL TRACKER ACTIVO</small><strong>−{(liveAdaptiveParameters?.stop_percent ?? binanceStopPercent).toFixed(2)}%</strong><em>{liveAdaptiveParameters ? 'parámetro adaptativo vigente' : 'ejecución Paper/Live'}</em></div>
-      <div className="parameter-value parameter-value-limit"><small>MINROE HISTÓRICO</small><strong>{liveAdaptiveParameters ? `−${Math.abs(liveAdaptiveParameters.minroe_limit_percent ?? 0).toFixed(2)}% ROE` : parameterAnalysis?.loss_limit_percent != null ? `−${Math.abs(parameterAnalysis.loss_limit_percent).toFixed(2)}% ROE` : '—'}</strong><em>{liveAdaptiveParameters ? `SL precio −${(liveAdaptiveParameters.stop_percent ?? 0).toFixed(2)}%` : 'umbral histórico 8h'}</em></div>
-      <div className="parameter-value parameter-value-level"><small>LEVELS N ACTIVO</small><strong>{liveAdaptiveParameters?.tracker_period ?? trackerPeriod} velas</strong><em>{liveAdaptiveParameters ? 'elegido en ventana 8h' : 'Tracker · marco 1m'}</em></div>
-      <div className="parameter-value parameter-value-risk"><small>RISK ENGINE</small><strong>{(liveAdaptiveParameters?.risk_percent ?? activeRiskPercent).toFixed(2)}% · {liveAdaptiveParameters?.leverage ?? productionPreviewData?.leverage ?? scannerSelectedLeverage}x</strong><em>{liveAdaptiveParameters ? `${(liveAdaptiveParameters.risk_usdt ?? 0).toFixed(2)} USDT · balance ${(liveAdaptiveParameters.initial_balance ?? 0).toFixed(2)}` : `${riskPreviewUsd.toFixed(2)} USDT de riesgo estimado`}</em></div>
-      <div className="parameter-value parameter-value-window"><small>VENTANA RODANTE</small><strong>{liveAdaptiveParameters ? `${(liveAdaptiveParameters.window_hours ?? 0).toFixed(1)}h · ${liveAdaptiveParameters.bars ?? 0}/480` : `8h · ${parameterAnalysis?.bars ?? 0}/480`}</strong><em>{liveAdaptiveParameters ? `${liveAdaptiveParameters.sample_operations ?? 0} ops · versión ${productionWorkerStatus?.parameter_version ?? 0}` : `${parameterAnalysis?.operations ?? 0} ops · última vela ${parameterLastBar}`}</em></div>
+  const effectiveTargetPercent = liveAdaptiveParameters?.target_percent ?? scannerTargetPercent;
+  const parameterCard = <aside className={`parameter-card parameter-card-${parameterStatus.toLowerCase()} parameter-card-tp-only`} aria-label={`Parámetros de control de ${symbol}`}>
+    <div className="parameter-card-head">
+      <div><span className="positions-kicker">PARÁMETROS · {symbol}</span><strong>{productionWorkerRunning ? `Worker ${productionWorkerStatus?.status ?? 'ACTIVO'} · ${productionWorkerStatus?.mode ?? 'paper'}` : 'Control del Tracker'}</strong></div>
+      <div className="parameter-card-head-actions">{previewControls}{showTracker && <button type="button" className={`tracker-visibility-toggle ${showTrackerFails ? 'tracker-visibility-show-fails' : ''}`} onClick={() => setShowTrackerFails(value => !value)} aria-pressed={showTrackerFails} title="Alternar operaciones Tracker visibles">{showTrackerFails ? 'WIN + FAIL' : 'WIN ONLY'}</button>}{replayState.active && replayControls}<b role="status">{parameterStatus}</b></div>
     </div>
-    <small className="parameter-card-foot">{lastWorkerSignal ? `Última señal del worker: ${lastWorkerSignal.side} ${lastWorkerSignal.symbol} · ${lastWorkerSignal.level} · ${lastWorkerSignal.price} · v${lastWorkerSignal.parameter_version}. ` : ''}{liveAdaptiveParameters ? 'Tracker gobierna señales y parámetros; Paper conserva salidas propias y no modifica el estado Tracker.' : 'Con worker activo, Tracker recalibra N/TP/SL al cerrar una operación sobre la ventana 8h.'}</small>
+    <div className="parameter-card-grid">
+      <div className="parameter-value parameter-value-tp"><small>{liveAdaptiveParameters ? 'TP ACTIVO · WORKER' : 'TP ÓPTIMO · TRACKER'}</small><strong>{effectiveTargetPercent != null ? `+${effectiveTargetPercent.toFixed(2)}%` : 'Calculando…'}</strong><em>{liveAdaptiveParameters ? `aplicado por el worker · v${productionWorkerStatus?.parameter_version ?? 0}` : parameterAnalysis?.tp_optimal_percent != null ? `ventana 8h · ${parameterAnalysis.bars}/480 velas · última ${parameterLastBar}` : `esperando análisis de ${symbol}`}</em></div>
+    </div>
+    <small className="parameter-card-foot">{liveAdaptiveParameters ? `TP efectivo para ${symbol}: +${liveAdaptiveParameters.target_percent?.toFixed(2) ?? '—'}% · versión ${productionWorkerStatus?.parameter_version ?? 0}.` : scannerTargetPercent != null ? `Las operaciones de ${symbol} tomarán el TP óptimo actual: +${scannerTargetPercent.toFixed(2)}%.` : `No se pueden abrir operaciones ni iniciar el worker hasta que el scanner calcule el TP de ${symbol}.`}</small>
   </aside>;
-  const marketScanner = broker === 'binance' ? <section className="market-overview" aria-label="Resumen de operación Binance"><div className="market-scanner-training"><div className="training-card-content"><span className="positions-kicker">TRAINING OPERATOR · PNL NETO DIARIO</span><strong>${trainingPnl.toFixed(2)} / $40.00</strong><div className="training-progress-track"><span style={{ width: `${trainingProgress * 100}%` }} /></div><small>{trainingPnl >= 40 ? 'Meta diaria completada' : `Faltan $${Math.max(0, 40 - trainingPnl).toFixed(2)}`}</small></div><div className="binance-balance-card"><span className="positions-kicker">BINANCE · BALANCE</span><strong>{binanceLiveAccount?.futures_balance != null ? `${Number(binanceLiveAccount.futures_balance).toFixed(2)} USDT` : '—'}</strong><small>Disponible {binanceLiveAccount?.available_balance != null ? `${Number(binanceLiveAccount.available_balance).toFixed(2)} USDT` : '—'}</small><small>PNL abierto {binanceLiveAccount?.total_unrealized_pnl != null ? `${Number(binanceLiveAccount.total_unrealized_pnl) >= 0 ? '+' : ''}${Number(binanceLiveAccount.total_unrealized_pnl).toFixed(4)} USDT` : '—'}</small></div><div className="replay-card"><span className="positions-kicker">REPLAY · VELA A VELA</span>{replayControls}</div>{levelAdjustCard}{parameterCard}</div><div className="market-preview-slot"><div className="market-preview-card">{previewControls}{productionOrderPreview}</div></div></section> : null;
+  const marketScanner = broker === 'binance' ? <section className="market-overview parameter-overview" aria-label={`Parámetros de control de ${symbol}`}>{parameterCard}</section> : null;
   const tradingAgent = <TradingAgentChat activeSymbol={symbol} interval={interval} apiUrl={apiUrl} accessToken={auth.accessToken} />;
 
   const toolOptions = [['line', '╱', 'Línea'], ['ruler', '▥', 'Medir'], ['long', 'L', 'Long'], ['short', 'S', 'Short'], ['zoom', '⌗', 'Zoom lazo'], ['pan', '✋', 'Pan']] as const;
