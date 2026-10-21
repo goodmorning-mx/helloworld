@@ -37,6 +37,16 @@ def test_old_snapshot_is_explicitly_stale():
     assert result["age_seconds"] == 181
 
 
+def test_scanner_snapshot_accepts_valid_two_character_binance_base_symbol():
+    from app import main
+
+    payload = main.ScannerSnapshotSymbolInput(
+        symbol="OPUSDT", variation_average_pct=0.7, leverage=12,
+    )
+
+    assert payload.symbol == "OPUSDT"
+
+
 def test_web_snapshot_uses_existing_scanner_parameters_and_saves_complete_rows(monkeypatch):
     from app import main
 
