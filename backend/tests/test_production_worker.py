@@ -432,6 +432,124 @@ def test_live_adapter_sizes_from_risk_leverage_balance_and_exchange_step(monkeyp
     assert adapter._sized_quantity(worker, 100) == 5
 
 
+def test_live_tracker_signal_opens_once_and_registers_both_exchange_protections(monkeypatch):
+    async def scenario():
+        class FakeIntentStore:
+            def __init__(self):
+                self.row = None
+
+            def create(self, user_id, values):
+                self.row = {**values, "id": "intent-1", "client_order_id": "entry-1", "status": "PENDING"}
+                return dict(self.row)
+
+            def mark_protected(self, intent_id, user_id, **values):
+                self.row.update(values, id=intent_id, status="PROTECTED")
+                return dict(self.row)
+
+            def get(self, intent_id, user_id):
+                return dict(self.row)
+
+        class FakeBinanceManager:
+            def __init__(self):
+                self.orders = []
+                self.protections = []
+
+            def snapshot(self, user_id):
+                return {"healthy": True, "stream_connected": True, "available_balance": 100}
+
+            def set_symbol_margin_type(self, user_id, symbol, margin_type):
+                return {"margin_type": "ISOLATED"}
+
+            def set_symbol_leverage(self, user_id, symbol, leverage):
+                return {"leverage": leverage}
+
+            def place_market_order(self, user_id, symbol, side, quantity, client_id, **kwargs):
+                self.orders.append((side, quantity, client_id, kwargs))
+                return {"status": "FILLED", "avgPrice": "100", "executedQty": str(quantity), "orderId": 42}
+
+            def place_close_protection(self, user_id, symbol, side, price, client_id, order_type, **kwargs):
+                self.protections.append((side, price, client_id, order_type, kwargs))
+                return {"algoId": len(self.protections)}
+
+        monkeypatch.setattr(BinanceExecutionAdapter, "_rules", lambda self, symbol: (0, .001, .001, 5, .01, 8, 3))
+        manager = FakeBinanceManager()
+        store = FakeIntentStore()
+        adapter = BinanceExecutionAdapter(manager, store)
+        events = []
+
+        class RecordingEvents:
+            async def publish(self, event):
+                events.append(event)
+
+        worker = SymbolWorker("user", "TESTUSDT", "1m", 5, .2, 1, adapter, FakePaperStore(), RecordingEvents())
+        worker.adaptive_parameters = {"risk_percent": 1, "leverage": 10}
+        signal = {"time": 60, "level": "H2", "signal_id": "TESTUSDT:1m:60:SHORT:H2"}
+        await adapter.open(worker, "SHORT", 100, signal)
+
+        assert len(manager.orders) == 1
+        assert manager.orders[0][0:2] == ("SELL", 5)
+        assert [item[3] for item in manager.protections] == ["STOP_MARKET", "TAKE_PROFIT_MARKET"]
+        assert store.row["status"] == "PROTECTED"
+        assert worker.operation["status"] == "PROTECTED"
+        assert events[-1]["type"] == "LIVE_ENTRY"
+
+    asyncio.run(scenario())
+
+
+def test_live_entry_protection_failure_attempts_reduce_only_emergency_close(monkeypatch):
+    async def scenario():
+        class FakeIntentStore:
+            def __init__(self):
+                self.row = None
+
+            def create(self, user_id, values):
+                self.row = {**values, "id": "intent-1", "client_order_id": "entry-1", "status": "PENDING"}
+                return dict(self.row)
+
+            def update(self, intent_id, user_id, **values):
+                self.row.update(values)
+                return dict(self.row)
+
+        class FakeBinanceManager:
+            def __init__(self):
+                self.orders = []
+
+            def snapshot(self, user_id):
+                return {"healthy": True, "stream_connected": True, "available_balance": 100}
+
+            def set_symbol_margin_type(self, user_id, symbol, margin_type):
+                return {"margin_type": "ISOLATED"}
+
+            def set_symbol_leverage(self, user_id, symbol, leverage):
+                return {"leverage": leverage}
+
+            def place_market_order(self, user_id, symbol, side, quantity, client_id, **kwargs):
+                self.orders.append((side, quantity, kwargs))
+                return {"status": "FILLED", "avgPrice": "100", "executedQty": str(quantity)}
+
+            def place_close_protection(self, *args, **kwargs):
+                raise RuntimeError("simulated protection rejection")
+
+            def position_risk(self, user_id, symbol):
+                return {"positionAmt": 0}
+
+        monkeypatch.setattr(BinanceExecutionAdapter, "_rules", lambda self, symbol: (0, .001, .001, 5, .01, 8, 3))
+        manager = FakeBinanceManager()
+        store = FakeIntentStore()
+        adapter = BinanceExecutionAdapter(manager, store)
+        worker = SymbolWorker("user", "TESTUSDT", "1m", 5, .2, 1, adapter, FakePaperStore(), BackendEventBus())
+        worker.adaptive_parameters = {"risk_percent": 1, "leverage": 10}
+        await adapter.open(worker, "LONG", 100, {"time": 60, "level": "H1", "signal_id": "TESTUSDT:1m:60:LONG:H1"})
+
+        assert len(manager.orders) == 2
+        assert manager.orders[1][0] == "SELL"
+        assert manager.orders[1][2] == {"reduce_only": True}
+        assert store.row["status"] == "ERROR"
+        assert worker.operation is None
+
+    asyncio.run(scenario())
+
+
 def test_live_user_stream_close_event_clears_matching_worker_operation():
     async def scenario():
         class FakeIntentStore:
