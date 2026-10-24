@@ -129,6 +129,7 @@ type TrackerVirtualOperation = {
   closed: boolean;
   closeReason?: 'TP' | 'SL';
   status: 'OPEN' | 'CLOSED - WIN' | 'CLOSED - FAILED';
+  rawStatus?: 'CLOSED - WIN' | 'CLOSED - FAILED';
   pnl: number;
   resultRoePercent: number;
   notional: number;
@@ -175,6 +176,7 @@ function trackerOperationsFromScanner(records: TrackerScannerOperation[], target
       target: { time: exit.time, price: entry.price * (1 + direction * Math.abs(targetPercent) / 100) },
       closed: true, closeReason: record.close_reason,
       status: record.status === 'WIN' ? 'CLOSED - WIN' : 'CLOSED - FAILED',
+      rawStatus: (record.raw_status ?? record.status) === 'WIN' ? 'CLOSED - WIN' : 'CLOSED - FAILED',
       pnl: record.pnl, resultRoePercent: record.result_roe, notional: record.notional, leverage: record.leverage,
       fees: record.fees, balanceAfter: record.balance_after,
       bodyAveragePercentAtOpen: record.body_average_percent_at_open, bodyAveragePercentAtClose: record.body_average_percent_at_close,
@@ -1728,7 +1730,9 @@ function Workspace() {
       try {
         const query = new URLSearchParams({
           symbols: symbol,
-          tracker_period: String(cachedSummary?.tracker_period ?? trackerPeriod),
+          // N is an immediate UI control. Do not let an older cached summary
+          // override the value the user just selected while the next snapshot runs.
+          tracker_period: String(trackerPeriod),
           stop_percent: String(cachedSummary?.stop_percent ?? binanceStopPercent),
           initial_balance: String(cachedSummary?.initial_balance ?? paperInitialBalance),
           risk_percent: String(cachedSummary?.risk_percent ?? paperRiskPercent),
@@ -3749,7 +3753,7 @@ function Workspace() {
     const source = renderBars(candleBarsRef.current, Math.max(300, Math.round(trackerPeriod) + 1));
     setTrackerVirtualOperations(runTrackerVisualSimulation(source, trackerPeriod, binanceStopPercent, binanceTargetPercent, paperInitialBalance, paperRiskPercent, paperLeverage, replayState.active));
   }, [showTracker, trackerPeriod, binanceStopPercent, binanceTargetPercent, paperInitialBalance, paperRiskPercent, paperLeverage, symbol, trackerRevision, replayState.active, broker, trackerScannerDetail]);
-  const backtestVisualDrawings: Drawing[] = (showTracker ? trackerVirtualOperations : []).filter(operation => operation.status === 'CLOSED - WIN' || (showTrackerFails && operation.status === 'CLOSED - FAILED') || (replayState.active && !operation.closed)).map(operation => ({
+  const backtestVisualDrawings: Drawing[] = (showTracker ? trackerVirtualOperations : []).filter(operation => (operation.rawStatus ?? operation.status) === 'CLOSED - WIN' || (showTrackerFails && operation.status === 'CLOSED - FAILED') || (replayState.active && !operation.closed)).map(operation => ({
     id: operation.id,
     symbol,
     type: operation.side,
@@ -3919,12 +3923,12 @@ function Workspace() {
     return { limit, winsKept, lossesLimited, winCoverage, lossCoverage, targetDistance: Math.abs(winCoverage - .8) + Math.abs(lossCoverage - .8) };
   })() : findBestTrackerLossLimit(trackerClosedOperations);
   const trackerAdjustedOutcome = (operation: TrackerVirtualOperation) => {
-    if (trackerCanonicalAnalysis) return { status: operation.status, pnl: operation.pnl, resultRoePercent: operation.resultRoePercent, limited: true };
+    if (trackerCanonicalAnalysis) return { status: operation.status, rawStatus: operation.rawStatus ?? operation.status, pnl: operation.pnl, resultRoePercent: operation.resultRoePercent, limited: operation.rawStatus != null && operation.rawStatus !== operation.status };
     const crossedLimitedStop = trackerLossLimitEnabled && operation.minRoe.roePercent <= -trackerLossLimitAnalysis.limit;
-    if (!crossedLimitedStop) return { status: operation.status, pnl: operation.pnl, resultRoePercent: operation.resultRoePercent, limited: false };
+    if (!crossedLimitedStop) return { status: operation.status, rawStatus: operation.rawStatus ?? operation.status, pnl: operation.pnl, resultRoePercent: operation.resultRoePercent, limited: false };
     const grossLimitedPnl = -(trackerLossLimitAnalysis.limit / 100 / Math.max(1, operation.leverage)) * operation.notional;
     const pnl = Math.max(operation.pnl, grossLimitedPnl - tradingCosts('binance', operation.notional).total);
-    return { status: 'CLOSED - FAILED' as const, pnl, resultRoePercent: -trackerLossLimitAnalysis.limit, limited: true };
+    return { status: 'CLOSED - FAILED' as const, rawStatus: operation.rawStatus ?? operation.status, pnl, resultRoePercent: -trackerLossLimitAnalysis.limit, limited: true };
   };
   const trackerDisplayedOutcomes = trackerClosedOperations.map(trackerAdjustedOutcome);
   const trackerWins = trackerDisplayedOutcomes.filter(outcome => outcome.status === 'CLOSED - WIN').length;
@@ -3998,6 +4002,11 @@ function Workspace() {
     const comparison = typeof leftValue === 'number' && typeof rightValue === 'number' ? leftValue - rightValue : String(leftValue).localeCompare(String(rightValue));
     return (trackerSummarySort.direction === 'desc' ? -1 : 1) * comparison;
   });
+  const trackerVisibleSortedOperations = trackerSortedOperations.filter(operation => {
+    if (showTrackerFails) return true;
+    const originalIndex = trackerClosedOperations.indexOf(operation);
+    return (trackerDisplayedOutcomes[originalIndex]?.rawStatus ?? operation.rawStatus ?? operation.status) === 'CLOSED - WIN';
+  });
   const trackerTableHeaders = [['index', '#'], ['side', 'Lado'], ['level', 'Nivel'], ['maxroe', 'MAXROE'], ['realmaxroe', 'REALMAXROE'], ['minroe', 'MINROE'], ['realminroe', 'REALMINROE'], ['result', 'WIN/FAIL · RESULTADO']] as const;
   const trackerSummaryHost = useRef<HTMLDivElement>(null);
   useEffect(() => {
@@ -4041,7 +4050,7 @@ function Workspace() {
       head.appendChild(cell);
     });
     const body = table.createTBody();
-    trackerSortedOperations.forEach((operation, index) => {
+    trackerVisibleSortedOperations.forEach((operation, index) => {
       const originalIndex = trackerClosedOperations.indexOf(operation);
       const displayedOutcome = trackerDisplayedOutcomes[originalIndex];
       const displayedPnl = displayedOutcome.pnl;
@@ -4049,13 +4058,16 @@ function Workspace() {
       const pointLabel = (point: TrackerExtremePoint) => `${point.roePercent >= 0 ? '+' : ''}${point.roePercent.toFixed(2)}% · ${point.pnlUsd >= 0 ? '+' : ''}${point.pnlUsd.toFixed(4)} USDT`;
       const row = body.insertRow();
       row.className = displayedOutcome.status === 'CLOSED - WIN' ? 'tracker-operation-row-win' : 'tracker-operation-row-failed';
-      [String(index + 1), operation.side.toUpperCase(), operation.level, pointLabel(operation.maxRoe), pointLabel(operation.realMaxRoe), pointLabel(operation.minRoe), pointLabel(operation.realMinRoe), `${displayedOutcome.status === 'CLOSED - WIN' ? 'WIN' : 'FAIL'}${displayedOutcome.limited ? ' · LIMITADA' : ''} · ${displayedRoe >= 0 ? '+' : ''}${displayedRoe.toFixed(2)}% · ${displayedPnl >= 0 ? '+' : ''}${displayedPnl.toFixed(4)} USDT`].forEach(value => { row.insertCell().textContent = value; });
+      const outcomeLabel = displayedOutcome.limited && displayedOutcome.rawStatus === 'CLOSED - WIN'
+        ? 'WIN ORIGINAL · SL LIMITADO'
+        : `${displayedOutcome.status === 'CLOSED - WIN' ? 'WIN' : 'FAIL'}${displayedOutcome.limited ? ' · LIMITADA' : ''}`;
+      [String(index + 1), operation.side.toUpperCase(), operation.level, pointLabel(operation.maxRoe), pointLabel(operation.realMaxRoe), pointLabel(operation.minRoe), pointLabel(operation.realMinRoe), `${outcomeLabel} · ${displayedRoe >= 0 ? '+' : ''}${displayedRoe.toFixed(2)}% · ${displayedPnl >= 0 ? '+' : ''}${displayedPnl.toFixed(4)} USDT`].forEach(value => { row.insertCell().textContent = value; });
     });
     scroll.appendChild(table);
     tablePanel.appendChild(scroll);
     host.appendChild(tablePanel);
     return () => tablePanel.remove();
-  }, [showTracker, trackerClosedOperations, timezone, trackerSummarySort, trackerLossLimitEnabled, trackerLossLimitAnalysis.limit, trackerLossLimitAnalysis.winCoverage, trackerLossLimitAnalysis.lossCoverage, trackerAdjustedEquity, trackerCanonicalAnalysis]);
+  }, [showTracker, showTrackerFails, trackerVisibleSortedOperations, trackerClosedOperations, timezone, trackerSummarySort, trackerLossLimitEnabled, trackerLossLimitAnalysis.limit, trackerLossLimitAnalysis.winCoverage, trackerLossLimitAnalysis.lossCoverage, trackerAdjustedEquity, trackerCanonicalAnalysis]);
   const trackerFactorSeries = trackerClosedOperations.filter(operation => operation.status === 'CLOSED - WIN' && operation.bodyAveragePercentAtOpen > 0).map(operation => ({
     time: Number(operation.end.time),
     tpFactor: operation.finalTargetPercent / operation.bodyAveragePercentAtOpen,
