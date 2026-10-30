@@ -58,6 +58,17 @@ type ProductionWorkerView = {
   last_error?: string | null;
   adaptive_parameters?: { status?: string; tracker_period?: number; target_percent?: number; stop_percent?: number; minroe_limit_percent?: number; risk_percent?: number; risk_usdt?: number; leverage?: number; initial_balance?: number; bars?: number; window_hours?: number; sample_operations?: number; last_bar_time?: number | null };
   parameter_version?: number;
+  operation?: WorkerOperationView | null;
+  tracker_operation?: WorkerOperationView | null;
+};
+
+type WorkerOperationView = {
+  id?: string; symbol?: string; side?: string; level?: string;
+  entry_time?: number; entry_price?: number; current_time?: number; current_price?: number;
+  stop_time?: number; stop_price?: number; target_time?: number; target_price?: number;
+  stop_percent?: number; target_percent?: number; notional?: number; margin?: number; pnl?: number;
+  unrealized_pnl?: number; status?: string; close_reason?: 'TP' | 'SL' | 'MANUAL' | null;
+  parameter_version?: number; source?: string; chart?: string;
 };
 
 async function fetchJson<T>(input: RequestInfo | URL, init?: RequestInit, retries = 2): Promise<T> {
@@ -1350,7 +1361,7 @@ function Workspace() {
   }, [replayState.active, replayState.running]);
   type ChartPoint = { time: UTCTimestamp; price: number };
   type ChartCanvas = 'entry' | 'context';
-  type Drawing = { id?: string; symbol?: string; type: 'line' | 'ruler' | 'long' | 'short' | 'zoom'; start: ChartPoint; end: ChartPoint; stop?: ChartPoint; target?: ChartPoint; chart?: ChartCanvas; paper?: boolean; real?: boolean; backtest?: boolean; closed?: boolean; closeReason?: 'TP' | 'SL' | 'MANUAL'; status?: 'OPEN' | 'CLOSED - WIN' | 'CLOSED - FAILED'; riskPercent?: number; quantity?: number; notional?: number; margin?: number; pnl?: number; resultRoePercent?: number; leverage?: number; fees?: number; balanceAfter?: number; bodyAveragePercentAtOpen?: number; bodyAveragePercentAtClose?: number; finalTargetPercent?: number; finalTargetRoePercent?: number; maxRoe?: TrackerExtremePoint; realMaxRoe?: TrackerExtremePoint; minRoe?: TrackerExtremePoint; realMinRoe?: TrackerExtremePoint };
+  type Drawing = { id?: string; symbol?: string; type: 'line' | 'ruler' | 'long' | 'short' | 'zoom'; start: ChartPoint; end: ChartPoint; stop?: ChartPoint; target?: ChartPoint; chart?: ChartCanvas; paper?: boolean; real?: boolean; backtest?: boolean; workerTracker?: boolean; engineOwned?: boolean; closed?: boolean; closeReason?: 'TP' | 'SL' | 'MANUAL'; status?: 'OPEN' | 'CLOSED - WIN' | 'CLOSED - FAILED'; riskPercent?: number; quantity?: number; notional?: number; margin?: number; pnl?: number; resultRoePercent?: number; leverage?: number; fees?: number; balanceAfter?: number; bodyAveragePercentAtOpen?: number; bodyAveragePercentAtClose?: number; finalTargetPercent?: number; finalTargetRoePercent?: number; maxRoe?: TrackerExtremePoint; realMaxRoe?: TrackerExtremePoint; minRoe?: TrackerExtremePoint; realMinRoe?: TrackerExtremePoint };
   const [drawings, setDrawings] = useState<Drawing[]>([]);
   const [chartEventRules, setChartEventRules] = useState<ChartEventRule[]>(() => {
     try {
@@ -1479,6 +1490,31 @@ function Workspace() {
   useEffect(() => {
     if (broker !== 'binance' || !auth.accessToken) { setProductionWorkerRunning(false); setProductionWorkerStatus(null); return; }
     let active = true;
+    const syncPaperMirror = (operation?: WorkerOperationView | null) => {
+      if (!operation?.id || operation.source !== 'realtime-engine') return;
+      const status = operation.status ?? 'OPEN';
+      const mirror = {
+        id: operation.id,
+        symbol: operation.symbol,
+        type: String(operation.side ?? 'long').toLowerCase() as 'long' | 'short',
+        paper: true,
+        engineOwned: true,
+        chart: operation.chart === 'context' ? 'context' as const : 'entry' as const,
+        start: { time: Number(operation.entry_time ?? operation.current_time ?? 0) as UTCTimestamp, price: Number(operation.entry_price ?? operation.current_price ?? 0) },
+        end: { time: Number(operation.current_time ?? operation.entry_time ?? 0) as UTCTimestamp, price: Number(operation.current_price ?? operation.entry_price ?? 0) },
+        stop: { time: Number(operation.stop_time ?? operation.current_time ?? 0) as UTCTimestamp, price: Number(operation.stop_price ?? operation.entry_price ?? 0) },
+        target: { time: Number(operation.target_time ?? operation.current_time ?? 0) as UTCTimestamp, price: Number(operation.target_price ?? operation.entry_price ?? 0) },
+        closed: status !== 'OPEN',
+        status: status as Drawing['status'],
+        closeReason: operation.close_reason ?? undefined,
+        notional: operation.notional,
+        margin: operation.margin,
+        pnl: operation.unrealized_pnl ?? operation.pnl ?? 0,
+      } satisfies Drawing;
+      setDrawings(current => current.some(drawing => drawing.id === mirror.id)
+        ? current.map(drawing => drawing.id === mirror.id ? { ...drawing, ...mirror } : drawing)
+        : [...current, mirror]);
+    };
     const refreshWorker = () => fetch(`${apiUrl}/trading/production/workers`, { headers: { Authorization: `Bearer ${auth.accessToken}` }, credentials: 'include' })
       .then(response => response.ok ? response.json() as Promise<ProductionWorkerView[]> : Promise.reject(new Error('worker status unavailable')))
       .then(workers => {
@@ -1487,6 +1523,7 @@ function Workspace() {
         setProductionWorkerRunning(Boolean(session));
         setProductionWorkerStatus(session ?? null);
         setExecutionMode(session?.mode === 'live' ? 'production' : 'paper');
+        syncPaperMirror(session?.operation);
       })
       .catch(() => { if (active) { setProductionWorkerRunning(false); setProductionWorkerStatus(null); } });
     void refreshWorker();
@@ -1510,19 +1547,30 @@ function Workspace() {
               const data = frame.split('\n').find(line => line.startsWith('data: '))?.slice(6);
               if (!data) continue;
               try {
-                const event = JSON.parse(data) as { type?: string; workers?: ProductionWorkerView[]; symbol?: string; side?: string; level?: string; price?: number; bar_time?: number; parameter_version?: number };
+                const event = JSON.parse(data) as { type?: string; workers?: ProductionWorkerView[]; symbol?: string; side?: string; level?: string; price?: number; time?: number; bar_time?: number; parameter_version?: number; tracker_operation?: WorkerOperationView | null; operation?: WorkerOperationView | null };
                 if (event.type === 'WORKER_SNAPSHOT' && event.workers) {
                   const session = event.workers.find(worker => worker.running);
                   setProductionWorkerRunning(Boolean(session));
                   setProductionWorkerStatus(session ?? null);
                   setExecutionMode(session?.mode === 'live' ? 'production' : 'paper');
                   setLastWorkerSignal(current => session && current?.symbol === session.symbol ? current : null);
+                  syncPaperMirror(session?.operation);
                 } else {
                   if (event.type === 'TRACKER_SIGNAL' && event.symbol && event.side && event.level && event.price != null && event.bar_time != null) {
                     setLastWorkerSignal({ symbol: event.symbol, side: event.side, level: event.level, price: event.price, bar_time: event.bar_time, parameter_version: event.parameter_version ?? 0 });
                   }
+                  if (event.type === 'WORKER_MARK_UPDATE' && event.symbol) {
+                    setProductionWorkerStatus(current => current && current.symbol === event.symbol ? { ...current, operation: Object.prototype.hasOwnProperty.call(event, 'operation') ? event.operation : current.operation, tracker_operation: Object.prototype.hasOwnProperty.call(event, 'tracker_operation') ? event.tracker_operation : current.tracker_operation } : current);
+                    syncPaperMirror(event.operation);
+                  } else if (event.type === 'PAPER_ENTRY' || event.type === 'PAPER_EXIT') {
+                    syncPaperMirror(event.operation);
+                  } else if (event.type === 'TRACKER_OPERATION_CLOSED' && event.symbol === symbol) {
+                    setProductionWorkerStatus(current => current && current.symbol === event.symbol ? { ...current, tracker_operation: null } : current);
+                  } else if (event.type === 'TRACKER_SIGNAL' && event.symbol === symbol) {
+                    void refreshWorker();
+                  }
                   if (event.type === 'WORKER_STOPPED') setLastWorkerSignal(null);
-                  void refreshWorker();
+                  if (event.type !== 'WORKER_MARK_UPDATE' && event.type !== 'PAPER_ENTRY' && event.type !== 'PAPER_EXIT') void refreshWorker();
                 }
               } catch { /* Ignore malformed frames and keep the stream alive. */ }
             }
@@ -1535,7 +1583,7 @@ function Workspace() {
     };
     void streamEvents();
     return () => { active = false; controller.abort(); window.clearInterval(timer); };
-  }, [auth.accessToken, broker, apiUrl]);
+  }, [auth.accessToken, broker, apiUrl, symbol]);
 
   useEffect(() => {
     if (broker !== 'binance') { setBinanceRules(null); return; }
@@ -1801,7 +1849,7 @@ function Workspace() {
     paperReadyRef.current = false;
     setPaperReady(false);
     fetchJson<Array<{
-        id: string; symbol: string; side: 'long' | 'short'; chart: ChartCanvas;
+        id: string; symbol: string; side: 'long' | 'short'; chart: ChartCanvas; source?: string;
         entry_time: number; entry_price: number; current_time: number; current_price: number;
         stop_time: number; stop_price: number; target_time: number; target_price: number;
         risk_percent?: number | null; quantity?: number | null; notional?: number | null; margin?: number | null; pnl?: number | null;
@@ -1816,6 +1864,7 @@ function Workspace() {
         symbol: operation.symbol,
         type: operation.side,
         paper: true,
+        engineOwned: operation.source === 'realtime-engine',
         chart: operation.chart,
         start: { time: operation.entry_time as UTCTimestamp, price: operation.entry_price },
         end: { time: operation.current_time as UTCTimestamp, price: operation.current_price },
@@ -1830,7 +1879,11 @@ function Workspace() {
         margin: operation.margin ?? undefined,
         pnl: operation.pnl ?? undefined,
       } satisfies Drawing));
-      setDrawings(current => [...current.filter(drawing => !drawing.paper), ...restored]);
+      setDrawings(current => {
+        const paperById = new Map<string, Drawing>(restored.filter(drawing => drawing.id).map(drawing => [drawing.id as string, drawing]));
+        current.filter(drawing => drawing.paper && drawing.id).forEach(drawing => { if (drawing.id) paperById.set(drawing.id, drawing); });
+        return [...current.filter(drawing => !drawing.paper), ...paperById.values()];
+      });
       const activeIndex = restored.findIndex(operation => !operation.closed);
       // Closed trades stay in Paper history, but never render over the live chart.
       setVisibleClosedId(null);
@@ -1848,7 +1901,7 @@ function Workspace() {
 
   useEffect(() => {
     if (!auth.accessToken || !paperReadyRef.current) return;
-    const operations = drawings.filter(drawing => drawing.paper && drawing.id && (drawing.type === 'long' || drawing.type === 'short'));
+    const operations = drawings.filter(drawing => drawing.paper && !drawing.engineOwned && drawing.id && (drawing.type === 'long' || drawing.type === 'short'));
     const timer = window.setTimeout(() => {
       void Promise.all(operations.map(async drawing => {
         const response = await fetch(`${apiUrl}/trading/paper/operations/${drawing.id}`, {
@@ -2247,6 +2300,8 @@ function Workspace() {
         const updated = current.map(drawing => {
           if (drawing.closed || !drawing.paper || (drawing.symbol && drawing.symbol !== symbol) || (drawing.type !== 'long' && drawing.type !== 'short')) return drawing;
           anyOpen = true;
+          // The backend worker is the sole lifecycle owner of its Paper mirror.
+          if (drawing.engineOwned) return drawing;
           const direction = drawing.type === 'long' ? 1 : -1;
           const targetPrice = drawing.target?.price ?? drawing.end.price;
           const stopPrice = drawing.stop?.price ?? drawing.start.price;
@@ -3591,7 +3646,7 @@ function Workspace() {
     const end = screenPoint(drawing.end, canvas);
     if (!start || !end) return null;
     const handles = drawingHandles(drawing, typeof index === 'number' ? index : -1, canvas);
-    let handleNodes = handles.filter(handle => !drawing.paper || handle.endpoint === 'target' || (handle.endpoint === 'stop' && !drawing.real)).map((handle, handleIndex) => <circle key={handleIndex} cx={handle.x} cy={handle.y} r="7" className={`drawing-handle ${handle.role === 'stop' ? 'handle-stop' : handle.role === 'target' ? 'handle-target' : drawing.type === 'ruler' ? 'handle-ruler' : ''}`} />);
+    let handleNodes = handles.filter(handle => !drawing.paper || (!drawing.engineOwned && (handle.endpoint === 'target' || (handle.endpoint === 'stop' && !drawing.real)))).map((handle, handleIndex) => <circle key={handleIndex} cx={handle.x} cy={handle.y} r="7" className={`drawing-handle ${handle.role === 'stop' ? 'handle-stop' : handle.role === 'target' ? 'handle-target' : drawing.type === 'ruler' ? 'handle-ruler' : ''}`} />);
     const pricePercent = ((drawing.end.price - drawing.start.price) / drawing.start.price) * 100;
     const selectedClass = typeof index === 'number' && (selectedDrawing === index || selectedDrawings.includes(index)) ? 'drawing-selected' : undefined;
     if (drawing.type === 'line') return <g key={index} className={selectedClass}><line x1={start.x} y1={start.y} x2={end.x} y2={end.y} className="drawing-line" /><text x={(start.x + end.x) / 2} y={(start.y + end.y) / 2 - 8} className="drawing-label">{pricePercent >= 0 ? '+' : ''}{pricePercent.toFixed(2)}%</text>{handleNodes}</g>;
@@ -3653,7 +3708,7 @@ function Workspace() {
     const targetHeight = Math.abs(start.y - winExitPoint.y);
     const stopTop = Math.min(start.y, failedExitPoint.y);
     const stopHeight = Math.abs(start.y - failedExitPoint.y);
-    const paperClass = drawing.paper ? `paper-position ${drawing.real ? 'real-position' : ''} ${drawing.type === 'long' ? 'paper-long' : 'paper-short'}` : '';
+    const paperClass = drawing.paper ? `paper-position ${drawing.real ? 'real-position' : ''} ${drawing.engineOwned ? 'engine-owned-paper' : ''} ${drawing.type === 'long' ? 'paper-long' : 'paper-short'}` : drawing.workerTracker ? 'tracker-live-position' : '';
     const paperStatusLabel = drawing.closed ? (drawing.status === 'CLOSED - WIN' ? '✓ Win' : '✕ Failed') : 'Open';
     const paperStatusClass = drawing.closed ? (drawing.status === 'CLOSED - WIN' ? 'paper-operation-win' : 'paper-operation-failed') : 'paper-operation-open';
     const resultLabelClass = drawing.status === 'CLOSED - WIN' ? 'tracker-result-win' : drawing.status === 'CLOSED - FAILED' ? 'tracker-result-failed' : '';
@@ -3693,7 +3748,7 @@ function Workspace() {
       const operationHoverHit = <rect key={`${operationId}-operation-hover`} x={left} y={Math.min(targetTop, stopTop)} width={Math.max(width, 120)} height={Math.max(32, Math.abs(stopTop - targetTop) + Math.max(targetHeight, stopHeight))} fill="transparent" pointerEvents="all" onPointerEnter={() => setTrackerOperationHover({ id: operationId, x: left + 8, y: Math.min(targetTop, stopTop) + 12, label: 'OPERACIÓN', roePercent: resultRoe, pnlUsd: resultPnl, time: Number(drawing.end.time) })} onPointerLeave={() => setTrackerOperationHover(null)} />;
       handleNodes = [...handleNodes, ...trackerExtremeMarkers, operationHoverHit, resultHit, ...(trackerTooltip ? [trackerTooltip] : []), ...(trackerSummaryTooltip ? [trackerSummaryTooltip] : []), ...(trackerResultSummaryTooltip ? [trackerResultSummaryTooltip] : [])];
     }
-    return <g key={index} className={`${selectedClass ?? ''} ${paperClass}`}>{drawing.paper && canvas === 'context' && <><line x1={start.x} y1={0} x2={start.x} y2={overviewSize.height} className="paper-opening-index" /><text x={start.x + 6} y={18} className="paper-opening-label">Apertura · {chartTimeLabel(drawing.start.time, timezone, false)}</text></>}<rect x={left} y={targetTop} width={width} height={targetHeight} className={targetPercent >= 0 ? 'position-profit' : 'position-risk'} /><rect x={left} y={stopTop} width={width} height={stopHeight} className={riskPercent <= 0 ? 'position-risk' : 'position-profit'} /><line x1={left} y1={start.y} x2={left + width} y2={start.y} className="position-entry" /><line x1={left} y1={end.y} x2={left + width} y2={end.y} className="paper-current-price" />{drawing.paper && <><text x={left + 8} y={Math.max(14, start.y - 8)} className={`paper-operation-label ${paperStatusClass}`}>{drawing.real ? 'BINANCE · REAL' : `Paper Operation · ${paperStatusLabel}`}</text><text x={left + 8} y={targetPoint.y - 10} className="paper-target-label">TP {targetLabel} · +{tpAmount.toFixed(2)} USDT{feeLabel}</text><text x={left + 8} y={stop.y + 18} className="paper-stop-label">SL {riskLabel} · -{slAmount.toFixed(2)} USDT{feeLabel}</text><text x={left + width + 8} y={end.y - 8} className={`paper-current-label ${livePnl >= 0 ? 'paper-current-profit' : 'paper-current-loss'}`}>PNL {livePnl >= 0 ? '+' : ''}{livePnl.toFixed(2)} USDT</text></>}{!drawing.paper && drawing.backtest && <><text x={left + 8} y={targetTop + 18} className={`position-label ${resultLabelClass}`}>{drawing.status === 'CLOSED - WIN' ? 'WIN' : 'FAIL'} · PNL {drawing.pnl != null ? `${drawing.pnl >= 0 ? '+' : ''}${drawing.pnl.toFixed(2)} USDT` : ''}</text><text x={left + 8} y={targetTop + 34} className={`position-label ${resultLabelClass}`}>TP FINAL +{(drawing.finalTargetPercent ?? targetPercent).toFixed(2)}%</text><text x={left + 8} y={targetTop + 48} className={`position-label ${resultLabelClass}`}>N AP {drawing.bodyAveragePercentAtOpen?.toFixed(3) ?? '—'}%</text><text x={left + 8} y={targetTop + 62} className={`position-label ${resultLabelClass}`}>N CIERRE {drawing.bodyAveragePercentAtClose?.toFixed(3) ?? '—'}%</text></>}{!drawing.paper && !drawing.backtest && <><text x={left + 8} y={targetTop + 18} className="position-label">TP {targetLabel}</text><text x={left + 8} y={stopTop + 18} className="position-label">SL {riskLabel}</text><text x={left + 8} y={Math.max(targetTop, stopTop) + 34} className="position-label">R:R {rr.toFixed(2)}:1</text></>}{drawing.real ? null : drawing.paper ? handleNodes : handleNodes}</g>;
+    return <g key={index} className={`${selectedClass ?? ''} ${paperClass}`}>{drawing.paper && canvas === 'context' && <><line x1={start.x} y1={0} x2={start.x} y2={overviewSize.height} className="paper-opening-index" /><text x={start.x + 6} y={18} className="paper-opening-label">Apertura · {chartTimeLabel(drawing.start.time, timezone, false)}</text></>}<rect x={left} y={targetTop} width={width} height={targetHeight} className={targetPercent >= 0 ? 'position-profit' : 'position-risk'} /><rect x={left} y={stopTop} width={width} height={stopHeight} className={riskPercent <= 0 ? 'position-risk' : 'position-profit'} /><line x1={left} y1={start.y} x2={left + width} y2={start.y} className="position-entry" /><line x1={left} y1={end.y} x2={left + width} y2={end.y} className="paper-current-price" />{drawing.paper && <><text x={left + 8} y={Math.max(14, start.y - 8)} className={`paper-operation-label ${paperStatusClass}`}>{drawing.real ? 'BINANCE · REAL' : `Paper Operation · ${paperStatusLabel}`}</text><text x={left + 8} y={targetPoint.y - 10} className="paper-target-label">TP {targetLabel} · +{tpAmount.toFixed(2)} USDT{feeLabel}</text><text x={left + 8} y={stop.y + 18} className="paper-stop-label">SL {riskLabel} · -{slAmount.toFixed(2)} USDT{feeLabel}</text><text x={left + width + 8} y={end.y - 8} className={`paper-current-label ${livePnl >= 0 ? 'paper-current-profit' : 'paper-current-loss'}`}>PNL {livePnl >= 0 ? '+' : ''}{livePnl.toFixed(2)} USDT</text></>}{drawing.workerTracker && <><text x={left + 8} y={targetTop + 18} className="position-label tracker-live-label">TRACKER EN VIVO · {drawing.type.toUpperCase()} · {activeWorkerTracker?.level ?? '—'}</text><text x={left + 8} y={targetTop + 34} className={`position-label ${livePnl >= 0 ? 'paper-current-profit' : 'paper-current-loss'}`}>PNL {livePnl >= 0 ? '+' : ''}{livePnl.toFixed(4)} USDT · {activeWorkerTracker?.parameter_version != null ? `v${activeWorkerTracker.parameter_version}` : 'actualizando'}</text></>}{!drawing.paper && drawing.backtest && <><text x={left + 8} y={targetTop + 18} className={`position-label ${resultLabelClass}`}>{drawing.status === 'CLOSED - WIN' ? 'WIN' : 'FAIL'} · PNL {drawing.pnl != null ? `${drawing.pnl >= 0 ? '+' : ''}${drawing.pnl.toFixed(2)} USDT` : ''}</text><text x={left + 8} y={targetTop + 34} className={`position-label ${resultLabelClass}`}>TP FINAL +{(drawing.finalTargetPercent ?? targetPercent).toFixed(2)}%</text><text x={left + 8} y={targetTop + 48} className={`position-label ${resultLabelClass}`}>N AP {drawing.bodyAveragePercentAtOpen?.toFixed(3) ?? '—'}%</text><text x={left + 8} y={targetTop + 62} className={`position-label ${resultLabelClass}`}>N CIERRE {drawing.bodyAveragePercentAtClose?.toFixed(3) ?? '—'}%</text></>}{!drawing.paper && !drawing.backtest && !drawing.workerTracker && <><text x={left + 8} y={targetTop + 18} className="position-label">TP {targetLabel}</text><text x={left + 8} y={stopTop + 18} className="position-label">SL {riskLabel}</text><text x={left + 8} y={Math.max(targetTop, stopTop) + 34} className="position-label">R:R {rr.toFixed(2)}:1</text></>}{drawing.real ? null : drawing.paper ? handleNodes : handleNodes}</g>;
   };
 
   const liveReferencePrice = binanceLivePriceRef.current?.price ?? candleBarsRef.current[candleBarsRef.current.length - 1]?.close ?? 0;
@@ -3781,10 +3836,34 @@ function Workspace() {
     minRoe: operation.minRoe,
     realMinRoe: operation.realMinRoe,
   }));
+  const activeWorkerTracker = showTracker && broker === 'binance' && !replayState.active && productionWorkerStatus?.running && productionWorkerStatus.symbol === symbol
+    ? productionWorkerStatus.tracker_operation
+    : null;
+  const liveWorkerTrackerDrawing: Drawing | null = activeWorkerTracker?.entry_price && activeWorkerTracker.entry_time != null
+    ? (() => {
+      const side = String(activeWorkerTracker.side ?? 'LONG').toUpperCase() === 'SHORT' ? 'short' as const : 'long' as const;
+      const entry = Number(activeWorkerTracker.entry_price);
+      const price = Number(activeWorkerTracker.current_price ?? entry);
+      const time = Number(activeWorkerTracker.current_time ?? activeWorkerTracker.entry_time);
+      const direction = side === 'long' ? 1 : -1;
+      const notional = Number(activeWorkerTracker.notional ?? (() => {
+        const params = productionWorkerStatus?.adaptive_parameters;
+        const balance = Number(params?.initial_balance ?? 100);
+        const risk = Number(params?.risk_percent ?? 1);
+        const leverage = Number(params?.leverage ?? 1);
+        return Math.min(balance * risk / Math.max(Number(activeWorkerTracker.stop_percent ?? params?.stop_percent ?? 1), 0.000001), balance * leverage);
+      })());
+      const stopPrice = Number(activeWorkerTracker.stop_price ?? entry * (1 - direction * Number(activeWorkerTracker.stop_percent ?? 0) / 100));
+      const targetPrice = Number(activeWorkerTracker.target_price ?? entry * (1 + direction * Number(activeWorkerTracker.target_percent ?? 0) / 100));
+      const pnl = Number(activeWorkerTracker.unrealized_pnl ?? ((price - entry) / entry * direction * notional));
+      return { id: `worker-tracker-${symbol}`, symbol, type: side, workerTracker: true, status: 'OPEN', closed: false, start: { time: Number(activeWorkerTracker.entry_time) as UTCTimestamp, price: entry }, end: { time: time as UTCTimestamp, price }, stop: { time: time as UTCTimestamp, price: stopPrice }, target: { time: time as UTCTimestamp, price: targetPrice }, notional, pnl };
+    })()
+    : null;
+  const trackerLayerDrawings = [...backtestVisualDrawings, ...(liveWorkerTrackerDrawing ? [liveWorkerTrackerDrawing] : [])];
   const renderOhlcOverlay = (hover: OhlcHover | null) => hover ? <div className="chart-ohlc-overlay" aria-label="Datos OHLC de la vela seleccionada"><span className="chart-ohlc-time">{chartTimeLabel(hover.time, timezone, true)}</span><span>O <b>{formatPaperPrice(hover.open)}</b></span><span>H <b className="chart-ohlc-high">{formatPaperPrice(hover.high)}</b></span><span>L <b className="chart-ohlc-low">{formatPaperPrice(hover.low)}</b></span><span>C <b>{formatPaperPrice(hover.close)}</b></span></div> : null;
   const chartStageView = <div ref={chartStage} className={`chart-stage ${tool ? 'drawing-mode' : ''}`} onPointerDownCapture={startDrawing} onPointerMoveCapture={updateDrawing} onPointerUpCapture={event => finishDrawingAndCapture(event, 'entry')} onPointerCancelCapture={() => { setDrawingStart(null); setDrawingEnd(null); setMoveStart(null); panStartRef.current = null; setResizeStart(null); setLassoStart(null); setLassoEnd(null); }}><div className="chart-viewport-snapshot" aria-label="Snapshot del viewport de entrada">X {entryViewportSnapshot.bars} · Futuro {entryViewportSnapshot.futureBars} · Y− {entryViewportSnapshot.yBelow}% · Y+ {entryViewportSnapshot.yAbove}%</div>
     {pendingBinanceTp && <div className="binance-tp-confirm" role="status"><span>Nuevo TP {pendingBinanceTp.symbol}: {formatPaperPrice(pendingBinanceTp.price)}</span><button type="button" onClick={() => void confirmBinanceTakeProfit()}>Confirmar TP</button><button type="button" onClick={() => { pendingBinanceTpRef.current = null; setPendingBinanceTp(null); }} aria-label="Cancelar cambio de TP">Cancelar</button></div>}{renderOhlcOverlay(entryOhlcHover)}
-    <div ref={chartContainer} className="candlestick-chart" /><svg className="drawing-overlay" viewBox={`0 0 ${stageSize.width} ${stageSize.height}`} preserveAspectRatio="none" aria-hidden="true">{renderSessionIndicator()}{renderInterestMarkers()}{renderPriceLineHitAreas('entry')}{[...drawings, ...productionDrawings, ...backtestVisualDrawings].map((drawing, index) => (!drawing.paper || !drawing.closed || drawing.id === visibleClosedId) && (!drawing.paper || !drawing.symbol || drawing.symbol === symbol) && (drawing.chart !== 'context' || drawing.paper) ? renderDrawing(drawing, index, 'entry') : null)}{tool && tool !== 'pan' && drawingStart && drawingEnd && drawingCanvas === 'entry' && renderDrawing({ type: tool, chart: 'entry', start: drawingStart, end: drawingEnd }, 'preview', 'entry')}{lassoStart && lassoEnd && drawingCanvas === 'entry' && <rect x={Math.min(lassoStart.x, lassoEnd.x)} y={Math.min(lassoStart.y, lassoEnd.y)} width={Math.abs(lassoStart.x - lassoEnd.x)} height={Math.abs(lassoStart.y - lassoEnd.y)} className="selection-lasso" />}</svg><div className="chart-bottom-controls"><span className="timezone-icon" aria-hidden="true">◷</span><select className="timezone-select" value={timezone} onChange={event => setTimezone(event.target.value)} aria-label="Zona horaria">{TIMEZONES.map(([label, value]) => <option key={value} value={value}>{label}</option>)}</select></div>
+    <div ref={chartContainer} className="candlestick-chart" /><svg className="drawing-overlay" viewBox={`0 0 ${stageSize.width} ${stageSize.height}`} preserveAspectRatio="none" aria-hidden="true">{renderSessionIndicator()}{renderInterestMarkers()}{renderPriceLineHitAreas('entry')}{[...drawings, ...productionDrawings, ...trackerLayerDrawings].map((drawing, index) => (!drawing.paper || !drawing.closed || drawing.id === visibleClosedId) && (!drawing.paper || !drawing.symbol || drawing.symbol === symbol) && (drawing.chart !== 'context' || drawing.paper) ? renderDrawing(drawing, index, 'entry') : null)}{tool && tool !== 'pan' && drawingStart && drawingEnd && drawingCanvas === 'entry' && renderDrawing({ type: tool, chart: 'entry', start: drawingStart, end: drawingEnd }, 'preview', 'entry')}{lassoStart && lassoEnd && drawingCanvas === 'entry' && <rect x={Math.min(lassoStart.x, lassoEnd.x)} y={Math.min(lassoStart.y, lassoEnd.y)} width={Math.abs(lassoStart.x - lassoEnd.x)} height={Math.abs(lassoStart.y - lassoEnd.y)} className="selection-lasso" />}</svg><div className="chart-bottom-controls"><span className="timezone-icon" aria-hidden="true">◷</span><select className="timezone-select" value={timezone} onChange={event => setTimezone(event.target.value)} aria-label="Zona horaria">{TIMEZONES.map(([label, value]) => <option key={value} value={value}>{label}</option>)}</select></div>
     <div className="floating-order-buttons" aria-label="Abrir operación simulada"><button className="open-long-button" disabled={!paperReady || (broker === 'binance' && scannerTargetPercent == null)} onClick={() => void openSimulatedPosition('long')}>▲ <span>Abrir Long</span><small>{binancePreview.find(preview => preview.side === 'LONG') ? `SL -${binanceStopPercent.toFixed(2)}% · TP +${binancePreview.find(preview => preview.side === 'LONG')!.targetPercent.toFixed(2)}% · N ${binancePreview.find(preview => preview.side === 'LONG')!.notional.toFixed(2)} · M ${binancePreview.find(preview => preview.side === 'LONG')!.margin.toFixed(4)} · ${binancePreview.find(preview => preview.side === 'LONG')!.leverage}x` : labRecommendations ? `${labRecommendations.long.label} · R:R ${labRecommendations.long.rr.toFixed(2)}:1` : 'Calculando recomendación…'}</small></button><button className="open-short-button" disabled={!paperReady || (broker === 'binance' && scannerTargetPercent == null)} onClick={() => void openSimulatedPosition('short')}>▼ <span>Abrir Short</span><small>{binancePreview.find(preview => preview.side === 'SHORT') ? `SL -${binanceStopPercent.toFixed(2)}% · TP +${binancePreview.find(preview => preview.side === 'SHORT')!.targetPercent.toFixed(2)}% · N ${binancePreview.find(preview => preview.side === 'SHORT')!.notional.toFixed(2)} · M ${binancePreview.find(preview => preview.side === 'SHORT')!.margin.toFixed(4)} · ${binancePreview.find(preview => preview.side === 'SHORT')!.leverage}x` : labRecommendations ? `${labRecommendations.short.label} · R:R ${labRecommendations.short.rr.toFixed(2)}:1` : 'Calculando recomendación…'}</small></button></div>
   </div>;
 
@@ -4101,7 +4180,7 @@ function Workspace() {
   const trackerRawFactorPanel = showTracker ? <section className="tracker-factor-panel" aria-label="Valores absolutos de volatilidad y TP"><div className="tracker-equity-title"><span>Valores absolutos · WIN</span><small>porcentaje real de cada operación</small></div>{trackerRawSeries.length ? <svg className="tracker-factor-chart" viewBox={`0 0 ${trackerFactorChartWidth} ${trackerFactorChartHeight}`} role="img" aria-label="Valores absolutos de TP y volatilidad"><line x1={trackerFactorChartPadding.left} y1={trackerFactorChartHeight - trackerFactorChartPadding.bottom} x2={trackerFactorChartWidth - trackerFactorChartPadding.right} y2={trackerFactorChartHeight - trackerFactorChartPadding.bottom} className="tracker-factor-axis" /><polyline points={trackerRawTpPoints.map(point => `${point.x.toFixed(2)},${point.y.toFixed(2)}`).join(' ')} className="tracker-factor-tp-line" /><polyline points={trackerRawOpenPoints.map(point => `${point.x.toFixed(2)},${point.y.toFixed(2)}`).join(' ')} className="tracker-factor-open-line" /><polyline points={trackerRawClosePoints.map(point => `${point.x.toFixed(2)},${point.y.toFixed(2)}`).join(' ')} className="tracker-factor-volatility-line" />{trackerRawSeries.map((operation, index) => <g key={`raw-${operation.id}`}><circle cx={trackerRawTpPoints[index].x} cy={trackerRawTpPoints[index].y} r="4" className="tracker-factor-tp-dot"><title>TP FINAL {operation.finalTargetPercent.toFixed(3)}%</title></circle><circle cx={trackerRawOpenPoints[index].x} cy={trackerRawOpenPoints[index].y} r="4" className="tracker-factor-open-dot"><title>N AP {operation.bodyAveragePercentAtOpen.toFixed(3)}%</title></circle><circle cx={trackerRawClosePoints[index].x} cy={trackerRawClosePoints[index].y} r="4" className="tracker-factor-volatility-dot"><title>N CIERRE {operation.bodyAveragePercentAtClose.toFixed(3)}%</title></circle></g>)}</svg> : <p className="tracker-equity-empty">Aún no hay WIN para graficar.</p>}<div className="tracker-factor-legend"><span><i className="tracker-factor-tp-swatch" /> TP FINAL</span><span><i className="tracker-factor-open-swatch" /> N AP</span><span><i className="tracker-factor-volatility-swatch" /> N CIERRE</span></div></section> : null;
   const trackerFactorTable = showTracker && trackerRawSeries.length ? <section className="tracker-factor-table-panel" aria-label="Valores numéricos de volatilidad y TP"><div className="tracker-equity-title"><span>Valores numéricos · WIN</span><small>orden cronológico</small></div><div className="tracker-factor-table-scroll"><table className="tracker-factor-table"><thead><tr><th>#</th><th>Cierre</th><th>TP ROE %</th><th>LEV.</th><th>TP PRECIO %</th><th>N AP %</th><th>N CIERRE %</th><th>TP / N AP</th><th>N CIERRE / N AP</th></tr></thead><tbody>{trackerRawSeries.map((operation, index) => { const tpFactor = operation.bodyAveragePercentAtOpen > 0 ? operation.finalTargetPercent / operation.bodyAveragePercentAtOpen : 0; const volatilityRatio = operation.bodyAveragePercentAtOpen > 0 ? operation.bodyAveragePercentAtClose / operation.bodyAveragePercentAtOpen : 0; return <tr key={`factor-row-${operation.id}`}><td>{index + 1}</td><td>{new Date(Number(operation.end.time) * 1000).toLocaleString('es-MX', { timeZone: timezone, dateStyle: 'short', timeStyle: 'short' })}</td><td>{operation.finalTargetRoePercent.toFixed(3)}%</td><td>{operation.leverage.toFixed(1)}x</td><td>{operation.finalTargetPercent.toFixed(3)}%</td><td>{operation.bodyAveragePercentAtOpen.toFixed(3)}%</td><td>{operation.bodyAveragePercentAtClose.toFixed(3)}%</td><td>{tpFactor.toFixed(2)}x</td><td>{volatilityRatio.toFixed(2)}x</td></tr>; })}</tbody></table></div></section> : null;
   const trackerEquityPanel = showTracker ? <section className="tracker-stats-panel" aria-label="Estadísticas del indicador Tracker"><div className="tracker-stats-head"><div><span className="positions-kicker">TRACKER · {symbol} · 1M · 8H · SIMULACIÓN</span><h2>Estadísticas Tracker</h2><p>Últimas 8 horas · 480 velas cerradas de 1 minuto · balance inicial {paperInitialBalance.toFixed(2)} USDT</p><small className={`tracker-detail-status tracker-detail-${trackerDetailStatus}`} role="status" title={trackerDetailError || undefined}>{trackerDetailStatus === 'loading' ? 'Sincronizando análisis del scanner…' : trackerDetailStatus === 'error' ? `Error al sincronizar: ${trackerDetailError}` : trackerDetailStatus === 'ready' ? 'Análisis del scanner sincronizado' : ''}</small></div><div className="tracker-final-metrics"><div><small>Resultado final</small><strong className={trackerDisplayedPnl >= 0 ? 'tracker-equity-positive' : 'tracker-equity-negative'}>{trackerDisplayedPnl >= 0 ? '+' : ''}{trackerDisplayedPnl.toFixed(4)} USDT</strong></div><div><small>Balance máximo</small><strong>{trackerMaxBalance.toFixed(4)} USDT</strong></div><div><small>Balance mínimo</small><strong>{trackerMinBalance.toFixed(4)} USDT</strong></div><div className={trackerStepPercent == null ? '' : trackerStepPercent < 2 ? 'tracker-step-low' : trackerStepPercent > 4 ? 'tracker-step-high' : 'tracker-step-in-range'} title={"Suma de cambios absolutos entre cierres en las últimas " + trackerPeriod + " velas de 1 minuto. " + trackerStepStatus}><small>% Step · {trackerPeriod} × 1m</small><strong>{trackerStepPercent == null ? '—' : trackerStepPercent.toFixed(2) + '%'}</strong><small>{trackerStepStatus}</small></div></div></div><div className="tracker-stats-grid"><div><small>Total operaciones</small><strong>{trackerVirtualOperations.length}</strong></div><div><small>Wins</small><strong className="tracker-stat-win">{trackerWins}</strong></div><div><small>Losses</small><strong className="tracker-stat-loss">{trackerLosses}</strong></div><div><small>Win rate</small><strong>{trackerSettled ? `${trackerWinRate.toFixed(1)}%` : '—'}</strong></div><div><small>Avg win</small><strong className="tracker-stat-win">{trackerWins ? "+" + trackerAverageWin.toFixed(4) + " USDT" : "—"}</strong></div><div><small>Avg loss</small><strong className="tracker-stat-loss">{trackerLosses ? trackerAverageLoss.toFixed(4) + " USDT" : "—"}</strong></div><div><small>Equity final</small><strong>{trackerDisplayedEquity.toFixed(4)} USDT</strong></div></div><div className="tracker-equity-wrap"><div className="tracker-equity-title"><span>Curva de equity simulada</span><small>{trackerClosedOperations.length} operaciones liquidadas</small></div>{trackerClosedOperations.length ? <svg className="tracker-equity-chart" viewBox={`0 0 ${trackerChartWidth} ${trackerChartHeight}`} role="img" aria-label="Curva de equity simulada"><line x1={trackerChartPadding.left} y1={trackerChartPadding.top + (1 - (paperInitialBalance - trackerChartMin) / Math.max(.000001, trackerChartMax - trackerChartMin)) * (trackerChartHeight - trackerChartPadding.top - trackerChartPadding.bottom)} x2={trackerChartWidth - trackerChartPadding.right} y2={trackerChartPadding.top + (1 - (paperInitialBalance - trackerChartMin) / Math.max(.000001, trackerChartMax - trackerChartMin)) * (trackerChartHeight - trackerChartPadding.top - trackerChartPadding.bottom)} className="tracker-equity-baseline" /><polyline points={trackerEquityPointsSvg} className={trackerEquity >= paperInitialBalance ? 'tracker-equity-line tracker-equity-line-positive' : 'tracker-equity-line tracker-equity-line-negative'} />{trackerLossLimitEnabled && <polyline points={trackerAdjustedEquityPointsSvg} className="tracker-adjusted-equity-line" />}{trackerEquityCoordinates.map((point, index) => index === 0 ? <circle key="tracker-equity-start" cx={point.x} cy={point.y} r="5" className="tracker-equity-dot" /> : <circle key={`tracker-equity-${point.time}-${index}`} cx={point.x} cy={point.y} r="7" className="tracker-equity-hover-point" onPointerEnter={() => setTrackerEquityHover({ x: point.x, y: point.y, equity: point.equity, time: point.time, side: point.side, status: point.status })} onPointerLeave={() => setTrackerEquityHover(null)}><title>{new Date(point.time * 1000).toLocaleString('es-MX', { timeZone: timezone })} · Balance {point.equity.toFixed(4)} USDT</title></circle>)}{trackerEquityHover && <g className="tracker-equity-tooltip" pointerEvents="none"><rect x={Math.max(6, Math.min(trackerChartWidth - 196, trackerEquityHover.x + 10))} y={Math.max(6, trackerEquityHover.y - 62)} width="190" height="52" rx="5" /><text x={Math.max(16, Math.min(trackerChartWidth - 186, trackerEquityHover.x + 20))} y={Math.max(21, trackerEquityHover.y - 43)}>Cierre {new Date(trackerEquityHover.time * 1000).toLocaleString('es-MX', { timeZone: timezone, dateStyle: 'short', timeStyle: 'short' })}</text><text x={Math.max(16, Math.min(trackerChartWidth - 186, trackerEquityHover.x + 20))} y={Math.max(38, trackerEquityHover.y - 26)}>Balance {trackerEquityHover.equity.toFixed(4)} USDT · {trackerEquityHover.side}</text><text x={Math.max(16, Math.min(trackerChartWidth - 186, trackerEquityHover.x + 20))} y={Math.max(55, trackerEquityHover.y - 9)}>{trackerEquityHover.status}</text></g>}</svg> : <p className="tracker-equity-empty">Aún no hay operaciones cerradas para graficar.</p>}<div ref={trackerSummaryHost} /></div></section> : null;
-  const chartsRow = <div className="charts-row"><section ref={overviewStage} className={`secondary-chart ${tool ? 'drawing-mode' : ''}`} onPointerDownCapture={event => startDrawing(event, 'context')} onPointerMoveCapture={updateDrawing} onPointerUpCapture={event => finishDrawingAndCapture(event, 'context')} onPointerCancelCapture={() => { setDrawingStart(null); setDrawingEnd(null); setMoveStart(null); panStartRef.current = null; setResizeStart(null); setLassoStart(null); setLassoEnd(null); }}><div className="chart-panel-label">{interval.toUpperCase()} · CONTEXTO · {symbol}</div><div className="chart-viewport-snapshot" aria-label="Snapshot del viewport de contexto">X {overviewViewportSnapshot.bars} · Futuro {overviewViewportSnapshot.futureBars} · Y− {overviewViewportSnapshot.yBelow}% · Y+ {overviewViewportSnapshot.yAbove}%</div><div ref={overviewChartContainer} className="overview-chart" />{renderOhlcOverlay(overviewOhlcHover)}<svg className="overview-overlay" viewBox={`0 0 ${overviewSize.width} ${overviewSize.height}`} preserveAspectRatio="none" aria-hidden="true">{renderOverviewSessions()}{renderOverviewInterestMarkers()}{renderPriceLineHitAreas('context')}{[...drawings, ...productionDrawings, ...backtestVisualDrawings].map((drawing, index) => (!drawing.paper || !drawing.closed || drawing.id === visibleClosedId) && (!drawing.paper || !drawing.symbol || drawing.symbol === symbol) && (drawing.chart === 'context' || drawing.paper) ? renderDrawing(drawing, index, 'context') : null)}{tool && tool !== 'pan' && drawingStart && drawingEnd && drawingCanvas === 'context' && renderDrawing({ type: tool, chart: 'context', start: drawingStart, end: drawingEnd }, 'preview', 'context')}{lassoStart && lassoEnd && drawingCanvas === 'context' && <rect x={Math.min(lassoStart.x, lassoEnd.x)} y={Math.min(lassoStart.y, lassoEnd.y)} width={Math.abs(lassoStart.x - lassoEnd.x)} height={Math.abs(lassoStart.y - lassoEnd.y)} className="selection-lasso" />}</svg></section><section className="primary-chart"><div className="chart-panel-label">{entryInterval.toUpperCase()} · AJUSTE DE ENTRADA</div>{chartStageView}</section></div>;
+  const chartsRow = <div className="charts-row"><section ref={overviewStage} className={`secondary-chart ${tool ? 'drawing-mode' : ''}`} onPointerDownCapture={event => startDrawing(event, 'context')} onPointerMoveCapture={updateDrawing} onPointerUpCapture={event => finishDrawingAndCapture(event, 'context')} onPointerCancelCapture={() => { setDrawingStart(null); setDrawingEnd(null); setMoveStart(null); panStartRef.current = null; setResizeStart(null); setLassoStart(null); setLassoEnd(null); }}><div className="chart-panel-label">{interval.toUpperCase()} · CONTEXTO · {symbol}</div><div className="chart-viewport-snapshot" aria-label="Snapshot del viewport de contexto">X {overviewViewportSnapshot.bars} · Futuro {overviewViewportSnapshot.futureBars} · Y− {overviewViewportSnapshot.yBelow}% · Y+ {overviewViewportSnapshot.yAbove}%</div><div ref={overviewChartContainer} className="overview-chart" />{renderOhlcOverlay(overviewOhlcHover)}<svg className="overview-overlay" viewBox={`0 0 ${overviewSize.width} ${overviewSize.height}`} preserveAspectRatio="none" aria-hidden="true">{renderOverviewSessions()}{renderOverviewInterestMarkers()}{renderPriceLineHitAreas('context')}{[...drawings, ...productionDrawings, ...trackerLayerDrawings].map((drawing, index) => (!drawing.paper || !drawing.closed || drawing.id === visibleClosedId) && (!drawing.paper || !drawing.symbol || drawing.symbol === symbol) && (drawing.chart === 'context' || drawing.paper) ? renderDrawing(drawing, index, 'context') : null)}{tool && tool !== 'pan' && drawingStart && drawingEnd && drawingCanvas === 'context' && renderDrawing({ type: tool, chart: 'context', start: drawingStart, end: drawingEnd }, 'preview', 'context')}{lassoStart && lassoEnd && drawingCanvas === 'context' && <rect x={Math.min(lassoStart.x, lassoEnd.x)} y={Math.min(lassoStart.y, lassoEnd.y)} width={Math.abs(lassoStart.x - lassoEnd.x)} height={Math.abs(lassoStart.y - lassoEnd.y)} className="selection-lasso" />}</svg></section><section className="primary-chart"><div className="chart-panel-label">{entryInterval.toUpperCase()} · AJUSTE DE ENTRADA</div>{chartStageView}</section></div>;
 
   return mobilePwa ? <main className="trading-shell pwa-shell">
     <header className="pwa-mobile-header"><div><span className="pwa-brand">helloworld</span><span className="pwa-market">{broker.toUpperCase()} · {entryInterval.toUpperCase()} ENTRADA · {interval.toUpperCase()} CONTEXTO</span></div><select className="pwa-symbol-select" value={broker} onChange={event => { const next = event.target.value as 'binance' | 'ctrader'; setBroker(next); setSymbol(next === 'ctrader' ? 'AUDUSD' : 'BTCUSDT'); }} aria-label="Broker"><option value="binance">Binance</option><option value="ctrader">cTrader</option></select><select className="pwa-symbol-select" value={symbol} onChange={event => setSymbol(event.target.value)} aria-label="Símbolo">{selectableSymbols.map(option => <option key={option}>{option}</option>)}</select>{profileButton}</header>

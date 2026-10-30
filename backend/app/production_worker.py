@@ -196,13 +196,32 @@ class SymbolWorker:
     lease_owner_id: str | None = None
     on_lease_lost: Any = None
     started: asyncio.Event = field(default_factory=asyncio.Event)
+    latest_price: float | None = None
+    latest_price_time: int | None = None
+    last_mark_publish_at: float = 0.0
 
     async def publish(self, event: dict[str, object]) -> None:
         """Attach the owner to worker events for authenticated stream fanout."""
         await self.events.publish({**event, "user_id": self.user_id})
 
     def offer_market_event(self, event: dict[str, Any]) -> None:
-        """Enqueue closed candles quickly so market fanout never waits on trading work."""
+        """Enqueue closed candles and publish display marks without blocking market fanout."""
+        if not self.running:
+            return
+        if event.get("type") == "mark_price" and event.get("symbol", self.symbol) == self.symbol:
+            try:
+                price = float(event["price"])
+                timestamp = int(event.get("time", time.time()))
+            except (KeyError, TypeError, ValueError):
+                return
+            if price <= 0 or self.event_loop is None or self.event_loop.is_closed():
+                return
+            self.latest_price, self.latest_price_time = price, timestamp
+            now = time.monotonic()
+            if now - self.last_mark_publish_at >= 0.5:
+                self.last_mark_publish_at = now
+                self.event_loop.call_soon_threadsafe(lambda: asyncio.create_task(self._publish_mark_update(price, timestamp)))
+            return
         if not self.running or event.get("type") != "kline" or event.get("interval") != self.interval:
             return
         bar = event.get("bar")
@@ -224,6 +243,30 @@ class SymbolWorker:
             self.queue_overflows += 1
             self.status = "DEGRADED"
             self.last_error = "worker candle queue is full"
+
+    async def _publish_mark_update(self, price: float, timestamp: int) -> None:
+        """Update displayed PnL only. Strategy evaluation remains on closed candles."""
+        async with self.state_lock:
+            def signed_notional(operation: dict[str, Any]) -> float:
+                direction = 1 if str(operation["side"]).upper() == "LONG" else -1
+                return (price - float(operation["entry_price"])) / float(operation["entry_price"]) * direction * float(operation.get("notional") or self._tracker_notional(operation))
+
+            tracker = self.tracker_operation
+            if tracker is not None:
+                tracker.update({"current_price": price, "current_time": timestamp, "unrealized_pnl": signed_notional(tracker)})
+            operation = self.operation
+            if operation is not None:
+                operation.update({"current_price": price, "current_time": timestamp, "unrealized_pnl": signed_notional(operation)})
+            if tracker is not None or operation is not None:
+                await self.publish({"type": "WORKER_MARK_UPDATE", "symbol": self.symbol, "price": price, "time": timestamp, "tracker_operation": dict(tracker) if tracker else None, "operation": dict(operation) if operation else None})
+
+    def _tracker_notional(self, tracked: dict[str, Any]) -> float:
+        parameters = self.adaptive_parameters
+        balance = float(parameters.get("initial_balance", 100.0))
+        risk_percent = float(parameters.get("risk_percent", 1.0))
+        leverage = float(parameters.get("leverage", 1.0))
+        stop_percent = max(float(tracked.get("stop_percent", self.stop_percent)), 0.000001)
+        return min(balance * risk_percent / 100 / (stop_percent / 100), balance * leverage)
 
     async def run(self) -> None:
         self.started.set()
@@ -370,7 +413,7 @@ class SymbolWorker:
             reason = raw_reason if raw_reason != "TP" or opposite_signal else None
             if reason is not None:
                 tracker_closed = True
-                await self.publish({"type": "TRACKER_OPERATION_CLOSED", "symbol": self.symbol, "side": tracked["side"], "reason": reason, "price": close, "bar_time": int(bar["time"]), "parameter_version": tracked.get("parameter_version")})
+                await self.publish({"type": "TRACKER_OPERATION_CLOSED", "symbol": self.symbol, "side": tracked["side"], "reason": reason, "price": close, "bar_time": int(bar["time"]), "parameter_version": tracked.get("parameter_version"), "tracker_operation": {**tracked, "current_price": close, "current_time": int(bar["time"]), "status": "CLOSED - WIN" if reason == "TP" else "CLOSED - FAILED", "close_reason": reason}})
                 self.tracker_operation = None
                 self._schedule_recalibration()
                 if reason == "TP":
@@ -385,6 +428,8 @@ class SymbolWorker:
                 "stop_percent": self.stop_percent, "target_percent": self.target_percent,
                 "parameter_version": self.parameter_version,
             }
+            if self.latest_price is not None:
+                self.tracker_operation.update({"current_price": self.latest_price, "current_time": self.latest_price_time})
             signal_id = f"{self.symbol}:{self.interval}:{bar['time']}:{side}:{level}"
             await self.publish({"type": "TRACKER_SIGNAL", "signal_id": signal_id, "symbol": self.symbol, "side": side, "level": level, "interval": self.interval, "bar_time": int(bar["time"]), "price": close, "stop_percent": self.stop_percent, "target_percent": self.target_percent, "tracker_period": self.tracker_period, "parameter_version": self.parameter_version, "mode": self.adapter.mode})
             # Executions mirror Tracker entries but own their independent
@@ -481,7 +526,7 @@ class PaperExecutionAdapter:
         notional = min(risk_usdt / max(worker.stop_percent / 100, 0.000001), self.initial_balance * leverage)
         operation = {"id": f"paper-worker-{uuid4().hex[:12]}", "symbol": worker.symbol, "side": side, "chart": "entry", "level": bar.get("level"), "entry_time": int(bar["time"]), "entry_price": price, "current_time": int(bar["time"]), "current_price": price, "stop_time": int(bar["time"]), "stop_price": stop, "target_time": int(bar["time"]), "target_price": target, "stop_percent": worker.stop_percent, "target_percent": worker.target_percent, "parameter_version": worker.parameter_version, "status": "OPEN", "close_reason": None, "risk_percent": risk_percent, "notional": notional, "margin": notional / leverage, "pnl": 0.0, "source": "realtime-engine", "idempotency_key": f"tracker:{worker.symbol}:{worker.interval}:{bar['time']}:{side}:{bar.get('level', 'H1')}"}
         worker.operation = await asyncio.to_thread(_persist_open, worker, operation)
-        await worker.publish({"type": "PAPER_ENTRY", "symbol": worker.symbol, "side": side, "price": price})
+        await worker.publish({"type": "PAPER_ENTRY", "symbol": worker.symbol, "side": side, "price": price, "operation": dict(worker.operation)})
         return worker.operation
 
     async def update_parameters(self, worker: SymbolWorker) -> None:
@@ -515,7 +560,7 @@ class PaperExecutionAdapter:
         pnl = gross_pnl - fees
         result = await asyncio.to_thread(_persist_close, worker, operation, reason, price, bar, pnl)
         worker.operation = None
-        await worker.publish({"type": "PAPER_EXIT", "symbol": worker.symbol, "side": operation["side"], "reason": reason, "pnl": round(pnl, 6)})
+        await worker.publish({"type": "PAPER_EXIT", "symbol": worker.symbol, "side": operation["side"], "reason": reason, "pnl": round(pnl, 6), "operation": dict(result)})
         return result
 
 

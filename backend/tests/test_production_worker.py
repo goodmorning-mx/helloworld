@@ -143,6 +143,37 @@ def test_signal_only_worker_keeps_tracker_alive_without_creating_paper_operation
     asyncio.run(scenario())
 
 
+def test_mark_price_updates_tracker_and_paper_display_without_closing_either():
+    async def scenario():
+        events = []
+
+        class RecordingEvents:
+            async def publish(self, event):
+                events.append(event)
+
+        worker = SymbolWorker("user", "TESTUSDT", "1m", 2, .2, 1.0, PaperExecutionAdapter(), FakePaperStore(), RecordingEvents())
+        worker.event_loop = asyncio.get_running_loop()
+        worker.adaptive_parameters = {"initial_balance": 100, "risk_percent": 1, "leverage": 10}
+        worker.tracker_operation = {"side": "LONG", "entry_time": 60, "entry_price": 100, "stop_percent": .2, "target_percent": 1}
+        worker.operation = {"id": "paper-open", "side": "LONG", "entry_time": 60, "entry_price": 100, "notional": 500, "status": "OPEN"}
+
+        worker.offer_market_event({"type": "mark_price", "symbol": "TESTUSDT", "price": 101, "time": 120})
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+
+        mark = next(event for event in events if event["type"] == "WORKER_MARK_UPDATE")
+        assert mark["tracker_operation"]["current_price"] == 101
+        assert mark["tracker_operation"]["unrealized_pnl"] == pytest.approx(5)
+        assert mark["operation"]["current_price"] == 101
+        assert mark["operation"]["unrealized_pnl"] == pytest.approx(5)
+        assert worker.tracker_operation is not None
+        assert worker.operation is not None
+        assert worker.tracker_operation["current_price"] == 101
+        assert worker.operation["status"] == "OPEN"
+
+    asyncio.run(scenario())
+
+
 def test_mode_switch_keeps_open_paper_trade_on_its_original_adapter():
     async def scenario():
         worker = SymbolWorker("user", "TESTUSDT", "1m", 2, .2, 1.0, PaperExecutionAdapter(), FakePaperStore(), BackendEventBus())
