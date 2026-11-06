@@ -71,6 +71,7 @@
 .measurement-label { fill: #93c5fd; font: 12px 'DM Mono', monospace; }
 .position-profit { fill: #64d39a22; stroke: #64d39a; stroke-width: 2.5; }
 .position-risk { fill: #f27e7e22; stroke: #f27e7e; stroke-width: 2.5; }
+.position-loss-closed { fill: #f27e7e66; stroke: #f27e7e; stroke-width: 2.5; }
 .position-entry { stroke: #f5b84b; stroke-width: 3; stroke-dasharray: 6 4; }
 .position-label { fill: #d7dde8; font: 12px 'DM Mono', monospace; }
 .tracker-result-win { fill: #00ff87; font-weight: 900; stroke: #06130d; stroke-width: 2px; paint-order: stroke fill; }
@@ -120,7 +121,7 @@
 .tracker-level-label { font: 11px 'DM Mono', monospace; font-weight: 700; paint-order: stroke; stroke: #080a0d; stroke-width: 3px; }
 .drawing-selected .drawing-line { stroke-width: 3; filter: drop-shadow(0 0 4px #f5b84b); }
 .drawing-selected .measurement-box { stroke-width: 3; filter: drop-shadow(0 0 7px #60a5fa) drop-shadow(0 0 3px #fff); }.selection-lasso { fill: #60a5fa22; stroke: #60a5fa; stroke-width: 1.5; stroke-dasharray: 6 4; pointer-events: none; }
-.drawing-selected .position-profit, .drawing-selected .position-risk { stroke-width: 2; }
+.drawing-selected .position-profit, .drawing-selected .position-risk, .drawing-selected .position-loss-closed { stroke-width: 2; }
 .pwa-shell { display: none; }
 .mobile-modal-backdrop { position: fixed; z-index: 20; inset: 0; display: flex; align-items: end; background: #0009; }
 .mobile-sheet { width: 100%; padding: .7rem 1rem calc(1rem + env(safe-area-inset-bottom)); border: 1px solid #303640; border-bottom: 0; border-radius: 20px 20px 0 0; background: #11151a; box-shadow: 0 -20px 60px #000b; }
