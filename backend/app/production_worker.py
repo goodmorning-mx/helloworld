@@ -6,6 +6,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 import logging
 import asyncio
+import re
 import time
 from decimal import Decimal, ROUND_CEILING, ROUND_FLOOR
 from collections import deque
@@ -29,6 +30,16 @@ from app.tracker_strategy import tracker_close_reason, tracker_levels, tracker_s
 logger = logging.getLogger(__name__)
 WORKER_HEARTBEAT_SECONDS = 15
 
+
+def _safe_worker_log_message(message: str) -> str:
+    """Remove common credential forms before a worker message is persisted."""
+    value = str(message)
+    value = re.sub(r"(?i)(authorization\s*[:=]\s*bearer\s+)\S+", r"\1[redacted]", value)
+    value = re.sub(r"(?i)(api[_ -]?key|secret|password|token)(\s*[:=]\s*)[^\s,;]+", r"\1\2[redacted]", value)
+    value = re.sub(r"(?i)(/bot)\d{5,}:[A-Za-z0-9_-]+", r"\1[redacted]", value)
+    value = re.sub(r"(?i)([?&](?:signature|listenKey|apiKey)=)[^&\s]+", r"\1[redacted]", value)
+    return value[:300]
+
 production_worker_configs_table = table(
     "production_worker_configs",
     column("id"), column("user_id"), column("symbol"), column("mode"), column("interval"),
@@ -39,7 +50,8 @@ production_worker_configs_table = table(
 production_worker_runtime_table = table(
     "production_worker_runtime", column("owner_id"), column("lease_until"),
     column("user_id"), column("symbol"), column("last_bar_time"), column("heartbeat_at"),
-    column("status"), column("tracker_operation", JSONB), column("adaptive_parameters", JSONB), column("updated_at"),
+    column("status"), column("tracker_operation", JSONB), column("adaptive_parameters", JSONB),
+    column("recent_logs", JSONB), column("updated_at"),
 )
 production_worker_sessions_table = table(
     "production_worker_sessions", column("user_id"), column("symbol"),
@@ -94,6 +106,31 @@ class ProductionWorkerConfigStore:
         with self._engine.begin() as connection:
             result = connection.execute(update(production_worker_runtime_table).where(production_worker_runtime_table.c.user_id == user_id, production_worker_runtime_table.c.symbol == symbol.upper(), production_worker_runtime_table.c.owner_id == owner_id).values(last_bar_time=last_bar_time, tracker_operation=tracker_operation, adaptive_parameters=adaptive_parameters, heartbeat_at=now, lease_until=now + timedelta(seconds=lease_seconds), status=status, updated_at=now))
             return result.rowcount == 1
+
+    def append_log(self, user_id: str, symbol: str, owner_id: str, entry: dict[str, Any]) -> bool:
+        with self._engine.begin() as connection:
+            row = connection.execute(select(production_worker_runtime_table.c.recent_logs).where(
+                production_worker_runtime_table.c.user_id == user_id,
+                production_worker_runtime_table.c.symbol == symbol.upper(),
+                production_worker_runtime_table.c.owner_id == owner_id,
+            ).with_for_update()).first()
+            if row is None:
+                return False
+            entries = row[0] if isinstance(row[0], list) else []
+            entries = [*entries, entry][-100:]
+            connection.execute(update(production_worker_runtime_table).where(
+                production_worker_runtime_table.c.user_id == user_id,
+                production_worker_runtime_table.c.symbol == symbol.upper(),
+                production_worker_runtime_table.c.owner_id == owner_id,
+            ).values(recent_logs=entries, updated_at=datetime.now(timezone.utc)))
+            return True
+
+    def logs(self, user_id: str, symbol: str, limit: int = 50) -> list[dict[str, Any]]:
+        runtime = self.runtime(user_id, symbol)
+        entries = runtime.get("recent_logs", []) if runtime else []
+        if not isinstance(entries, list):
+            return []
+        return [entry for entry in entries[-max(1, min(limit, 100)):][::-1] if isinstance(entry, dict)]
 
     def release_lease(self, user_id: str, symbol: str, owner_id: str, status: str) -> None:
         now = datetime.now(timezone.utc)
@@ -199,6 +236,24 @@ class SymbolWorker:
     latest_price: float | None = None
     latest_price_time: int | None = None
     last_mark_publish_at: float = 0.0
+    recent_logs: deque[dict[str, Any]] = field(default_factory=lambda: deque(maxlen=100))
+
+    def record_log(self, level: str, event: str, message: str) -> None:
+        """Keep a bounded, secret-free lifecycle/error log and persist it off-loop."""
+        safe_message = _safe_worker_log_message(message)
+        entry = {"id": uuid4().hex, "time": datetime.now(timezone.utc).isoformat(), "level": level.upper(), "event": event[:60], "message": safe_message}
+        self.recent_logs.append(entry)
+        loop = self.event_loop
+        if loop is not None and not loop.is_closed():
+            loop.call_soon_threadsafe(lambda: asyncio.create_task(self._persist_log(entry)))
+
+    async def _persist_log(self, entry: dict[str, Any]) -> None:
+        if self.runtime_store is not None and self.lease_owner_id is not None:
+            try:
+                await asyncio.to_thread(self.runtime_store.append_log, self.user_id, self.symbol, self.lease_owner_id, entry)
+            except Exception as exc:
+                logger.warning("production_worker_log_persist_failed symbol=%s error_type=%s", self.symbol, type(exc).__name__)
+        await self.publish({"type": "WORKER_LOG", "symbol": self.symbol, "log": entry})
 
     async def publish(self, event: dict[str, object]) -> None:
         """Attach the owner to worker events for authenticated stream fanout."""
@@ -243,6 +298,7 @@ class SymbolWorker:
             self.queue_overflows += 1
             self.status = "DEGRADED"
             self.last_error = "worker candle queue is full"
+            self.record_log("ERROR", "QUEUE_OVERFLOW", self.last_error)
 
     async def _publish_mark_update(self, price: float, timestamp: int) -> None:
         """Update displayed PnL only. Strategy evaluation remains on closed candles."""
@@ -286,6 +342,7 @@ class SymbolWorker:
                     break
                 continue
             received_at = float(event.get("_worker_received_at", time.perf_counter()))
+            previous_status = self.status
             try:
                 if not await self._renew_lease():
                     self.pending_bar_times.discard(int(event["bar"]["time"]))
@@ -309,6 +366,8 @@ class SymbolWorker:
                     if latest_time <= scheduled_through:
                         self.status = "RUNNING"
                         self.last_error = None
+                if previous_status in {"ERROR", "DEGRADED"} and self.status == "RUNNING":
+                    self.record_log("INFO", "WORKER_RECOVERED", "El worker recuperó el procesamiento normal de velas.")
                 if not await self._renew_lease():
                     break
             except asyncio.CancelledError:
@@ -316,6 +375,7 @@ class SymbolWorker:
             except Exception as exc:
                 self.status = "ERROR"
                 self.last_error = str(exc)[:300]
+                self.record_log("ERROR", "CANDLE_PROCESSING_FAILED", f"{type(exc).__name__}: {self.last_error}")
                 logger.exception("production_worker_event_failed symbol=%s", self.symbol)
                 if self.running:
                     await asyncio.sleep(0.5)
@@ -339,6 +399,7 @@ class SymbolWorker:
             owned = False
         self.status = "LEASE_LOST"
         self.last_error = "worker lease was claimed by another backend instance"
+        self.record_log("ERROR", "LEASE_LOST", self.last_error)
         self.running = False
         if self.on_lease_lost is not None:
             self.on_lease_lost()
@@ -647,9 +708,11 @@ class BinanceExecutionAdapter:
                 else:
                     worker.status = "DEGRADED"
                     worker.last_error = "La intención Live ya existe; Binance todavía no confirma su posición. Requiere reconciliación."
+                    worker.record_log("ERROR", "LIVE_RECONCILIATION_REQUIRED", worker.last_error)
                 return intent
             worker.status = "DEGRADED"
             worker.last_error = f"Señal Tracker ya registrada con estado Live {status or 'desconocido'}; no se repetirá la orden."
+            worker.record_log("WARN", "LIVE_SIGNAL_ALREADY_HANDLED", worker.last_error)
             return intent
         close_side = "SELL" if side == "LONG" else "BUY"
         stop = price * (1 - (1 if side == "LONG" else -1) * worker.stop_percent / 100)
@@ -692,6 +755,7 @@ class BinanceExecutionAdapter:
                     await asyncio.to_thread(self.store.update, intent["id"], worker.user_id, status="RECONCILIATION_REQUIRED", last_error=f"order_lookup:{type(lookup_error).__name__}")
                     worker.status = "DEGRADED"
                     worker.last_error = "Binance no confirmó el resultado de la orden; se requiere reconciliación antes de reintentar."
+                    worker.record_log("ERROR", "LIVE_ORDER_RECONCILIATION", worker.last_error)
                     await worker.publish({"type": "LIVE_RECONCILIATION_REQUIRED", "symbol": worker.symbol, "signal_id": bar.get("signal_id")})
                     logger.warning("live_worker_order_lookup_failed symbol=%s error_type=%s", worker.symbol, type(lookup_error).__name__)
                     return intent
@@ -740,6 +804,7 @@ class BinanceExecutionAdapter:
             await asyncio.to_thread(self.store.update, intent["id"], worker.user_id, status="UNPROTECTED_ERROR" if order_submission_started else "ERROR", last_error=f"execution_failed:{type(exc).__name__}")
             worker.status = "ERROR" if order_submission_started else worker.status
             worker.last_error = "No se pudo confirmar una ejecución Live segura; requiere revisión antes de nuevos intentos."
+            worker.record_log("ERROR", "LIVE_ENTRY_FAILED", worker.last_error)
             await worker.publish({"type": "LIVE_RECONCILIATION_REQUIRED", "symbol": worker.symbol, "signal_id": bar.get("signal_id")})
             logger.warning("live_worker_entry_failed symbol=%s error_type=%s", worker.symbol, type(exc).__name__)
             return intent
@@ -767,6 +832,7 @@ class BinanceExecutionAdapter:
                 await asyncio.to_thread(self.store.update, operation["id"], worker.user_id, status="CLOSING", last_error=f"cierre parcial o pendiente: {close_result.get('status')}")
                 worker.status = "DEGRADED"
                 worker.last_error = "El cierre de Binance sigue pendiente de reconciliación."
+                worker.record_log("ERROR", "LIVE_CLOSE_PENDING", worker.last_error)
                 return operation
         for field_name in ("stop_algo_id", "take_profit_algo_id"):
             algo_id = operation.get(field_name)
@@ -805,6 +871,7 @@ class BinanceExecutionAdapter:
                         logger.exception("live_worker_new_protection_cleanup_failed symbol=%s", worker.symbol)
             worker.status = "DEGRADED"
             worker.last_error = "No se pudieron reemplazar las protecciones Binance; se conservan las anteriores."
+            worker.record_log("ERROR", "LIVE_PROTECTION_REPLACE_FAILED", worker.last_error)
             logger.exception("live_worker_protection_update_failed symbol=%s", worker.symbol)
             return
         old_ids = (operation.get("stop_algo_id"), operation.get("take_profit_algo_id"))
@@ -908,6 +975,9 @@ class ProductionWorkerManager:
                 worker.last_bar_time = runtime.get("last_bar_time")
             if runtime is not None:
                 worker.tracker_operation = runtime.get("tracker_operation")
+                saved_logs = runtime.get("recent_logs")
+                if isinstance(saved_logs, list):
+                    worker.recent_logs.extend(entry for entry in saved_logs[-100:] if isinstance(entry, dict))
                 saved_parameters = runtime.get("adaptive_parameters")
                 if isinstance(saved_parameters, dict) and saved_parameters:
                     worker.adaptive_parameters = saved_parameters
@@ -953,6 +1023,7 @@ class ProductionWorkerManager:
         await asyncio.wait_for(worker.started.wait(), timeout=1)
         self.gateway.add_listener(worker.symbol, worker.offer_market_event)
         worker.initialization_task = asyncio.create_task(self._initialize_worker(worker, runtime), name=f"production-worker-init-{user_id}-{worker.symbol}")
+        worker.record_log("INFO", "WORKER_STARTED", f"Worker {mode} iniciado para {worker.symbol}.")
         await self.events.publish({"user_id": user_id, "type": "WORKER_STARTED", "symbol": worker.symbol, "mode": mode})
         return self.status(user_id, symbol)
 
@@ -966,6 +1037,7 @@ class ProductionWorkerManager:
         except Exception as exc:
             worker.status = "DEGRADED"
             worker.last_error = f"market history seed failed: {exc}"[:300]
+            worker.record_log("ERROR", "HISTORY_SEED_FAILED", f"{type(exc).__name__}: no se pudo cargar el historial de mercado.")
             logger.exception("production_worker_history_seed_failed symbol=%s", worker.symbol)
         try:
             worker.bars = self.gateway.snapshot(worker.symbol, worker.interval)[-WINDOW_BARS:]
@@ -978,6 +1050,7 @@ class ProductionWorkerManager:
                 if int(closed_bars[0]["time"]) > int(worker.last_bar_time) + interval_seconds:
                     worker.status = "DEGRADED"
                     worker.last_error = "recovery gap exceeds retained candle history; resuming from latest closed candle"
+                    worker.record_log("WARN", "RECOVERY_GAP", worker.last_error)
                     worker.last_bar_time = int(closed_bars[-1]["time"])
                     gap_exceeded = True
             if runtime is not None and runtime.get("last_bar_time") is not None and not gap_exceeded:
@@ -1003,9 +1076,12 @@ class ProductionWorkerManager:
                 worker.adaptive_parameters["parameter_version"] = worker.parameter_version
                 await self.events.publish({"user_id": worker.user_id, "type": "TRACKER_PARAMETERS_UPDATED", "symbol": worker.symbol, **params, "parameter_version": worker.parameter_version})
                 await worker._persist_runtime_snapshot()
+            if worker.status == "STARTING":
+                worker.record_log("INFO", "WORKER_READY", "Tracker inicializado y esperando velas cerradas.")
         except Exception as exc:
             worker.status = "ERROR"
             worker.last_error = f"worker initialization failed: {exc}"[:300]
+            worker.record_log("ERROR", "INITIALIZATION_FAILED", f"{type(exc).__name__}: no se pudo inicializar el Tracker.")
             logger.exception("production_worker_initialization_failed symbol=%s", worker.symbol)
         finally:
             worker.ready.set()
@@ -1022,6 +1098,9 @@ class ProductionWorkerManager:
             raise ValueError("La sesión tiene una operación abierta; espera su cierre para detenerla sin dejarla sin supervisión.")
         worker = self.workers.pop(key, None)
         if worker is not None:
+            worker.record_log("INFO", "WORKER_STOPPED", f"Worker detenido para {worker.symbol}.")
+            if worker.recent_logs:
+                await worker._persist_log(worker.recent_logs[-1])
             await self._shutdown_worker(worker, status="STOPPED")
             await self.events.publish({"user_id": user_id, "type": "WORKER_STOPPED", "symbol": worker.symbol})
         if self.config_store is not None:
@@ -1243,6 +1322,7 @@ class ProductionWorkerManager:
                 except Exception as exc:
                     worker.status = "DEGRADED"
                     worker.last_error = f"Live recovery blocked: {exc}"[:300]
+                    worker.record_log("ERROR", "LIVE_RECOVERY_BLOCKED", f"{type(exc).__name__}: reconciliación Live bloqueada.")
                     logger.warning("production_worker_live_recovery_blocked symbol=%s", symbol, exc_info=True)
             except Exception:
                 logger.exception("production_worker_restore_failed symbol=%s", config.get("symbol"))
@@ -1286,3 +1366,11 @@ class ProductionWorkerManager:
 
     def list(self, user_id: str) -> list[dict[str, Any]]:
         return [self.status(user_id, symbol) for uid, symbol in self.workers if uid == user_id]
+
+    def logs(self, user_id: str, symbol: str, limit: int = 50) -> list[dict[str, Any]]:
+        worker = self.workers.get((user_id, symbol.upper()))
+        if worker is not None:
+            return list(worker.recent_logs)[-max(1, min(limit, 100)):][::-1]
+        if self.config_store is not None:
+            return self.config_store.logs(user_id, symbol, limit)
+        return []
