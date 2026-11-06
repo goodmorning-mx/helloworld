@@ -253,7 +253,12 @@ class SymbolWorker:
 
             tracker = self.tracker_operation
             if tracker is not None:
-                tracker.update({"current_price": price, "current_time": timestamp, "unrealized_pnl": signed_notional(tracker)})
+                notional = self._tracker_notional(tracker)
+                leverage = max(1.0, float(self.adaptive_parameters.get("leverage", 1.0)))
+                direction = 1 if str(tracker["side"]).upper() == "LONG" else -1
+                entry_price = float(tracker["entry_price"])
+                unrealized_pnl = (price - entry_price) / entry_price * direction * notional
+                tracker.update({"current_price": price, "current_time": timestamp, "unrealized_pnl": unrealized_pnl, "unrealized_roe_percent": unrealized_pnl / notional * leverage * 100 if notional > 0 else 0.0, "notional": notional, "leverage": leverage})
             operation = self.operation
             if operation is not None:
                 operation.update({"current_price": price, "current_time": timestamp, "unrealized_pnl": signed_notional(operation)})
@@ -413,7 +418,12 @@ class SymbolWorker:
             reason = raw_reason if raw_reason != "TP" or opposite_signal else None
             if reason is not None:
                 tracker_closed = True
-                await self.publish({"type": "TRACKER_OPERATION_CLOSED", "symbol": self.symbol, "side": tracked["side"], "reason": reason, "price": close, "bar_time": int(bar["time"]), "parameter_version": tracked.get("parameter_version"), "tracker_operation": {**tracked, "current_price": close, "current_time": int(bar["time"]), "status": "CLOSED - WIN" if reason == "TP" else "CLOSED - FAILED", "close_reason": reason}})
+                direction = 1 if str(tracked["side"]).upper() == "LONG" else -1
+                entry_price = float(tracked["entry_price"])
+                notional = self._tracker_notional(tracked)
+                leverage = max(1.0, float(self.adaptive_parameters.get("leverage", 1.0)))
+                price_return = (close - entry_price) / entry_price * direction
+                await self.publish({"type": "TRACKER_OPERATION_CLOSED", "symbol": self.symbol, "side": tracked["side"], "reason": reason, "price": close, "bar_time": int(bar["time"]), "entry_time": tracked.get("entry_time"), "parameter_version": tracked.get("parameter_version"), "pnl_usd": price_return * notional, "result_roe_percent": price_return * leverage * 100, "notional": notional, "leverage": leverage, "tracker_operation": {**tracked, "current_price": close, "current_time": int(bar["time"]), "unrealized_pnl": price_return * notional, "unrealized_roe_percent": price_return * leverage * 100, "notional": notional, "leverage": leverage, "status": "CLOSED - WIN" if reason == "TP" else "CLOSED - FAILED", "close_reason": reason}})
                 self.tracker_operation = None
                 self._schedule_recalibration()
                 if reason == "TP":
