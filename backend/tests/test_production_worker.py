@@ -1,7 +1,7 @@
 import asyncio
 import pytest
 
-from app.production_worker import BinanceExecutionAdapter, PaperExecutionAdapter, ProductionWorkerManager, SignalOnlyExecutionAdapter, SymbolWorker
+from app.production_worker import BinanceExecutionAdapter, PaperExecutionAdapter, ProductionWorkerManager, SignalOnlyExecutionAdapter, SymbolWorker, _safe_worker_log_message
 from app.telegram_service import BackendEventBus
 
 
@@ -45,6 +45,16 @@ class FakeRuntimeStore:
 
     def runtime(self, user_id, symbol):
         return self.states.get((user_id, symbol))
+
+    def append_log(self, user_id, symbol, owner_id, entry):
+        key = (user_id, symbol.upper())
+        entries = self.states.setdefault(key, {}).setdefault("recent_logs", [])
+        entries.append(entry)
+        del entries[:-100]
+        return True
+
+    def logs(self, user_id, symbol, limit=50):
+        return list(self.states.get((user_id, symbol.upper()), {}).get("recent_logs", []))[-limit:][::-1]
 
     def claim_lease(self, user_id, symbol, owner_id):
         key = (user_id, symbol)
@@ -90,6 +100,18 @@ class FakeRuntimeStore:
 
 def bar(time, open_, high, low, close, closed=True):
     return {"time": time, "open": open_, "high": high, "low": low, "close": close, "closed": closed}
+
+
+def test_worker_log_is_bounded_and_redacts_common_secrets():
+    worker = SymbolWorker("user", "TESTUSDT", "1m", 5, .2, 1.0, SignalOnlyExecutionAdapter(), FakePaperStore(), BackendEventBus())
+    for index in range(105):
+        worker.record_log("ERROR", "TEST", f"failure {index}")
+
+    assert len(worker.recent_logs) == 100
+    assert worker.recent_logs[0]["message"] == "failure 5"
+    safe = _safe_worker_log_message("Authorization: Bearer abc123 api_key=xyz /bot12345:secret-token")
+    assert "abc123" not in safe and "xyz" not in safe and "secret-token" not in safe
+    assert "[redacted]" in safe
 
 
 def test_tracker_worker_uses_previous_bars_and_one_open_operation():
