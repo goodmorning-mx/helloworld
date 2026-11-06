@@ -164,12 +164,39 @@ def test_mark_price_updates_tracker_and_paper_display_without_closing_either():
         mark = next(event for event in events if event["type"] == "WORKER_MARK_UPDATE")
         assert mark["tracker_operation"]["current_price"] == 101
         assert mark["tracker_operation"]["unrealized_pnl"] == pytest.approx(5)
+        assert mark["tracker_operation"]["unrealized_roe_percent"] == pytest.approx(10)
+        assert mark["tracker_operation"]["notional"] == pytest.approx(500)
+        assert mark["tracker_operation"]["leverage"] == pytest.approx(10)
         assert mark["operation"]["current_price"] == 101
         assert mark["operation"]["unrealized_pnl"] == pytest.approx(5)
         assert worker.tracker_operation is not None
         assert worker.operation is not None
         assert worker.tracker_operation["current_price"] == 101
         assert worker.operation["status"] == "OPEN"
+
+    asyncio.run(scenario())
+
+
+def test_tracker_close_event_includes_signed_roe_and_usd_result():
+    async def scenario():
+        events = []
+
+        class RecordingEvents:
+            async def publish(self, event):
+                events.append(event)
+
+        worker = SymbolWorker("user", "TESTUSDT", "1m", 2, .2, 1.0, SignalOnlyExecutionAdapter(), FakePaperStore(), RecordingEvents())
+        worker.adaptive_parameters = {"initial_balance": 100, "risk_percent": 1, "leverage": 10}
+        worker.bars = [bar(60, 100, 100, 100, 100), bar(120, 100, 100, 100, 100), bar(180, 100, 100, 100, 100)]
+        worker.tracker_operation = {"side": "LONG", "entry_time": 120, "entry_price": 100, "stop_percent": .2, "target_percent": 1}
+        worker._schedule_recalibration = lambda: None
+
+        await worker._evaluate(bar(240, 100, 100, 99.7, 99.7))
+
+        close = next(event for event in events if event["type"] == "TRACKER_OPERATION_CLOSED")
+        assert close["reason"] == "SL"
+        assert close["result_roe_percent"] == pytest.approx(-3)
+        assert close["pnl_usd"] == pytest.approx(-1.5)
 
     asyncio.run(scenario())
 

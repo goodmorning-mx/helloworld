@@ -23,7 +23,7 @@ class RecordingTelegram:
         return True
 
 
-def test_tracker_signal_is_formatted_once_and_entry_event_is_not_duplicated():
+def test_tracker_signal_is_formatted_once_and_execution_entry_is_not_duplicated():
     async def run():
         telegram = RecordingTelegram()
         sink = telegram_event_sink(telegram)
@@ -46,7 +46,7 @@ def test_tracker_signal_is_formatted_once_and_entry_event_is_not_duplicated():
         await sink(event)
 
         assert len(telegram.messages) == 1
-        assert telegram.messages[0] == "Señal Tracker PAPER: LONG BTCUSDT · H2 · precio 65000.5 · marco 1m · 1970-01-01 00:02 UTC · SL -0.2% · TP +1.0%"
+        assert telegram.messages[0] == "LONG ABIERTO · BTCUSDT"
 
     asyncio.run(run())
 
@@ -124,13 +124,25 @@ def test_telegram_sink_deduplicates_signal_only_after_queue_accepts(monkeypatch)
     asyncio.run(run())
 
 
-def test_parameter_events_are_suppressed_but_tracker_close_summary_is_sent():
+def test_worker_notifications_are_short_and_open_update_is_sent_only_once():
     async def run():
         telegram = RecordingTelegram()
         sink = telegram_event_sink(telegram)
+        await sink({"type": "WORKER_STARTED", "symbol": "BTCUSDT", "mode": "paper"})
+        opened = {"entry_time": 123, "side": "LONG", "unrealized_pnl": 2.5, "unrealized_roe_percent": 1.25}
+        update = {"type": "WORKER_MARK_UPDATE", "symbol": "BTCUSDT", "tracker_operation": opened}
+        await sink(update)
+        await sink(update)
         await sink({"type": "TRACKER_PARAMETERS_UPDATED", "symbol": "BTCUSDT", "target_percent": 2})
-        await sink({"type": "TRACKER_OPERATION_CLOSED", "symbol": "BTCUSDT", "side": "LONG", "reason": "TP"})
-        assert len(telegram.messages) == 1
-        assert "TRACKER_OPERATION_CLOSED BTCUSDT" in telegram.messages[0]
+        close_win = {"type": "TRACKER_OPERATION_CLOSED", "symbol": "BTCUSDT", "side": "LONG", "reason": "TP", "entry_time": 123, "result_roe_percent": 1.5, "pnl_usd": 3.0}
+        await sink(close_win)
+        await sink(close_win)
+        await sink({"type": "TRACKER_OPERATION_CLOSED", "symbol": "ETHUSDT", "side": "SHORT", "reason": "SL", "entry_time": 456, "result_roe_percent": -2.5, "pnl_usd": -5.0})
+        assert telegram.messages == [
+            "WORKER INICIADO · BTCUSDT · PAPER",
+            "UPDATE LONG BTCUSDT · WIN +1.25% · +2.50 USD",
+            "WIN · LONG BTCUSDT · +1.50% · +3.00 USD",
+            "FAIL · SHORT ETHUSDT · -2.50% · -5.00 USD",
+        ]
 
     asyncio.run(run())

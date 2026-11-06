@@ -132,39 +132,52 @@ class BackendEventBus:
 def telegram_event_sink(telegram: TelegramSink) -> Callable[[dict[str, object]], Awaitable[None]]:
     async def consume(event: dict[str, object]) -> None:
         kind = str(event.get("type", "EVENT")).upper()
-        if kind in {"PAPER_ENTRY", "LIVE_ENTRY", "TRACKER_PARAMETERS_UPDATED", "WORKER_STARTED", "WORKER_STOPPED", "WORKER_MODE_CHANGED"}:
+        if kind == "WORKER_STARTED":
+            symbol = str(event.get("symbol", ""))
+            mode = str(event.get("mode", "paper")).upper()
+            mode = {"SIGNALS_ONLY": "SEÑALES", "PAPER": "PAPER", "LIVE": "LIVE"}.get(mode, mode)
+            await telegram.send(f"WORKER INICIADO · {symbol} · {mode}")
+            return
+        if kind in {"PAPER_ENTRY", "LIVE_ENTRY", "PAPER_EXIT", "LIVE_EXIT", "TRACKER_PARAMETERS_UPDATED", "WORKER_STOPPED", "WORKER_MODE_CHANGED"}:
             return
         if kind == "TRACKER_SIGNAL":
             signal_id = str(event.get("signal_id", ""))
             side = str(event.get("side", "?"))
             symbol = str(event.get("symbol", ""))
-            level = str(event.get("level", "?"))
-            interval = str(event.get("interval", "1m"))
-            price = event.get("price", "?")
-            bar_time = event.get("bar_time")
-            mode = str(event.get("mode", "paper")).upper()
-            mode = {"SIGNALS_ONLY": "SEÑALES"}.get(mode, mode)
-            stop = event.get("stop_percent")
-            target = event.get("target_percent")
-            try:
-                candle_label = datetime.fromtimestamp(float(bar_time), timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
-            except (TypeError, ValueError, OverflowError, OSError):
-                candle_label = "hora desconocida"
-            risk_label = f" · SL -{stop}% · TP +{target}%" if stop is not None and target is not None else ""
-            message = (
-                f"Señal Tracker {mode}: {side} {symbol} · {level} · "
-                f"precio {price} · marco {interval} · {candle_label}{risk_label}"
-            )
+            message = f"{side} ABIERTO · {symbol}"
             if signal_id:
                 await telegram.send_once(signal_id, message)
             else:
                 await telegram.send(message)
             return
-        if kind not in {"TRACKER_OPERATION_CLOSED", "PAPER_EXIT", "LIVE_EXIT"}:
+        if kind == "WORKER_MARK_UPDATE":
+            tracker = event.get("tracker_operation")
+            if not isinstance(tracker, dict) or tracker.get("entry_time") is None:
+                return
+            symbol = str(event.get("symbol", ""))
+            side = str(tracker.get("side", "?")).upper()
+            entry_time = tracker.get("entry_time")
+            pnl = float(tracker.get("unrealized_pnl", 0) or 0)
+            roe = float(tracker.get("unrealized_roe_percent", 0) or 0)
+            outcome = "WIN" if pnl >= 0 else "FAIL"
+            key = f"tracker-open-update:{symbol}:{entry_time}:{side}"
+            await telegram.send_once(key, f"UPDATE {side} {symbol} · {outcome} {roe:+.2f}% · {pnl:+.2f} USD")
+            return
+        if kind != "TRACKER_OPERATION_CLOSED":
             return
         symbol = str(event.get("symbol", ""))
-        details = " · ".join(f"{key}={value}" for key, value in event.items() if key not in {"type", "symbol"})
-        await telegram.send(f"{kind} {symbol}" + (f" · {details}" if details else ""))
+        side = str(event.get("side", "?")).upper()
+        reason = str(event.get("reason", "")).upper()
+        tracker = event.get("tracker_operation")
+        tracker = tracker if isinstance(tracker, dict) else {}
+        pnl = float(event.get("pnl_usd", tracker.get("unrealized_pnl", 0)) or 0)
+        roe = float(event.get("result_roe_percent", tracker.get("unrealized_roe_percent", 0)) or 0)
+        outcome = "WIN" if reason == "TP" else "FAIL"
+        entry_time = event.get("entry_time", tracker.get("entry_time", "unknown"))
+        await telegram.send_once(
+            f"tracker-close:{symbol}:{entry_time}:{side}",
+            f"{outcome} · {side} {symbol} · {roe:+.2f}% · {pnl:+.2f} USD",
+        )
 
     return consume
 
