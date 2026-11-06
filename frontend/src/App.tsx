@@ -3859,7 +3859,8 @@ function Workspace() {
     minRoe: operation.minRoe,
     realMinRoe: operation.realMinRoe,
   }));
-  const activeWorkerTracker = showTracker && broker === 'binance' && !replayState.active && productionWorkerStatus?.running && productionWorkerStatus.symbol === symbol
+  // Keep an open live worker operation visible even when historical Tracker drawings are hidden.
+  const activeWorkerTracker = broker === 'binance' && !replayState.active && productionWorkerStatus?.running && productionWorkerStatus.symbol === symbol
     ? productionWorkerStatus.tracker_operation
     : null;
   const liveWorkerTrackerDrawing: Drawing | null = activeWorkerTracker?.entry_price && activeWorkerTracker.entry_time != null
