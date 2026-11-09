@@ -1187,6 +1187,7 @@ function Workspace() {
   const pendingBinanceTpRef = useRef<{ symbol: string; price: number } | null>(null);
   const [binanceProductionAvailable, setBinanceProductionAvailable] = useState(false);
   const [productionWorkerRunning, setProductionWorkerRunning] = useState(false);
+  const [productionWorkerBusy, setProductionWorkerBusy] = useState(false);
   const [productionWorkerStatus, setProductionWorkerStatus] = useState<ProductionWorkerView | null>(null);
   const [productionWorkerLogs, setProductionWorkerLogs] = useState<WorkerLogEntry[]>([]);
   const [lastWorkerSignal, setLastWorkerSignal] = useState<{ symbol: string; side: string; level: string; price: number; bar_time: number; parameter_version: number } | null>(null);
@@ -3959,6 +3960,8 @@ function Workspace() {
   const productionPreviewData = binancePreview.find(preview => preview.side === 'LONG');
   const riskPreviewBalance = riskBalanceForSizing;
   const toggleProductionWorker = async () => {
+    if (productionWorkerBusy) return;
+    setProductionWorkerBusy(true);
     setProductionWorkerError('');
     const headers = { ...(auth.accessToken ? { Authorization: `Bearer ${auth.accessToken}` } : {}), 'Content-Type': 'application/json' };
     try {
@@ -3983,12 +3986,22 @@ function Workspace() {
       setExecutionMode(mode === 'live' ? 'production' : 'paper');
     } catch (error) {
       setProductionWorkerError(error instanceof Error ? error.message : 'No se pudo cambiar el modo de ejecución.');
+    } finally {
+      setProductionWorkerBusy(false);
     }
   };
   const workerControlTitle = productionWorkerRunning
     ? `Detener ${productionWorkerStatus?.symbol ?? symbol} · ${productionWorkerStatus?.status ?? 'RUNNING'} · cola ${productionWorkerStatus?.queue_depth ?? 0} · p95 ${productionWorkerStatus?.p95_event_latency_ms ?? '—'} ms${productionWorkerStatus?.last_error ? ` · ${productionWorkerStatus.last_error}` : ''}`
     : scannerTargetPercent == null ? `Esperando el TP de ${symbol}` : binanceProductionAvailable ? 'Iniciar Producción' : 'Iniciar Paper';
-  const workerControlChip = broker === 'binance' ? <button type="button" className={`tracker-worker-chip ${productionWorkerRunning ? 'tracker-worker-chip-running' : ''}`} onClick={() => void toggleProductionWorker()} disabled={!productionWorkerRunning && scannerTargetPercent == null} aria-label={productionWorkerRunning ? `Detener worker ${productionWorkerStatus?.symbol ?? symbol}` : 'Iniciar worker'} aria-pressed={productionWorkerRunning} title={workerControlTitle}><span aria-hidden="true">{productionWorkerRunning ? '■' : '▶'}</span><b>WORKER{productionWorkerRunning ? ` · ${productionWorkerStatus?.symbol ?? symbol}` : ''}</b><small>{productionWorkerRunning ? 'STOP' : 'PLAY'}</small></button> : null;
+  const workerControlChip = broker === 'binance' ? <div className={`tracker-worker-control ${productionWorkerRunning ? 'tracker-worker-control-running' : ''}`} role="group" aria-label="Control del worker">
+    <div className="tracker-worker-control-status" role="status" aria-live="polite">
+      <span className="tracker-worker-status-light" aria-hidden="true" />
+      <span><small>{productionWorkerBusy ? 'ACTUALIZANDO WORKER' : productionWorkerRunning ? `WORKER ${productionWorkerStatus?.status ?? 'ACTIVO'}` : 'WORKER DETENIDO'}</small><b>{productionWorkerRunning ? `${productionWorkerStatus?.symbol ?? symbol} · ${(productionWorkerStatus?.mode ?? 'paper').toUpperCase()}` : `${symbol} · LISTO PARA INICIAR`}</b></span>
+    </div>
+    <button type="button" className={`tracker-worker-action ${productionWorkerRunning ? 'tracker-worker-action-stop' : 'tracker-worker-action-play'}`} onClick={() => void toggleProductionWorker()} disabled={productionWorkerBusy || (!productionWorkerRunning && scannerTargetPercent == null)} aria-label={productionWorkerBusy ? 'Actualizando worker' : productionWorkerRunning ? `Detener worker ${productionWorkerStatus?.symbol ?? symbol}` : `Iniciar worker ${symbol}`} aria-pressed={productionWorkerRunning} title={workerControlTitle}>
+      <span aria-hidden="true">{productionWorkerRunning ? '■' : '▶'}</span><b>{productionWorkerBusy ? 'ESPERA…' : productionWorkerRunning ? 'DETENER' : 'INICIAR'}</b>
+    </button>
+  </div> : null;
   const latestWorkerLog = productionWorkerLogs[0];
   const workerLogPanel = <details className="worker-log-panel" open={Boolean(latestWorkerLog && ['ERROR', 'WARN'].includes(latestWorkerLog.level))}><summary><span>LOG WORKER · {productionWorkerStatus?.symbol ?? symbol}</span><strong className={`worker-log-level worker-log-level-${(latestWorkerLog?.level ?? 'info').toLowerCase()}`}>{latestWorkerLog ? `${latestWorkerLog.level} · ${latestWorkerLog.message}` : 'Sin eventos registrados'}</strong><small>{productionWorkerLogs.length} eventos recientes · hasta 100 conservados</small></summary><div className="worker-log-entries">{productionWorkerLogs.length ? productionWorkerLogs.map(entry => <div className={`worker-log-entry worker-log-level-${entry.level.toLowerCase()}`} key={entry.id}><time>{new Date(entry.time).toLocaleString('es-MX', { timeZone: timezone, dateStyle: 'short', timeStyle: 'medium' })}</time><b>{entry.level}</b><code>{entry.event}</code><span>{entry.message}</span></div>) : <p>Al iniciar el worker aquí aparecerán el arranque, errores y recuperación.</p>}</div></details>;
   const previewControls = <div className="parameter-card-actions"><button type="button" className={`binance-sizing-toggle ${binanceSizingMode === 'maximum' ? 'binance-sizing-maximum' : ''}`} onClick={() => setBinanceSizingMode(current => { const next = current === 'minimum' ? 'maximum' : 'minimum'; localStorage.setItem('helloworld-binance-sizing-mode', next); return next; })} aria-label="Cambiar modo de sizing Binance" title="Alternar modo mínimo/máximo">{binanceSizingMode === 'minimum' ? 'MÍN' : 'MÁX'}</button></div>;
