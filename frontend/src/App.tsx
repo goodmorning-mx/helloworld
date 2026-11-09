@@ -1221,6 +1221,7 @@ function Workspace() {
   const [showTrackerFails, setShowTrackerFails] = useState(() => localStorage.getItem('helloworld-tracker-show-fails') === 'true');
   const [showWickExtensions, setShowWickExtensions] = useState(() => localStorage.getItem('helloworld-indicator-wick-extensions') === 'true');
   const [trackerVirtualOperations, setTrackerVirtualOperations] = useState<TrackerVirtualOperation[]>([]);
+  const [trackerLivePriceOverride, setTrackerLivePriceOverride] = useState<{ symbol: string; operationId: string; targetPrice?: number; stopPrice?: number } | null>(null);
   const [trackerLossLimitEnabled, setTrackerLossLimitEnabled] = useState(false);
   const [symbolHistoryReady, setSymbolHistoryReady] = useState(false);
   const [trackerEquityHover, setTrackerEquityHover] = useState<{ x: number; y: number; equity: number; time: number; side: string; status: string } | null>(null);
@@ -1411,7 +1412,7 @@ function Workspace() {
   const [showEventMarkers, setShowEventMarkers] = useState(false);
   const [drawingStart, setDrawingStart] = useState<ChartPoint | null>(null);
   const [drawingEnd, setDrawingEnd] = useState<ChartPoint | null>(null);
-  const [resizeStart, setResizeStart] = useState<{ index: number; endpoint: 'start' | 'end' | 'stop' | 'target'; source?: 'paper' | 'binance' } | null>(null);
+  const [resizeStart, setResizeStart] = useState<{ index: number; endpoint: 'start' | 'end' | 'stop' | 'target'; source?: 'paper' | 'binance' | 'tracker' } | null>(null);
   const [selectedDrawing, setSelectedDrawing] = useState<number | null>(null);
   const [selectedDrawings, setSelectedDrawings] = useState<number[]>([]);
   const [lassoStart, setLassoStart] = useState<{ x: number; y: number } | null>(null);
@@ -2012,6 +2013,27 @@ function Workspace() {
         nativePriceLinesRef.current.push({ series, line: targetLine }, { series, line: stopLine });
       });
       if (!showTracker) return;
+      const openTrackerOperation = symbolHistoryReady ? trackerVirtualOperations.find(operation => !operation.closed) : undefined;
+      if (openTrackerOperation) {
+        const override = trackerLivePriceOverride?.symbol === symbol && trackerLivePriceOverride.operationId === openTrackerOperation.id
+          ? trackerLivePriceOverride
+          : null;
+        const targetPrice = override?.targetPrice ?? openTrackerOperation.target.price;
+        const stopPrice = override?.stopPrice ?? openTrackerOperation.stop.price;
+        const targetLine = series.createPriceLine({
+          id: `tracker-live-${symbol}-${openTrackerOperation.id}-tp-${canvas}`,
+          price: targetPrice,
+          color: '#3b82f6', lineWidth: 3, lineStyle: 2, lineVisible: true,
+          axisLabelVisible: true, title: 'TP', axisLabelColor: '#2563eb', axisLabelTextColor: '#eff6ff',
+        });
+        const stopLine = series.createPriceLine({
+          id: `tracker-live-${symbol}-${openTrackerOperation.id}-sl-${canvas}`,
+          price: stopPrice,
+          color: '#ef4444', lineWidth: 4, lineStyle: 2, lineVisible: true,
+          axisLabelVisible: true, title: 'SL', axisLabelColor: '#dc2626', axisLabelTextColor: '#fff1f2',
+        });
+        nativePriceLinesRef.current.push({ series, line: targetLine }, { series, line: stopLine });
+      }
       // Tracker is the entry strategy and uses the same closed 1m candles as
       // the scanner. Keep its levels identical on both chart canvases; the
       // context chart's selected interval only changes its candle display.
@@ -2044,7 +2066,7 @@ function Workspace() {
       nativePriceLinesRef.current = [];
       trackerPriceLinesRef.current = [];
     };
-  }, [drawings, binanceLiveAccount, binanceExecutionIntents, pendingBinanceTp, executionMode, broker, symbol, interval, mobilePwa, visibleClosedId, showTracker, trackerPeriod, trackerRevision]);
+  }, [drawings, binanceLiveAccount, binanceExecutionIntents, pendingBinanceTp, executionMode, broker, symbol, interval, mobilePwa, visibleClosedId, showTracker, symbolHistoryReady, trackerVirtualOperations, trackerLivePriceOverride, trackerPeriod, trackerRevision]);
 
   useEffect(() => {
     if (!chartStage.current) return;
@@ -2787,7 +2809,7 @@ function Workspace() {
     return null;
   }
 
-  function startPriceLineDrag(event: PointerEvent<SVGLineElement>, index: number, endpoint: 'target' | 'stop', canvas: ChartCanvas, source: 'paper' | 'binance' = 'paper') {
+  function startPriceLineDrag(event: PointerEvent<SVGLineElement>, index: number, endpoint: 'target' | 'stop', canvas: ChartCanvas, source: 'paper' | 'binance' | 'tracker' = 'paper') {
     event.preventDefault();
     event.stopPropagation();
     setDrawingCanvas(canvas);
@@ -2802,6 +2824,12 @@ function Workspace() {
     const width = canvas === 'context' ? overviewSize.width : stageSize.width;
     const paperHitAreas = productionOnly ? [] : drawings;
     const productionHitAreas = productionOnly ? productionDrawings : [];
+    const openTrackerOperation = showTracker && symbolHistoryReady ? trackerVirtualOperations.find(operation => !operation.closed) : undefined;
+    const trackerOverride = openTrackerOperation && trackerLivePriceOverride?.symbol === symbol && trackerLivePriceOverride.operationId === openTrackerOperation.id
+      ? trackerLivePriceOverride
+      : null;
+    const trackerTargetY = openTrackerOperation ? candles.priceToCoordinate(trackerOverride?.targetPrice ?? openTrackerOperation.target.price) : null;
+    const trackerStopY = openTrackerOperation ? candles.priceToCoordinate(trackerOverride?.stopPrice ?? openTrackerOperation.stop.price) : null;
     return <><g className="price-indicator-layer">{renderPriceIndicators(canvas)}</g><g className="price-line-hit-areas">{paperHitAreas.map((drawing, index) => {
       if (!drawing.paper || drawing.closed || (drawing.type !== 'long' && drawing.type !== 'short')) return null;
       if (drawing.symbol && drawing.symbol !== symbol) return null;
@@ -2814,7 +2842,7 @@ function Workspace() {
       if (drawing.symbol && drawing.symbol !== symbol) return null;
       const targetY = drawing.target ? candles.priceToCoordinate(drawing.target.price) : null;
       return <g key={`binance-price-hit-${index}`}><line x1="0" y1={targetY ?? -100} x2={width} y2={targetY ?? -100} className="price-line-hit-target" pointerEvents="stroke" onPointerDown={event => startPriceLineDrag(event, index, 'target', canvas, 'binance')} /></g>;
-    })}</g></>;
+    })}{openTrackerOperation && <g key={`tracker-live-price-hit-${openTrackerOperation.id}`}><line x1="0" y1={trackerTargetY ?? -100} x2={width} y2={trackerTargetY ?? -100} className="price-line-hit-target" pointerEvents="stroke" onPointerDown={event => startPriceLineDrag(event, -1, 'target', canvas, 'tracker')} /><line x1="0" y1={trackerStopY ?? -100} x2={width} y2={trackerStopY ?? -100} className="price-line-hit-stop" pointerEvents="stroke" onPointerDown={event => startPriceLineDrag(event, -1, 'stop', canvas, 'tracker')} /></g>}</g></>;
   }
 
   function renderSessionIndicator() {
@@ -3115,6 +3143,25 @@ function Workspace() {
       const price = candles?.coordinateToPrice(point.y);
       if (price === null || price === undefined) return;
       const resize = resizeStart;
+      if (resize.source === 'tracker') {
+        const operation = symbolHistoryReady ? trackerVirtualOperations.find(item => !item.closed) : undefined;
+        if (!operation) return;
+        const currentOverride = trackerLivePriceOverride?.symbol === symbol && trackerLivePriceOverride.operationId === operation.id
+          ? trackerLivePriceOverride
+          : null;
+        const targetPrice = currentOverride?.targetPrice ?? operation.target.price;
+        const stopPrice = currentOverride?.stopPrice ?? operation.stop.price;
+        const adjustedPrice = resize.endpoint === 'target'
+          ? (operation.side === 'long' ? Math.max(price, stopPrice) : Math.min(price, stopPrice))
+          : (operation.side === 'long' ? Math.min(price, targetPrice) : Math.max(price, targetPrice));
+        setTrackerLivePriceOverride({
+          symbol,
+          operationId: operation.id,
+          targetPrice: resize.endpoint === 'target' ? adjustedPrice : targetPrice,
+          stopPrice: resize.endpoint === 'stop' ? adjustedPrice : stopPrice,
+        });
+        return;
+      }
       if (resize.source === 'binance' && resize.endpoint === 'target') {
         const drawing = productionDrawings[resize.index];
         if (!drawing || !drawing.symbol || !drawing.stop) return;
@@ -3782,7 +3829,7 @@ function Workspace() {
       const operationHoverHit = <rect key={`${operationId}-operation-hover`} x={left} y={Math.min(targetTop, stopTop)} width={Math.max(width, 120)} height={Math.max(32, Math.abs(stopTop - targetTop) + Math.max(targetHeight, stopHeight))} fill="transparent" pointerEvents="all" onPointerEnter={() => setTrackerOperationHover({ id: operationId, x: left + 8, y: Math.min(targetTop, stopTop) + 12, label: 'OPERACIÓN', roePercent: resultRoe, pnlUsd: resultPnl, time: Number(drawing.end.time) })} onPointerLeave={() => setTrackerOperationHover(null)} />;
       handleNodes = [...handleNodes, ...trackerExtremeMarkers, operationHoverHit, resultHit, ...(trackerTooltip ? [trackerTooltip] : []), ...(trackerSummaryTooltip ? [trackerSummaryTooltip] : []), ...(trackerResultSummaryTooltip ? [trackerResultSummaryTooltip] : [])];
     }
-    return <g key={index} className={`${selectedClass ?? ''} ${paperClass}`}>{drawing.paper && canvas === 'context' && <><line x1={start.x} y1={0} x2={start.x} y2={overviewSize.height} className="paper-opening-index" /><text x={start.x + 6} y={18} className="paper-opening-label">Apertura · {chartTimeLabel(drawing.start.time, timezone, false)}</text></>}{closedLoss ? <rect x={left} y={lossTop} width={width} height={Math.max(1, lossHeight)} className="position-loss-closed" /> : <><rect x={left} y={targetTop} width={width} height={targetHeight} className={targetPercent >= 0 ? 'position-profit' : 'position-risk'} /><rect x={left} y={stopTop} width={width} height={stopHeight} className={riskPercent <= 0 ? 'position-risk' : 'position-profit'} /></>}<line x1={left} y1={start.y} x2={left + width} y2={start.y} className="position-entry" /><line x1={left} y1={end.y} x2={left + width} y2={end.y} className="paper-current-price" />{drawing.trackerLive && <><line x1={start.x} y1={targetPoint.y} x2={end.x} y2={targetPoint.y} className="tracker-live-target-line" /><line x1={start.x} y1={stop.y} x2={end.x} y2={stop.y} className="tracker-live-stop-line" /></>}{drawing.paper && <><text x={left + 8} y={Math.max(14, start.y - 8)} className={`paper-operation-label ${paperStatusClass}`}>{drawing.real ? 'BINANCE · REAL' : `Paper Operation · ${paperStatusLabel}`}</text><text x={left + 8} y={targetPoint.y - 10} className="paper-target-label">TP {targetLabel} · +{tpAmount.toFixed(2)} USDT{feeLabel}</text><text x={left + 8} y={stop.y + 18} className="paper-stop-label">SL {riskLabel} · -{slAmount.toFixed(2)} USDT{feeLabel}</text><text x={left + width + 8} y={end.y - 8} className={`paper-current-label ${livePnl >= 0 ? 'paper-current-profit' : 'paper-current-loss'}`}>PNL {livePnl >= 0 ? '+' : ''}{livePnl.toFixed(2)} USDT</text></>}{drawing.trackerLive && <><text x={left + 8} y={Math.max(14, start.y - 8)} className="position-label tracker-live-label">TRACKER EN VIVO · {drawing.type.toUpperCase()}</text><text x={left + 8} y={targetPoint.y - 10} className="paper-target-label">TP {targetLabel} · +{tpAmount.toFixed(2)} USDT{feeLabel}</text><text x={left + 8} y={stop.y + 18} className="paper-stop-label">SL {riskLabel} · -{slAmount.toFixed(2)} USDT{feeLabel}</text><text x={left + width + 8} y={end.y - 8} className={`paper-current-label ${livePnl >= 0 ? 'paper-current-profit' : 'paper-current-loss'}`}>PNL {livePnl >= 0 ? '+' : ''}{livePnl.toFixed(4)} USDT</text></>}{!drawing.paper && drawing.backtest && trackerOperationHover?.id === operationId && <><text x={left + 8} y={targetTop + 18} className={`position-label ${resultLabelClass}`}>{drawing.status === 'CLOSED - WIN' ? 'WIN' : 'FAIL'} · PNL {drawing.pnl != null ? `${drawing.pnl >= 0 ? '+' : ''}${drawing.pnl.toFixed(2)} USDT` : ''}</text><text x={left + 8} y={targetTop + 34} className={`position-label ${resultLabelClass}`}>TP FINAL +{(drawing.finalTargetPercent ?? targetPercent).toFixed(2)}%</text><text x={left + 8} y={targetTop + 48} className={`position-label ${resultLabelClass}`}>N AP {drawing.bodyAveragePercentAtOpen?.toFixed(3) ?? '—'}%</text><text x={left + 8} y={targetTop + 62} className={`position-label ${resultLabelClass}`}>N CIERRE {drawing.bodyAveragePercentAtClose?.toFixed(3) ?? '—'}%</text></>}{!drawing.paper && !drawing.backtest && !drawing.trackerLive && <><text x={left + 8} y={targetTop + 18} className="position-label">TP {targetLabel}</text><text x={left + 8} y={stopTop + 18} className="position-label">SL {riskLabel}</text><text x={left + 8} y={Math.max(targetTop, stopTop) + 34} className="position-label">R:R {rr.toFixed(2)}:1</text></>}{drawing.real ? null : drawing.paper ? handleNodes : handleNodes}</g>;
+    return <g key={index} className={`${selectedClass ?? ''} ${paperClass}`}>{drawing.paper && canvas === 'context' && <><line x1={start.x} y1={0} x2={start.x} y2={overviewSize.height} className="paper-opening-index" /><text x={start.x + 6} y={18} className="paper-opening-label">Apertura · {chartTimeLabel(drawing.start.time, timezone, false)}</text></>}{closedLoss ? <rect x={left} y={lossTop} width={width} height={Math.max(1, lossHeight)} className="position-loss-closed" /> : <><rect x={left} y={targetTop} width={width} height={targetHeight} className={targetPercent >= 0 ? 'position-profit' : 'position-risk'} /><rect x={left} y={stopTop} width={width} height={stopHeight} className={riskPercent <= 0 ? 'position-risk' : 'position-profit'} /></>}<line x1={left} y1={start.y} x2={left + width} y2={start.y} className="position-entry" /><line x1={left} y1={end.y} x2={left + width} y2={end.y} className="paper-current-price" />{drawing.paper && <><text x={left + 8} y={Math.max(14, start.y - 8)} className={`paper-operation-label ${paperStatusClass}`}>{drawing.real ? 'BINANCE · REAL' : `Paper Operation · ${paperStatusLabel}`}</text><text x={left + 8} y={targetPoint.y - 10} className="paper-target-label">TP {targetLabel} · +{tpAmount.toFixed(2)} USDT{feeLabel}</text><text x={left + 8} y={stop.y + 18} className="paper-stop-label">SL {riskLabel} · -{slAmount.toFixed(2)} USDT{feeLabel}</text><text x={left + width + 8} y={end.y - 8} className={`paper-current-label ${livePnl >= 0 ? 'paper-current-profit' : 'paper-current-loss'}`}>PNL {livePnl >= 0 ? '+' : ''}{livePnl.toFixed(2)} USDT</text></>}{drawing.trackerLive && <><text x={left + 8} y={Math.max(14, start.y - 8)} className="position-label tracker-live-label">TRACKER EN VIVO · {drawing.type.toUpperCase()}</text><text x={left + 8} y={targetPoint.y - 10} className="paper-target-label">TP {targetLabel} · +{tpAmount.toFixed(2)} USDT{feeLabel}</text><text x={left + 8} y={stop.y + 18} className="paper-stop-label">SL {riskLabel} · -{slAmount.toFixed(2)} USDT{feeLabel}</text><text x={left + width + 8} y={end.y - 8} className={`paper-current-label ${livePnl >= 0 ? 'paper-current-profit' : 'paper-current-loss'}`}>PNL {livePnl >= 0 ? '+' : ''}{livePnl.toFixed(4)} USDT</text></>}{!drawing.paper && drawing.backtest && trackerOperationHover?.id === operationId && <><text x={left + 8} y={targetTop + 18} className={`position-label ${resultLabelClass}`}>{drawing.status === 'CLOSED - WIN' ? 'WIN' : 'FAIL'} · PNL {drawing.pnl != null ? `${drawing.pnl >= 0 ? '+' : ''}${drawing.pnl.toFixed(2)} USDT` : ''}</text><text x={left + 8} y={targetTop + 34} className={`position-label ${resultLabelClass}`}>TP FINAL +{(drawing.finalTargetPercent ?? targetPercent).toFixed(2)}%</text><text x={left + 8} y={targetTop + 48} className={`position-label ${resultLabelClass}`}>N AP {drawing.bodyAveragePercentAtOpen?.toFixed(3) ?? '—'}%</text><text x={left + 8} y={targetTop + 62} className={`position-label ${resultLabelClass}`}>N CIERRE {drawing.bodyAveragePercentAtClose?.toFixed(3) ?? '—'}%</text></>}{!drawing.paper && !drawing.backtest && !drawing.trackerLive && <><text x={left + 8} y={targetTop + 18} className="position-label">TP {targetLabel}</text><text x={left + 8} y={stopTop + 18} className="position-label">SL {riskLabel}</text><text x={left + 8} y={Math.max(targetTop, stopTop) + 34} className="position-label">R:R {rr.toFixed(2)}:1</text></>}{drawing.real ? null : drawing.paper ? handleNodes : handleNodes}</g>;
   };
 
   const liveReferencePrice = binanceLivePriceRef.current?.price ?? candleBarsRef.current[candleBarsRef.current.length - 1]?.close ?? 0;
@@ -3876,8 +3923,8 @@ function Workspace() {
     end: !operation.closed
       ? { time: (activeTrackerMark?.time ?? operation.end.time) as UTCTimestamp, price: activeTrackerMark?.price ?? operation.end.price }
       : { time: operation.end.time as UTCTimestamp, price: operation.end.price },
-    stop: { time: operation.end.time as UTCTimestamp, price: operation.stop.price },
-    target: { time: operation.end.time as UTCTimestamp, price: operation.target.price },
+    stop: { time: operation.end.time as UTCTimestamp, price: trackerLivePriceOverride?.symbol === symbol && trackerLivePriceOverride.operationId === operation.id ? trackerLivePriceOverride.stopPrice ?? operation.stop.price : operation.stop.price },
+    target: { time: operation.end.time as UTCTimestamp, price: trackerLivePriceOverride?.symbol === symbol && trackerLivePriceOverride.operationId === operation.id ? trackerLivePriceOverride.targetPrice ?? operation.target.price : operation.target.price },
     pnl: !operation.closed && operation.start.price > 0
       ? ((activeTrackerMark?.price ?? operation.end.price) - operation.start.price) / operation.start.price * (operation.side === 'long' ? 1 : -1) * operation.notional
       : operation.pnl,
