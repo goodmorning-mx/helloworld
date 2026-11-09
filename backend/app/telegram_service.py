@@ -129,7 +129,7 @@ class BackendEventBus:
             await asyncio.gather(*(sink(event) for sink in self._sinks), return_exceptions=True)
 
 
-def telegram_event_sink(telegram: TelegramSink) -> Callable[[dict[str, object]], Awaitable[None]]:
+def telegram_event_sink(telegram: TelegramSink, *, tracker_notifications_enabled: bool = True) -> Callable[[dict[str, object]], Awaitable[None]]:
     async def consume(event: dict[str, object]) -> None:
         kind = str(event.get("type", "EVENT")).upper()
         if kind == "WORKER_STARTED":
@@ -137,6 +137,22 @@ def telegram_event_sink(telegram: TelegramSink) -> Callable[[dict[str, object]],
             mode = str(event.get("mode", "paper")).upper()
             mode = {"SIGNALS_ONLY": "SEÑALES", "PAPER": "PAPER", "LIVE": "LIVE"}.get(mode, mode)
             await telegram.send(f"WORKER INICIADO · {symbol} · {mode}")
+            return
+        if kind == "WORKER_LOG":
+            log = event.get("log")
+            if not isinstance(log, dict) or str(log.get("level", "")).upper() not in {"ERROR", "CRITICAL"}:
+                return
+            symbol = str(event.get("symbol", "?")).upper()[:32]
+            event_name = str(log.get("event", "ERROR"))[:60]
+            detail = " ".join(str(log.get("message", "Error sin detalle.")).split())[:300]
+            log_id = str(log.get("id", ""))
+            message = f"⚠️ ERROR WORKER · {symbol}\n{event_name} · {detail}"
+            if log_id:
+                await telegram.send_once(f"worker-error:{symbol}:{log_id}", message)
+            else:
+                await telegram.send(message)
+            return
+        if not tracker_notifications_enabled and kind in {"TRACKER_SIGNAL", "WORKER_MARK_UPDATE", "TRACKER_OPERATION_CLOSED"}:
             return
         if kind in {"PAPER_ENTRY", "LIVE_ENTRY", "PAPER_EXIT", "LIVE_EXIT", "TRACKER_PARAMETERS_UPDATED", "WORKER_STOPPED", "WORKER_MODE_CHANGED"}:
             return
