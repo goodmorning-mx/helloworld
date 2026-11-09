@@ -146,3 +146,42 @@ def test_worker_notifications_are_short_and_open_update_is_sent_only_once():
         ]
 
     asyncio.run(run())
+
+
+def test_worker_errors_are_forwarded_to_telegram_once_but_normal_logs_are_not():
+    async def run():
+        telegram = RecordingTelegram()
+        sink = telegram_event_sink(telegram)
+        await sink({
+            "type": "WORKER_LOG", "symbol": "BTCUSDT",
+            "log": {"id": "info-1", "level": "INFO", "event": "WORKER_READY", "message": "ready"},
+        })
+        await sink({
+            "type": "WORKER_LOG", "symbol": "BTCUSDT",
+            "log": {"id": "error-1", "level": "ERROR", "event": "CANDLE_PROCESSING_FAILED", "message": "ValueError: candle inválida"},
+        })
+        await sink({
+            "type": "WORKER_LOG", "symbol": "BTCUSDT",
+            "log": {"id": "error-1", "level": "ERROR", "event": "CANDLE_PROCESSING_FAILED", "message": "ValueError: candle inválida"},
+        })
+
+        assert telegram.messages == [
+            "⚠️ ERROR WORKER · BTCUSDT\nCANDLE_PROCESSING_FAILED · ValueError: candle inválida",
+        ]
+
+    asyncio.run(run())
+
+
+def test_worker_errors_reach_telegram_even_when_tracker_signals_are_disabled():
+    async def run():
+        telegram = RecordingTelegram()
+        sink = telegram_event_sink(telegram, tracker_notifications_enabled=False)
+        await sink({"type": "TRACKER_SIGNAL", "symbol": "BTCUSDT", "side": "LONG"})
+        await sink({
+            "type": "WORKER_LOG", "symbol": "BTCUSDT",
+            "log": {"id": "error-2", "level": "ERROR", "event": "INITIALIZATION_FAILED", "message": "No se pudo inicializar."},
+        })
+
+        assert telegram.messages == ["⚠️ ERROR WORKER · BTCUSDT\nINITIALIZATION_FAILED · No se pudo inicializar."]
+
+    asyncio.run(run())

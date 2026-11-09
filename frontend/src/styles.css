@@ -89,6 +89,7 @@
 .tracker-operation-summary-tooltip { display: none; }
 .tracker-operation-result-tooltip rect { stroke-width: 1.2; }
 .tracker-operation-result-tooltip text { fill: #e8edf5; font: 10px 'DM Mono', monospace; }
+.tracker-operation-result-tooltip .tracker-result-emphasis { font-size: 11px; font-weight: 900; paint-order: stroke fill; stroke: #080a0d; stroke-width: 2px; }
 .tracker-summary-win rect { fill: #0b2118f5; stroke: #00ff87; }
 .tracker-summary-win text { fill: #b9ffd9; }
 .tracker-summary-failed rect { fill: #260d13f5; stroke: #ff1744; }

@@ -71,8 +71,11 @@ binance_execution_supervisor = BinanceExecutionSupervisor(settings, binance_cred
 binance_tp_worker = BinanceTakeProfitWorker(binance_manager, binance_execution_store, settings.binance_base_url)
 telegram_sink = TelegramSink(settings.telegram_bot_token, settings.telegram_chat_id, settings.telegram_min_delay, enabled=settings.telegram_enabled)
 backend_events = BackendEventBus()
-if settings.telegram_signal_notifications_enabled:
-    backend_events.add_sink(telegram_event_sink(telegram_sink))
+if settings.telegram_enabled:
+    backend_events.add_sink(telegram_event_sink(
+        telegram_sink,
+        tracker_notifications_enabled=settings.telegram_signal_notifications_enabled,
+    ))
 production_worker_config_store = ProductionWorkerConfigStore(engine)
 scanner_snapshot_store = ScannerSnapshotStore(engine)
 production_workers = ProductionWorkerManager(
