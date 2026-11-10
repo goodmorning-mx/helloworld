@@ -56,6 +56,15 @@ class FakeRuntimeStore:
     def logs(self, user_id, symbol, limit=50):
         return list(self.states.get((user_id, symbol.upper()), {}).get("recent_logs", []))[-limit:][::-1]
 
+    def logs_for_user(self, user_id, limit=50):
+        entries = [
+            {**entry, "symbol": symbol}
+            for (owner, symbol), state in self.states.items()
+            if owner == user_id
+            for entry in state.get("recent_logs", [])
+        ]
+        return sorted(entries, key=lambda entry: entry.get("time", ""), reverse=True)[:limit]
+
     def claim_lease(self, user_id, symbol, owner_id):
         key = (user_id, symbol)
         if key in self.leases:
@@ -389,8 +398,28 @@ def test_manager_starts_and_stops_supervised_paper_worker_and_releases_lease():
         assert gateway.listeners["TESTUSDT"] == set()
         assert ("user", "TESTUSDT") not in runtime.leases
         assert ("user", "TESTUSDT") not in runtime.configs
+        stopped_log = manager.logs("user", "TESTUSDT", limit=1)[0]
+        assert stopped_log["event"] == "WORKER_STOPPED"
+        assert "procesadas" in stopped_log["message"]
+        assert "latencia p95" in stopped_log["message"]
+        assert stopped_log["metrics"]["events_processed"] == 0
+        assert manager.logs_for_user("user", limit=1)[0]["symbol"] == "TESTUSDT"
 
     asyncio.run(scenario())
+
+
+def test_worker_logs_are_queryable_across_symbols_with_symbol_context():
+    runtime = FakeRuntimeStore()
+    runtime.states[("user", "AAAUSDT")] = {"recent_logs": [{"id": "a", "time": "2026-11-10T10:00:00+00:00", "event": "WORKER_STARTED", "level": "INFO", "message": "started"}]}
+    runtime.states[("user", "BBBUSDT")] = {"recent_logs": [{"id": "b", "time": "2026-11-10T11:00:00+00:00", "event": "CANDLE_PROCESSING_FAILED", "level": "ERROR", "message": "failed"}]}
+    manager = ProductionWorkerManager(FakeGateway(), FakePaperStore(), BackendEventBus(), object(), object(), runtime)
+
+    logs = manager.logs_for_user("user", limit=10)
+
+    assert [(entry["symbol"], entry["event"]) for entry in logs] == [
+        ("BBBUSDT", "CANDLE_PROCESSING_FAILED"),
+        ("AAAUSDT", "WORKER_STARTED"),
+    ]
 
 
 def test_manager_switches_one_user_session_to_new_symbol_and_releases_old_listener():
@@ -421,6 +450,7 @@ def test_open_execution_prevents_symbol_switch_and_stop_without_orphaning_it():
         with pytest.raises(ValueError, match="operación abierta"):
             await manager.stop("user", "TESTUSDT")
         assert manager.workers[("user", "TESTUSDT")] is worker
+        assert worker.recent_logs[-1]["event"] == "STOP_BLOCKED_OPEN_OPERATION"
 
     asyncio.run(scenario())
 

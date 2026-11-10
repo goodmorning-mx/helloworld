@@ -130,7 +130,26 @@ class ProductionWorkerConfigStore:
         entries = runtime.get("recent_logs", []) if runtime else []
         if not isinstance(entries, list):
             return []
-        return [entry for entry in entries[-max(1, min(limit, 100)):][::-1] if isinstance(entry, dict)]
+        return [{**entry, "symbol": entry.get("symbol", symbol.upper())} for entry in entries[-max(1, min(limit, 100)):][::-1] if isinstance(entry, dict)]
+
+    def logs_for_user(self, user_id: str, limit: int = 50) -> list[dict[str, Any]]:
+        with self._engine.connect() as connection:
+            rows = connection.execute(
+                select(production_worker_runtime_table.c.symbol, production_worker_runtime_table.c.recent_logs)
+                .where(production_worker_runtime_table.c.user_id == user_id)
+                .order_by(production_worker_runtime_table.c.updated_at.desc())
+                .limit(100)
+            ).mappings().all()
+        entries: list[dict[str, Any]] = []
+        for row in rows:
+            saved = row["recent_logs"] if isinstance(row["recent_logs"], list) else []
+            entries.extend(
+                {**entry, "symbol": entry.get("symbol", str(row["symbol"]).upper())}
+                for entry in saved
+                if isinstance(entry, dict)
+            )
+        entries.sort(key=lambda entry: str(entry.get("time", "")), reverse=True)
+        return entries[:max(1, min(limit, 100))]
 
     def release_lease(self, user_id: str, symbol: str, owner_id: str, status: str) -> None:
         now = datetime.now(timezone.utc)
@@ -238,10 +257,14 @@ class SymbolWorker:
     last_mark_publish_at: float = 0.0
     recent_logs: deque[dict[str, Any]] = field(default_factory=lambda: deque(maxlen=100))
 
-    def record_log(self, level: str, event: str, message: str) -> None:
+    def record_log(self, level: str, event: str, message: str, *, metrics: dict[str, Any] | None = None) -> None:
         """Keep a bounded, secret-free lifecycle/error log and persist it off-loop."""
         safe_message = _safe_worker_log_message(message)
-        entry = {"id": uuid4().hex, "time": datetime.now(timezone.utc).isoformat(), "level": level.upper(), "event": event[:60], "message": safe_message}
+        if metrics is None and (level.upper() in {"WARN", "ERROR", "CRITICAL"} or event in {"WORKER_STARTED", "WORKER_READY", "WORKER_RECOVERED", "WORKER_STOPPED", "WORKER_PAUSED", "WORKER_SWITCHED"}):
+            metrics = self.metrics_snapshot()
+        entry = {"id": uuid4().hex, "time": datetime.now(timezone.utc).isoformat(), "level": level.upper(), "event": event[:60], "symbol": self.symbol, "message": safe_message}
+        if metrics is not None:
+            entry["metrics"] = metrics
         self.recent_logs.append(entry)
         loop = self.event_loop
         if loop is not None and not loop.is_closed():
@@ -404,6 +427,23 @@ class SymbolWorker:
         if self.on_lease_lost is not None:
             self.on_lease_lost()
         return False
+
+    def metrics_snapshot(self) -> dict[str, Any]:
+        latencies = sorted(self.latency_samples_ms)
+        percentile = lambda value: round(latencies[min(len(latencies) - 1, int((len(latencies) - 1) * value))], 3) if latencies else None
+        return {
+            "bars": len(self.bars),
+            "events_received": self.events_received,
+            "events_processed": self.events_processed,
+            "duplicate_events": self.duplicate_events,
+            "queue_overflows": self.queue_overflows,
+            "queue_depth": self.queue.qsize(),
+            "last_bar_time": self.last_bar_time,
+            "last_event_latency_ms": self.last_event_latency_ms,
+            "p50_event_latency_ms": percentile(.5),
+            "p95_event_latency_ms": percentile(.95),
+            "max_event_latency_ms": round(latencies[-1], 3) if latencies else None,
+        }
 
     async def on_market_event(self, event: dict[str, Any]) -> None:
         """Compatibility entry point for direct callers; gateway uses the nonblocking offer."""
@@ -1095,10 +1135,18 @@ class ProductionWorkerManager:
         key = (user_id, symbol.upper())
         active = self.workers.get(key)
         if active is not None and (active.operation is not None or active.background_operations):
+            active.record_log("WARN", "STOP_BLOCKED_OPEN_OPERATION", "Se rechazó la detención para no dejar una operación Paper sin supervisión.")
             raise ValueError("La sesión tiene una operación abierta; espera su cierre para detenerla sin dejarla sin supervisión.")
         worker = self.workers.pop(key, None)
         if worker is not None:
-            worker.record_log("INFO", "WORKER_STOPPED", f"Worker detenido para {worker.symbol}.")
+            latencies = sorted(worker.latency_samples_ms)
+            p95 = round(latencies[min(len(latencies) - 1, int((len(latencies) - 1) * .95))], 3) if latencies else None
+            message = (
+                f"Worker detenido para {worker.symbol}. Velas procesadas {worker.events_processed}/{worker.events_received}; "
+                f"duplicadas {worker.duplicate_events}; desbordes {worker.queue_overflows}; cola {worker.queue.qsize()}; "
+                f"latencia p95 {p95 if p95 is not None else '—'} ms."
+            )
+            worker.record_log("INFO", "WORKER_STOPPED", message, metrics=worker.metrics_snapshot())
             if worker.recent_logs:
                 await worker._persist_log(worker.recent_logs[-1])
             await self._shutdown_worker(worker, status="STOPPED")
@@ -1334,6 +1382,11 @@ class ProductionWorkerManager:
         await asyncio.gather(*(self._shutdown_worker(worker, status="PAUSED") for worker in workers), return_exceptions=True)
 
     async def _shutdown_worker(self, worker: SymbolWorker, *, status: str) -> None:
+        if status in {"PAUSED", "SWITCHED"}:
+            event = "WORKER_PAUSED" if status == "PAUSED" else "WORKER_SWITCHED"
+            message = "Worker pausado para reiniciar el backend; la configuración se restaurará al iniciar." if status == "PAUSED" else "Worker detenido al cambiar el símbolo activo."
+            worker.record_log("INFO", event, message)
+            await worker._persist_log(worker.recent_logs[-1])
         self.gateway.remove_listener(worker.symbol, worker.offer_market_event)
         if worker.account_listener is not None:
             self.binance_manager.unsubscribe_events(worker.user_id, worker.account_listener)
@@ -1360,9 +1413,8 @@ class ProductionWorkerManager:
 
     def status(self, user_id: str, symbol: str) -> dict[str, Any]:
         worker = self.workers.get((user_id, symbol.upper()))
-        latencies = sorted(worker.latency_samples_ms) if worker else []
-        percentile = lambda value: round(latencies[min(len(latencies) - 1, int((len(latencies) - 1) * value))], 3) if latencies else None
-        return {"running": worker is not None and worker.running, "symbol": symbol.upper(), "mode": worker.adapter.mode if worker else None, "operation": worker.operation if worker else None, "tracker_operation": worker.tracker_operation if worker else None, "adaptive_parameters": worker.adaptive_parameters if worker else None, "parameter_version": worker.parameter_version if worker else None, "bars": len(worker.bars) if worker else 0, "status": worker.status if worker else "STOPPED", "last_bar_time": worker.last_bar_time if worker else None, "queue_depth": worker.queue.qsize() if worker else 0, "events_received": worker.events_received if worker else 0, "events_processed": worker.events_processed if worker else 0, "duplicate_events": worker.duplicate_events if worker else 0, "queue_overflows": worker.queue_overflows if worker else 0, "last_event_latency_ms": worker.last_event_latency_ms if worker else None, "p50_event_latency_ms": percentile(.5), "p95_event_latency_ms": percentile(.95), "max_event_latency_ms": round(latencies[-1], 3) if latencies else None, "last_error": worker.last_error if worker else None}
+        metrics = worker.metrics_snapshot() if worker else {"bars": 0, "events_received": 0, "events_processed": 0, "duplicate_events": 0, "queue_overflows": 0, "queue_depth": 0, "last_bar_time": None, "last_event_latency_ms": None, "p50_event_latency_ms": None, "p95_event_latency_ms": None, "max_event_latency_ms": None}
+        return {"running": worker is not None and worker.running, "symbol": symbol.upper(), "mode": worker.adapter.mode if worker else None, "operation": worker.operation if worker else None, "tracker_operation": worker.tracker_operation if worker else None, "adaptive_parameters": worker.adaptive_parameters if worker else None, "parameter_version": worker.parameter_version if worker else None, "status": worker.status if worker else "STOPPED", **metrics, "last_error": worker.last_error if worker else None}
 
     def list(self, user_id: str) -> list[dict[str, Any]]:
         return [self.status(user_id, symbol) for uid, symbol in self.workers if uid == user_id]
@@ -1370,7 +1422,19 @@ class ProductionWorkerManager:
     def logs(self, user_id: str, symbol: str, limit: int = 50) -> list[dict[str, Any]]:
         worker = self.workers.get((user_id, symbol.upper()))
         if worker is not None:
-            return list(worker.recent_logs)[-max(1, min(limit, 100)):][::-1]
+            return [{**entry, "symbol": entry.get("symbol", worker.symbol)} for entry in list(worker.recent_logs)[-max(1, min(limit, 100)):][::-1]]
         if self.config_store is not None:
             return self.config_store.logs(user_id, symbol, limit)
         return []
+
+    def logs_for_user(self, user_id: str, limit: int = 50) -> list[dict[str, Any]]:
+        bounded_limit = max(1, min(limit, 100))
+        entries = self.config_store.logs_for_user(user_id, bounded_limit) if self.config_store is not None else []
+        by_id = {str(entry.get("id")): entry for entry in entries if entry.get("id")}
+        for (worker_user_id, _symbol), worker in self.workers.items():
+            if worker_user_id != user_id:
+                continue
+            for entry in worker.recent_logs:
+                by_id[str(entry.get("id"))] = {**entry, "symbol": entry.get("symbol", worker.symbol)}
+        ordered = sorted(by_id.values(), key=lambda entry: str(entry.get("time", "")), reverse=True)
+        return ordered[:bounded_limit]

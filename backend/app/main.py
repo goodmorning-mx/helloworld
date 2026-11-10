@@ -597,6 +597,12 @@ def list_production_workers(identity: AuthIdentity = Depends(identity_dependency
     return production_workers.list(identity.user_id)
 
 
+@app.get("/trading/production/workers/logs")
+def production_worker_recent_logs(limit: int = Query(50, ge=1, le=100), identity: AuthIdentity = Depends(identity_dependency(auth_service))) -> dict[str, object]:
+    """Return recent lifecycle/error logs across this user's worker symbols."""
+    return {"logs": production_workers.logs_for_user(identity.user_id, limit)}
+
+
 @app.get("/trading/production/workers/{symbol}/logs")
 def production_worker_logs(symbol: str, limit: int = Query(50, ge=1, le=100), identity: AuthIdentity = Depends(identity_dependency(auth_service))) -> dict[str, object]:
     """Return this authenticated user's bounded worker lifecycle and error log."""
