@@ -40,7 +40,9 @@ class BinanceMarketGateway:
     @staticmethod
     def _stream_url(symbol: str) -> str:
         streams = "/".join([f"{symbol.lower()}@aggTrade", f"{symbol.lower()}@markPrice@1s", *(f"{symbol.lower()}@kline_{interval}" for interval in SUPPORTED_INTERVALS)])
-        return f"wss://fstream.binance.com/stream?streams={streams}"
+        # Binance moved regular futures market data (including aggTrade,
+        # markPrice and klines) behind the /market route in its 2026 split.
+        return f"wss://fstream.binance.com/market/stream?streams={streams}"
 
     def snapshot(self, symbol: str, interval: str) -> list[dict[str, Any]]:
         return list(self._bars[self._symbol(symbol)][interval])
