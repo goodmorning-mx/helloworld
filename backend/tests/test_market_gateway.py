@@ -6,6 +6,7 @@ import time
 def test_binance_gateway_uses_one_trade_stream_and_all_candle_intervals() -> None:
     url = BinanceMarketGateway._stream_url("BTCUSDT")
 
+    assert url.startswith("wss://fstream.binance.com/market/stream?")
     assert "btcusdt@aggTrade" in url
     assert "btcusdt@markPrice@1s" in url
     for interval in SUPPORTED_INTERVALS:
