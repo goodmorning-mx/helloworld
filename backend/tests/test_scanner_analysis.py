@@ -14,16 +14,20 @@ def test_tracker_analysis_reports_optimal_tp_and_average_duration() -> None:
 
     assert result["tp_optimal_percent"] == .1
     assert result["operations"] == 1
-    # The Scanner reports the same post-limit status used by the Tracker panel.
-    assert result["wins"] == 0
-    assert result["losses"] == 1
+    # A win that crosses the limited stop keeps its WIN classification/filter,
+    # while its realized PNL and balance reflect the stop loss.
+    assert result["wins"] == 1
+    assert result["losses"] == 0
     assert result["average_duration_minutes"] == 2
-    assert result["final_result_usdt"] > 0
+    assert result["final_result_usdt"] < 0
     assert len(result["operation_details"]) == result["operations"]
     assert result["operation_details"][0]["entry_price"] == 102
     assert result["operation_details"][0]["exit_price"] == 99.5
-    assert result["operation_details"][0]["status"] == "FAIL"
+    assert result["operation_details"][0]["status"] == "WIN"
     assert result["operation_details"][0]["raw_status"] == "WIN"
+    assert result["operation_details"][0]["limited"] is True
+    assert result["operation_details"][0]["pnl"] < 0
+    assert result["operation_details"][0]["raw_pnl"] > 0
 
 
 def test_activity_state_has_stable_thresholds() -> None:
