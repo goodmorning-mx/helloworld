@@ -1,4 +1,4 @@
-from app.market_gateway import BinanceMarketGateway, SUPPORTED_INTERVALS
+from app.market_gateway import BinanceMarketGateway, MARK_PRICE_MAX_AGE_MS, SUPPORTED_INTERVALS
 import asyncio
 import time
 
@@ -64,7 +64,15 @@ def test_mark_price_fallback_runs_even_while_klines_are_live(monkeypatch) -> Non
         # Recent market events represent a healthy kline stream. There has been
         # no mark update, so the separate mark freshness check must still poll.
         gateway._last_event_ms["BTCUSDT"] = int(time.time() * 1000)
+        gateway._connected_at_ms["BTCUSDT"] = int(time.time() * 1000) - MARK_PRICE_MAX_AGE_MS - 1
         requests = []
+        closed_sockets = []
+
+        class SilentSocket:
+            async def close(self, **kwargs):
+                closed_sockets.append(kwargs)
+
+        gateway._sockets["BTCUSDT"] = SilentSocket()
 
         class Response:
             def raise_for_status(self):
@@ -105,6 +113,7 @@ def test_mark_price_fallback_runs_even_while_klines_are_live(monkeypatch) -> Non
         assert received[0]["type"] == "mark_price"
         assert received[0]["source"] == "rest-fallback"
         assert received[0]["price"] == 67501.5
+        assert closed_sockets and closed_sockets[0]["reason"] == "mark-price stream silent"
         await gateway.close()
 
     asyncio.run(scenario())

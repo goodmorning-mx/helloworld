@@ -26,6 +26,8 @@ class BinanceMarketGateway:
         self._tasks: dict[str, asyncio.Task[None]] = {}
         self._last_event_ms: dict[str, int] = {}
         self._last_mark_ws_event_ms: dict[str, int] = {}
+        self._connected_at_ms: dict[str, int] = {}
+        self._sockets: dict[str, Any] = {}
         self._latest_prices: dict[str, dict[str, Any]] = {}
         self._listeners: dict[str, set[Callable[[dict[str, Any]], Awaitable[None] | None]]] = defaultdict(set)
         self._listener_tasks: set[asyncio.Task[None]] = set()
@@ -143,6 +145,17 @@ class BinanceMarketGateway:
                             await self._publish_mark_price(symbol, float(value["markPrice"]), int(value.get("time", now_ms)), "rest-fallback")
                     except (httpx.HTTPError, ValueError, TypeError):
                         logger.warning("binance_mark_price_fallback_error symbol=%s", symbol)
+                    # A websocket can complete its handshake and then stop
+                    # delivering frames. Recycle it so the UI and worker can
+                    # recover the real stream instead of living on REST polls.
+                    last_activity = max(last_mark, self._connected_at_ms.get(symbol, 0))
+                    socket = self._sockets.get(symbol)
+                    if socket is not None and last_activity and now_ms - last_activity > MARK_PRICE_MAX_AGE_MS:
+                        await self._broadcast(symbol, {"type": "status", "symbol": symbol, "status": "RECONNECTING", "reason": "mark-price stream silent", "server_time": time.time_ns() // 1_000_000})
+                        try:
+                            await socket.close(code=1011, reason="mark-price stream silent")
+                        except Exception:
+                            logger.debug("binance_silent_socket_close_failed symbol=%s", symbol, exc_info=True)
                 last_event = self._last_event_ms.get(symbol, 0)
                 if last_event and now_ms - last_event < 8_000:
                     continue
@@ -176,8 +189,9 @@ class BinanceMarketGateway:
                 try:
                     logger.info("binance_stream_connect symbol=%s", symbol)
                     async with connect(self._stream_url(symbol), ping_interval=20, ping_timeout=20, close_timeout=5) as socket:
-                        delay = 1.0
-                        await self._broadcast(symbol, {"type": "status", "symbol": symbol, "status": "LIVE", "server_time": time.time_ns() // 1_000_000})
+                        self._sockets[symbol] = socket
+                        self._connected_at_ms[symbol] = int(time.time() * 1000)
+                        await self._broadcast(symbol, {"type": "status", "symbol": symbol, "status": "CONNECTING", "server_time": time.time_ns() // 1_000_000})
                         async for raw in socket:
                             message = json.loads(raw)
                             data = message.get("data") or {}
@@ -185,6 +199,8 @@ class BinanceMarketGateway:
                                 received_at = int(time.time() * 1000)
                                 self._last_event_ms[symbol] = received_at
                                 self._last_mark_ws_event_ms[symbol] = received_at
+                                delay = 1.0
+                                await self._broadcast(symbol, {"type": "status", "symbol": symbol, "status": "LIVE", "server_time": time.time_ns() // 1_000_000})
                                 await self._publish_mark_price(symbol, float(data["p"]), int(data.get("E", received_at)), "mark-price-stream")
                                 continue
                             aggregate_trade = data.get("p")
@@ -205,10 +221,27 @@ class BinanceMarketGateway:
                 except asyncio.CancelledError:
                     raise
                 except Exception as exc:
+                    if self._sockets.get(symbol) is not None:
+                        self._sockets.pop(symbol, None)
                     logger.warning("binance_stream_error symbol=%s error=%s retry_seconds=%.1f", symbol, exc, delay)
                     await self._broadcast(symbol, {"type": "status", "symbol": symbol, "status": "RECONNECTING", "retry_seconds": delay, "server_time": time.time_ns() // 1_000_000})
                     await asyncio.sleep(delay)
                     delay = min(delay * 2, 30.0)
+                else:
+                    if self._sockets.get(symbol) is not None:
+                        self._sockets.pop(symbol, None)
+                    if self._clients[symbol] or self._listeners[symbol]:
+                        last_mark = self._last_mark_ws_event_ms.get(symbol, 0)
+                        last_activity = max(last_mark, self._connected_at_ms.get(symbol, 0))
+                        silent = not last_activity or int(time.time() * 1000) - last_activity > MARK_PRICE_MAX_AGE_MS
+                        reason = "mark-price stream silent" if silent else "upstream socket closed"
+                        logger.warning("binance_stream_ended symbol=%s reason=%s retry_seconds=%.1f", symbol, reason, delay)
+                        await self._broadcast(symbol, {"type": "status", "symbol": symbol, "status": "RECONNECTING", "retry_seconds": delay, "reason": reason, "server_time": time.time_ns() // 1_000_000})
+                        await asyncio.sleep(delay)
+                        delay = min(delay * 2, 30.0)
+                finally:
+                    if self._sockets.get(symbol) is not None:
+                        self._sockets.pop(symbol, None)
         finally:
             fallback_task.cancel()
             await asyncio.gather(fallback_task, return_exceptions=True)
