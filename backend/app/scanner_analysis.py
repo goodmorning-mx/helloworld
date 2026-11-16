@@ -137,13 +137,13 @@ def _limited_operations(operations: list[dict[str, float | int | str]], config: 
         result_roe = (float(operation["exit_price"]) - float(operation["entry_price"])) / float(operation["entry_price"]) * direction * max(1.0, float(operation["leverage"])) * 100
         raw_pnl = pnl
         raw_status = status
-        if float(operation["min_roe"]) <= -limit:
-            limited = -(limit / 100 / max(1.0, float(operation["leverage"]))) * float(operation["notional"])
-            pnl = max(pnl, limited - float(operation["notional"]) * config.fee_rate)
-            status = "FAIL"
+        was_limited = float(operation["min_roe"]) <= -limit
+        if was_limited:
+            limited_pnl = -(limit / 100 / max(1.0, float(operation["leverage"]))) * float(operation["notional"])
+            pnl = limited_pnl - float(operation["notional"]) * config.fee_rate
             result_roe = -limit
         equity += pnl
-        adjusted.append({**operation, "raw_pnl": raw_pnl, "raw_status": raw_status, "raw_result_roe": (float(operation["exit_price"]) - float(operation["entry_price"])) / float(operation["entry_price"]) * direction * max(1.0, float(operation["leverage"])) * 100, "pnl": pnl, "status": status, "result_roe": result_roe, "balance_after": equity})
+        adjusted.append({**operation, "raw_pnl": raw_pnl, "raw_status": raw_status, "raw_result_roe": (float(operation["exit_price"]) - float(operation["entry_price"])) / float(operation["entry_price"]) * direction * max(1.0, float(operation["leverage"])) * 100, "pnl": pnl, "status": status, "limited": was_limited, "result_roe": result_roe, "balance_after": equity})
     return equity, adjusted
 
 
