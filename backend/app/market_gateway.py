@@ -14,6 +14,7 @@ import httpx
 
 logger = logging.getLogger("helloworld.market_gateway")
 SUPPORTED_INTERVALS = ("1m", "3m", "5m", "15m")
+MARK_PRICE_MAX_AGE_MS = 5_000
 
 
 class BinanceMarketGateway:
@@ -24,6 +25,8 @@ class BinanceMarketGateway:
         self._clients: dict[str, set[WebSocket]] = defaultdict(set)
         self._tasks: dict[str, asyncio.Task[None]] = {}
         self._last_event_ms: dict[str, int] = {}
+        self._last_mark_ws_event_ms: dict[str, int] = {}
+        self._latest_prices: dict[str, dict[str, Any]] = {}
         self._listeners: dict[str, set[Callable[[dict[str, Any]], Awaitable[None] | None]]] = defaultdict(set)
         self._listener_tasks: set[asyncio.Task[None]] = set()
         self._lock = asyncio.Lock()
@@ -39,6 +42,27 @@ class BinanceMarketGateway:
 
     def snapshot(self, symbol: str, interval: str) -> list[dict[str, Any]]:
         return list(self._bars[self._symbol(symbol)][interval])
+
+    def latest_price(self, symbol: str, max_age_ms: int = MARK_PRICE_MAX_AGE_MS) -> dict[str, Any] | None:
+        """Return the canonical live mark only while its receipt time is fresh."""
+        symbol = self._symbol(symbol)
+        payload = self._latest_prices.get(symbol)
+        if payload is None:
+            return None
+        age_ms = int(time.time() * 1000) - int(payload.get("server_time", 0))
+        if age_ms < 0 or age_ms > max_age_ms:
+            return None
+        return {**payload, "age_ms": age_ms}
+
+    async def _publish_mark_price(self, symbol: str, price: float, exchange_time_ms: int, source: str) -> None:
+        server_time = time.time_ns() // 1_000_000
+        payload = {
+            "type": "mark_price", "symbol": symbol, "price": price,
+            "time": exchange_time_ms // 1000, "source": source,
+            "server_time": server_time,
+        }
+        self._latest_prices[symbol] = payload
+        await self._broadcast(symbol, payload)
 
     def put_bars(self, symbol: str, interval: str, bars: list[dict[str, Any]]) -> None:
         if interval not in SUPPORTED_INTERVALS:
@@ -105,8 +129,22 @@ class BinanceMarketGateway:
         async with httpx.AsyncClient(timeout=5) as client:
             while self._clients[symbol] or self._listeners[symbol]:
                 await asyncio.sleep(3)
+                now_ms = int(time.time() * 1000)
+                # Klines and aggregate trades can remain healthy while the mark
+                # stream is silent. Keep a separate freshness clock and use the
+                # exchange's mark endpoint only as a recovery path.
+                last_mark = self._last_mark_ws_event_ms.get(symbol, 0)
+                if not last_mark or now_ms - last_mark > MARK_PRICE_MAX_AGE_MS:
+                    try:
+                        response = await client.get("https://fapi.binance.com/fapi/v1/premiumIndex", params={"symbol": symbol})
+                        response.raise_for_status()
+                        value = response.json()
+                        if isinstance(value, dict) and value.get("markPrice") is not None:
+                            await self._publish_mark_price(symbol, float(value["markPrice"]), int(value.get("time", now_ms)), "rest-fallback")
+                    except (httpx.HTTPError, ValueError, TypeError):
+                        logger.warning("binance_mark_price_fallback_error symbol=%s", symbol)
                 last_event = self._last_event_ms.get(symbol, 0)
-                if last_event and int(time.time() * 1000) - last_event < 8_000:
+                if last_event and now_ms - last_event < 8_000:
                     continue
                 for interval in SUPPORTED_INTERVALS:
                     try:
@@ -144,8 +182,10 @@ class BinanceMarketGateway:
                             message = json.loads(raw)
                             data = message.get("data") or {}
                             if data.get("e") == "markPriceUpdate" and data.get("p") is not None:
-                                self._last_event_ms[symbol] = int(time.time() * 1000)
-                                await self._broadcast(symbol, {"type": "mark_price", "symbol": symbol, "price": float(data["p"]), "time": int(data.get("E", time.time() * 1000)) // 1000, "source": "mark-price-stream", "server_time": time.time_ns() // 1_000_000})
+                                received_at = int(time.time() * 1000)
+                                self._last_event_ms[symbol] = received_at
+                                self._last_mark_ws_event_ms[symbol] = received_at
+                                await self._publish_mark_price(symbol, float(data["p"]), int(data.get("E", received_at)), "mark-price-stream")
                                 continue
                             aggregate_trade = data.get("p")
                             if aggregate_trade is not None and data.get("T") is not None:
@@ -182,6 +222,9 @@ class BinanceMarketGateway:
             task = asyncio.create_task(self._consume(symbol), name=f"binance-stream-{symbol}")
             self._tasks[symbol] = task
         await websocket.send_json({"type": "status", "symbol": symbol, "status": "CONNECTING", "server_time": time.time_ns() // 1_000_000})
+        latest_price = self.latest_price(symbol)
+        if latest_price is not None:
+            await websocket.send_json(latest_price)
         for interval in SUPPORTED_INTERVALS:
             bars = self.snapshot(symbol, interval)
             if bars:
@@ -202,6 +245,16 @@ class BinanceMarketGateway:
     def add_listener(self, symbol: str, listener: Callable[[dict[str, Any]], Awaitable[None] | None]) -> None:
         symbol = self._symbol(symbol)
         self._listeners[symbol].add(listener)
+        latest_price = self.latest_price(symbol)
+        if latest_price is not None:
+            try:
+                result = listener(latest_price)
+                if inspect.isawaitable(result):
+                    task = asyncio.create_task(self._notify_async_listeners(symbol, [result]), name=f"market-listener-replay-{symbol}")
+                    self._listener_tasks.add(task)
+                    task.add_done_callback(self._listener_tasks.discard)
+            except Exception:
+                logger.exception("market_listener_replay_failed symbol=%s", symbol)
         task = self._tasks.get(symbol)
         if task is None or task.done():
             self._tasks[symbol] = asyncio.create_task(self._consume(symbol), name=f"binance-worker-stream-{symbol}")

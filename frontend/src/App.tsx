@@ -54,6 +54,10 @@ type ProductionWorkerView = {
   status?: string;
   bars?: number;
   last_bar_time?: number | null;
+  latest_price?: number | null;
+  latest_price_time?: number | null;
+  latest_price_source?: string | null;
+  latest_price_age_ms?: number | null;
   queue_depth?: number;
   events_received?: number;
   events_processed?: number;
@@ -72,7 +76,7 @@ type ProductionWorkerView = {
 
 type WorkerLogEntry = {
   id: string; time: string; level: string; event: string; symbol?: string; message: string;
-  metrics?: Partial<Pick<ProductionWorkerView, 'bars' | 'last_bar_time' | 'queue_depth' | 'events_received' | 'events_processed' | 'duplicate_events' | 'queue_overflows' | 'last_event_latency_ms' | 'p50_event_latency_ms' | 'p95_event_latency_ms' | 'max_event_latency_ms'>>;
+  metrics?: Partial<Pick<ProductionWorkerView, 'bars' | 'last_bar_time' | 'latest_price' | 'latest_price_time' | 'latest_price_source' | 'latest_price_age_ms' | 'queue_depth' | 'events_received' | 'events_processed' | 'duplicate_events' | 'queue_overflows' | 'last_event_latency_ms' | 'p50_event_latency_ms' | 'p95_event_latency_ms' | 'max_event_latency_ms'>>;
 };
 
 type WorkerOperationView = {
@@ -476,7 +480,7 @@ function updateHeikinAshiTail(rawBars: LiveBar[], transformed: LiveBar[]) {
 }
 
 type LiveBar = { time: UTCTimestamp; open: number; high: number; low: number; close: number };
-type BinanceLivePrice = { symbol: string; price: number; time: number; receivedAt: number };
+type BinanceLivePrice = { symbol: string; price: number; time: number; receivedAt: number; source?: string };
 type EventConditionField = 'price.close' | 'price.open' | 'price.high' | 'price.low' | 'ssl.direction' | 'ssl.up' | 'ssl.down' | 'rsi.value' | 'tracker.h2' | 'tracker.h1' | 'tracker.l1' | 'tracker.l2';
 type EventConditionOperator = 'equals' | 'not_equals' | 'less_than' | 'less_or_equal' | 'greater_than' | 'greater_or_equal' | 'crosses_above' | 'crosses_below';
 type EventCondition = { field: EventConditionField; operator: EventConditionOperator; value: number | string };
@@ -550,36 +554,58 @@ function mergeBars(existing: LiveBar[], incoming: LiveBar[]) {
 }
 
 function createBinanceKlineStream(symbol: string, interval: string) {
-  let socket: WebSocket | null = null;
-  let reconnectTimer: number | null = null;
-  let stopped = false;
-  let delay = 1000;
-  let messageHandler: ((event: MessageEvent) => void) | null = null;
-  const controller = {
-    set onmessage(handler: (event: MessageEvent) => void) { messageHandler = handler; },
-    close() {
-      stopped = true;
-      if (reconnectTimer !== null) window.clearTimeout(reconnectTimer);
-      socket?.close();
-      socket = null;
-    },
-  };
+  void interval; // The gateway sends one shared multiplexed symbol feed.
+  type Subscriber = { handler: ((event: MessageEvent) => void) | null; backlog: MessageEvent[] };
+  type Entry = { subscribers: Set<Subscriber>; socket: WebSocket | null; reconnectTimer: number | null; delay: number; stopped: boolean };
+  const registry = binanceMarketStreams;
+  let entry = registry.get(symbol);
+  if (!entry) {
+    entry = { subscribers: new Set(), socket: null, reconnectTimer: null, delay: 1000, stopped: false };
+    registry.set(symbol, entry);
+  }
+  const shared = entry;
+  const subscriber: Subscriber = { handler: null, backlog: [] };
+  shared.subscribers.add(subscriber);
   const connect = () => {
-    if (stopped) return;
-    socket = new WebSocket(`${marketWsUrl}/market/binance/stream/${encodeURIComponent(symbol)}`);
-    socket.onopen = () => { delay = 1000; };
-    socket.onmessage = event => messageHandler?.(event);
-    socket.onerror = () => socket?.close();
+    if (shared.stopped || shared.subscribers.size === 0) return;
+    const socket = new WebSocket(`${marketWsUrl}/market/binance/stream/${encodeURIComponent(symbol)}`);
+    shared.socket = socket;
+    socket.onopen = () => { shared.delay = 1000; };
+    socket.onmessage = event => shared.subscribers.forEach(target => {
+      if (target.handler) target.handler(event);
+      else {
+        target.backlog.push(event);
+        if (target.backlog.length > 8) target.backlog.shift();
+      }
+    });
+    socket.onerror = () => socket.close();
     socket.onclose = () => {
-      socket = null;
-      if (stopped) return;
-      reconnectTimer = window.setTimeout(connect, delay);
-      delay = Math.min(delay * 2, 30_000);
+      if (shared.socket === socket) shared.socket = null;
+      if (shared.stopped || shared.subscribers.size === 0) return;
+      shared.reconnectTimer = window.setTimeout(connect, shared.delay);
+      shared.delay = Math.min(shared.delay * 2, 30_000);
     };
   };
-  connect();
-  return controller;
+  if (!shared.socket && shared.reconnectTimer === null) connect();
+  return {
+    set onmessage(handler: (event: MessageEvent) => void) {
+      subscriber.handler = handler;
+      subscriber.backlog.splice(0).forEach(event => handler(event));
+    },
+    close() {
+      shared.subscribers.delete(subscriber);
+      if (shared.subscribers.size > 0) return;
+      shared.stopped = true;
+      if (shared.reconnectTimer !== null) window.clearTimeout(shared.reconnectTimer);
+      shared.socket?.close();
+      shared.socket = null;
+      registry.delete(symbol);
+    },
+  };
 }
+
+type BinanceMarketStreamEntry = { subscribers: Set<{ handler: ((event: MessageEvent) => void) | null; backlog: MessageEvent[] }>; socket: WebSocket | null; reconnectTimer: number | null; delay: number; stopped: boolean };
+const binanceMarketStreams = new Map<string, BinanceMarketStreamEntry>();
 
 type BinanceAccountStreamSubscriber = { onAccount: (account: BinanceAccount) => void; onIntents?: (intents: unknown) => void };
 type BinanceAccountStreamEntry = {
@@ -1584,7 +1610,7 @@ function Workspace() {
               const data = frame.split('\n').find(line => line.startsWith('data: '))?.slice(6);
               if (!data) continue;
               try {
-                const event = JSON.parse(data) as { type?: string; workers?: ProductionWorkerView[]; symbol?: string; side?: string; level?: string; price?: number; time?: number; bar_time?: number; parameter_version?: number; tracker_operation?: WorkerOperationView | null; operation?: WorkerOperationView | null; log?: WorkerLogEntry };
+                const event = JSON.parse(data) as { type?: string; workers?: ProductionWorkerView[]; symbol?: string; side?: string; level?: string; price?: number; time?: number; server_time?: number; source?: string; bar_time?: number; parameter_version?: number; tracker_operation?: WorkerOperationView | null; operation?: WorkerOperationView | null; log?: WorkerLogEntry };
                 if (event.type === 'WORKER_SNAPSHOT' && event.workers) {
                   const session = event.workers.find(worker => worker.running);
                   setProductionWorkerRunning(Boolean(session));
@@ -1601,7 +1627,7 @@ function Workspace() {
                     setLastWorkerSignal({ symbol: event.symbol, side: event.side, level: event.level, price: event.price, bar_time: event.bar_time, parameter_version: event.parameter_version ?? 0 });
                   }
                   if (event.type === 'WORKER_MARK_UPDATE' && event.symbol) {
-                    setProductionWorkerStatus(current => current && current.symbol === event.symbol ? { ...current, operation: Object.prototype.hasOwnProperty.call(event, 'operation') ? event.operation : current.operation, tracker_operation: Object.prototype.hasOwnProperty.call(event, 'tracker_operation') ? event.tracker_operation : current.tracker_operation } : current);
+                    setProductionWorkerStatus(current => current && current.symbol === event.symbol ? { ...current, latest_price: event.price ?? current.latest_price, latest_price_time: event.time ?? current.latest_price_time, latest_price_source: event.source ?? current.latest_price_source, latest_price_age_ms: 0, operation: Object.prototype.hasOwnProperty.call(event, 'operation') ? event.operation : current.operation, tracker_operation: Object.prototype.hasOwnProperty.call(event, 'tracker_operation') ? event.tracker_operation : current.tracker_operation } : current);
                     syncPaperMirror(event.operation);
                   } else if (event.type === 'PAPER_ENTRY' || event.type === 'PAPER_EXIT') {
                     syncPaperMirror(event.operation);
@@ -2300,9 +2326,9 @@ function Workspace() {
     stream.onmessage = event => {
       if (!active) return;
       if (replayRef.current.active) return;
-      const message = JSON.parse(event.data) as { type?: string; symbol?: string; price?: number; time?: number; interval?: string; bar?: { time: number; open: number; high: number; low: number; close: number } };
+      const message = JSON.parse(event.data) as { type?: string; symbol?: string; price?: number; time?: number; source?: string; server_time?: number; interval?: string; bar?: { time: number; open: number; high: number; low: number; close: number } };
       if (message.type === 'mark_price' && message.price && message.time) {
-        binanceLivePriceRef.current = { symbol, price: Number(message.price), time: Number(message.time), receivedAt: Date.now() };
+        binanceLivePriceRef.current = { symbol, price: Number(message.price), time: Number(message.time), receivedAt: Number(message.server_time) || Date.now(), source: message.source };
         if (Date.now() - lastTrackerLiveUpdateRef.current >= 250) {
           lastTrackerLiveUpdateRef.current = Date.now();
           setTrackerLiveRevision(value => value + 1);
@@ -2311,7 +2337,6 @@ function Workspace() {
         return;
       }
       if (message.type === 'trade' && message.price && message.time) {
-        binanceLivePriceRef.current = { symbol, price: Number(message.price), time: Number(message.time), receivedAt: Date.now() };
         const previousBarTime = candleBarsRef.current[candleBarsRef.current.length - 1]?.time;
         candleBarsRef.current = mergeTickBar(candleBarsRef.current, Number(message.time), Number(message.price), 60);
         const liveBar = candleBarsRef.current[candleBarsRef.current.length - 1];
@@ -2329,19 +2354,12 @@ function Workspace() {
           else candles.update(liveBar);
           updateTrackerLabels('entry', liveBar.close);
         }
-        if (Date.now() - lastTrackerLiveUpdateRef.current >= 250) {
-          lastTrackerLiveUpdateRef.current = Date.now();
-          setTrackerLiveRevision(value => value + 1);
-        }
         return;
       }
       if (message.type !== 'kline' || message.interval !== entryInterval || !message.bar) return;
       const candle = message.bar;
       const rawNext = { time: Number(candle.time) as UTCTimestamp, open: Number(candle.open), high: Number(candle.high), low: Number(candle.low), close: Number(candle.close) };
-      const sharedLive = binanceLivePriceRef.current;
-      const useSharedPrice = sharedLive?.symbol === symbol && Date.now() - sharedLive.receivedAt < 10_000;
-      const next = useSharedPrice ? { ...rawNext, high: Math.max(rawNext.high, sharedLive.price), low: Math.min(rawNext.low, sharedLive.price), close: sharedLive.price } : rawNext;
-      if (!useSharedPrice) binanceLivePriceRef.current = { symbol, price: next.close, time: Number(next.time), receivedAt: Date.now() };
+      const next = rawNext;
       const isNewBar = upsertLiveBar(candleBarsRef.current, next);
       void cacheBars(symbol, entryInterval, [next]);
       const lastCandleData = candleDataRef.current[candleDataRef.current.length - 1];
@@ -2371,6 +2389,8 @@ function Workspace() {
       const now = performance.now();
       if (now - lastPaperVisualUpdateRef.current < 250 && !isNewBar) return;
       lastPaperVisualUpdateRef.current = now;
+      const currentMark = binanceLivePriceRef.current;
+      const sameEntryBarPrice = currentMark?.symbol === symbol && Date.now() - currentMark.receivedAt <= 5_000 ? currentMark.price : next.close;
       setDrawings(current => {
         let anyOpen = false;
         const updated = current.map(drawing => {
@@ -2387,8 +2407,8 @@ function Workspace() {
           // accumulated high/low must not evaluate movement that happened
           // before entry; use only the post-entry live price on that bar.
           const sameEntryBar = Number(next.time) === Number(drawing.start.time);
-          const evaluationHigh = sameEntryBar ? (useSharedPrice ? sharedLive.price : next.close) : next.high;
-          const evaluationLow = sameEntryBar ? (useSharedPrice ? sharedLive.price : next.close) : next.low;
+          const evaluationHigh = sameEntryBar ? sameEntryBarPrice : next.high;
+          const evaluationLow = sameEntryBar ? sameEntryBarPrice : next.low;
           const targetTouched = direction === 1 ? evaluationHigh >= targetPrice : evaluationLow <= targetPrice;
           const stopTouched = direction === 1 ? evaluationLow <= stopPrice : evaluationHigh >= stopPrice;
           // If a completed candle touched both levels and the intrabar path
@@ -2652,9 +2672,8 @@ function Workspace() {
     stream.onmessage = event => {
       if (!active) return;
       if (replayRef.current.active) return;
-      const message = JSON.parse(event.data) as { type?: string; symbol?: string; price?: number; time?: number; interval?: string; bar?: { time: number; open: number; high: number; low: number; close: number } };
+      const message = JSON.parse(event.data) as { type?: string; symbol?: string; price?: number; time?: number; source?: string; server_time?: number; interval?: string; bar?: { time: number; open: number; high: number; low: number; close: number } };
       if (message.type === 'trade' && message.price && message.time) {
-        binanceLivePriceRef.current = { symbol, price: Number(message.price), time: Number(message.time), receivedAt: Date.now() };
         const previousBarTime = overviewBarsRef.current[overviewBarsRef.current.length - 1]?.time;
         overviewBarsRef.current = mergeTickBar(overviewBarsRef.current, Number(message.time), Number(message.price), gatewayInterval === '1m' ? 60 : gatewayInterval === '3m' ? 180 : gatewayInterval === '5m' ? 300 : 900);
         const liveBar = overviewBarsRef.current[overviewBarsRef.current.length - 1];
@@ -3931,7 +3950,7 @@ function Workspace() {
     setTrackerVirtualOperations(runTrackerVisualSimulation(source, trackerPeriod, binanceStopPercent, binanceTargetPercent, paperInitialBalance, paperRiskPercent, paperLeverage, replayState.active));
   }, [showTracker, trackerPeriod, binanceStopPercent, binanceTargetPercent, paperInitialBalance, paperRiskPercent, paperLeverage, symbol, symbolHistoryReady, trackerRevision, replayState.active, broker, trackerScannerDetail, selectedScannerAnalysis]);
   const latestActiveTrackerBar = candleBarsRef.current[candleBarsRef.current.length - 1];
-  const activeTrackerMark = binanceLivePriceRef.current?.symbol === symbol && Date.now() - binanceLivePriceRef.current.receivedAt <= 2_500
+  const activeTrackerMark = binanceLivePriceRef.current?.symbol === symbol && Date.now() - binanceLivePriceRef.current.receivedAt <= 5_000
     ? binanceLivePriceRef.current
     : latestActiveTrackerBar ? { time: latestActiveTrackerBar.time, price: latestActiveTrackerBar.close } : null;
   const backtestVisualDrawings: Drawing[] = (showTracker ? trackerVirtualOperations : []).filter(operation => !operation.closed || (operation.rawStatus ?? operation.status) === 'CLOSED - WIN' || (showTrackerFails && operation.status === 'CLOSED - FAILED')).map(operation => ({
@@ -4046,6 +4065,8 @@ function Workspace() {
     <div className="worker-runtime-metrics" aria-label="Métricas recientes del worker">
       <div><small>VELAS PROCESADAS</small><strong>{workerMetrics ? `${workerMetrics.events_processed ?? 0} / ${workerMetrics.events_received ?? 0}` : '—'}</strong></div>
       <div><small>VELAS EN VENTANA</small><strong>{workerMetric(workerMetrics?.bars)}</strong></div>
+      <div><small>PRECIO COMPARTIDO</small><strong>{workerMetrics?.latest_price_source === 'mark-price-stream' ? 'BINANCE MARK' : workerMetrics?.latest_price_source === 'rest-fallback' ? 'REST RECUPERACIÓN' : workerMetrics?.latest_price_source ?? '—'}</strong></div>
+      <div><small>EDAD DEL PRECIO</small><strong className={(workerMetrics?.latest_price_age_ms ?? 0) > 5_000 ? 'worker-log-level-error' : ''}>{workerMetric(workerMetrics?.latest_price_age_ms, ' ms')}</strong></div>
       <div><small>LATENCIA ÚLTIMA</small><strong>{workerMetric(workerMetrics?.last_event_latency_ms, ' ms')}</strong></div>
       <div><small>LATENCIA P50</small><strong>{workerMetric(workerMetrics?.p50_event_latency_ms, ' ms')}</strong></div>
       <div><small>LATENCIA P95</small><strong>{workerMetric(workerMetrics?.p95_event_latency_ms, ' ms')}</strong></div>

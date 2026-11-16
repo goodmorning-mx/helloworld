@@ -254,6 +254,8 @@ class SymbolWorker:
     started: asyncio.Event = field(default_factory=asyncio.Event)
     latest_price: float | None = None
     latest_price_time: int | None = None
+    latest_price_server_time: int | None = None
+    latest_price_source: str | None = None
     last_mark_publish_at: float = 0.0
     recent_logs: deque[dict[str, Any]] = field(default_factory=lambda: deque(maxlen=100))
 
@@ -295,10 +297,14 @@ class SymbolWorker:
             if price <= 0 or self.event_loop is None or self.event_loop.is_closed():
                 return
             self.latest_price, self.latest_price_time = price, timestamp
+            self.latest_price_server_time = int(event.get("server_time", time.time_ns() // 1_000_000))
+            self.latest_price_source = str(event.get("source") or "unknown")
             now = time.monotonic()
             if now - self.last_mark_publish_at >= 0.5:
                 self.last_mark_publish_at = now
-                self.event_loop.call_soon_threadsafe(lambda: asyncio.create_task(self._publish_mark_update(price, timestamp)))
+                source = self.latest_price_source
+                server_time = self.latest_price_server_time
+                self.event_loop.call_soon_threadsafe(lambda: asyncio.create_task(self._publish_mark_update(price, timestamp, source, server_time)))
             return
         if not self.running or event.get("type") != "kline" or event.get("interval") != self.interval:
             return
@@ -323,7 +329,7 @@ class SymbolWorker:
             self.last_error = "worker candle queue is full"
             self.record_log("ERROR", "QUEUE_OVERFLOW", self.last_error)
 
-    async def _publish_mark_update(self, price: float, timestamp: int) -> None:
+    async def _publish_mark_update(self, price: float, timestamp: int, source: str | None = None, server_time: int | None = None) -> None:
         """Update displayed PnL only. Strategy evaluation remains on closed candles."""
         async with self.state_lock:
             def signed_notional(operation: dict[str, Any]) -> float:
@@ -342,7 +348,7 @@ class SymbolWorker:
             if operation is not None:
                 operation.update({"current_price": price, "current_time": timestamp, "unrealized_pnl": signed_notional(operation)})
             if tracker is not None or operation is not None:
-                await self.publish({"type": "WORKER_MARK_UPDATE", "symbol": self.symbol, "price": price, "time": timestamp, "tracker_operation": dict(tracker) if tracker else None, "operation": dict(operation) if operation else None})
+                await self.publish({"type": "WORKER_MARK_UPDATE", "symbol": self.symbol, "price": price, "time": timestamp, "source": source, "server_time": server_time, "tracker_operation": dict(tracker) if tracker else None, "operation": dict(operation) if operation else None})
 
     def _tracker_notional(self, tracked: dict[str, Any]) -> float:
         parameters = self.adaptive_parameters
@@ -439,6 +445,10 @@ class SymbolWorker:
             "queue_overflows": self.queue_overflows,
             "queue_depth": self.queue.qsize(),
             "last_bar_time": self.last_bar_time,
+            "latest_price": self.latest_price,
+            "latest_price_time": self.latest_price_time,
+            "latest_price_source": self.latest_price_source,
+            "latest_price_age_ms": max(0, time.time_ns() // 1_000_000 - self.latest_price_server_time) if self.latest_price_server_time is not None else None,
             "last_event_latency_ms": self.last_event_latency_ms,
             "p50_event_latency_ms": percentile(.5),
             "p95_event_latency_ms": percentile(.95),
