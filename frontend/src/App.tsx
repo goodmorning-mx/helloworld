@@ -3309,6 +3309,11 @@ function Workspace() {
       setPaperSyncError(`El scanner todavía no tiene un TP vigente para ${symbol}.`);
       return;
     }
+    const liveMark = binanceLivePriceRef.current;
+    if (broker === 'binance' && (!liveMark || liveMark.symbol !== symbol || Date.now() - liveMark.receivedAt > 5_000)) {
+      setPaperSyncError(`Esperando el precio en vivo de Binance para ${symbol}.`);
+      return;
+    }
     if (!auth.accessToken || !paperReadyRef.current) {
       setPaperSyncError('La cuenta paper todavía está cargando.');
       return;
@@ -3318,7 +3323,7 @@ function Workspace() {
     setVisibleClosedId(null);
     const latest = candleDataRef.current[candleDataRef.current.length - 1];
     if (!latest) return;
-    const marketPrice = broker === 'binance' ? (binanceLivePriceRef.current?.price ?? latest.close) : latest.close;
+    const marketPrice = broker === 'binance' ? liveMark!.price : latest.close;
     const entry = broker === 'binance' && binanceRules?.tick_size
       ? roundToBinance(marketPrice, binanceRules.tick_size, binanceRules.price_precision)
       : latest.close;
@@ -3876,7 +3881,10 @@ function Workspace() {
     return <g key={index} className={`${selectedClass ?? ''} ${paperClass}`}>{drawing.paper && canvas === 'context' && <><line x1={start.x} y1={0} x2={start.x} y2={overviewSize.height} className="paper-opening-index" /><text x={start.x + 6} y={18} className="paper-opening-label">Apertura · {chartTimeLabel(drawing.start.time, timezone, false)}</text></>}{closedLoss ? <rect x={left} y={lossTop} width={width} height={Math.max(1, lossHeight)} className="position-loss-closed" /> : <><rect x={left} y={targetTop} width={width} height={targetHeight} className={targetPercent >= 0 ? 'position-profit' : 'position-risk'} /><rect x={left} y={stopTop} width={width} height={stopHeight} className={riskPercent <= 0 ? 'position-risk' : 'position-profit'} /></>}<line x1={left} y1={start.y} x2={left + width} y2={start.y} className="position-entry" /><line x1={left} y1={end.y} x2={left + width} y2={end.y} className="paper-current-price" />{drawing.trackerLive && <><line x1={start.x} y1={targetPoint.y} x2={end.x} y2={targetPoint.y} className="tracker-live-target-line" /><line x1={start.x} y1={stop.y} x2={end.x} y2={stop.y} className="tracker-live-stop-line" /></>}{drawing.paper && <><text x={left + 8} y={Math.max(14, start.y - 8)} className={`paper-operation-label ${paperStatusClass}`}>{drawing.real ? 'BINANCE · REAL' : `Paper Operation · ${paperStatusLabel}`}</text><text x={left + 8} y={targetPoint.y - 10} className="paper-target-label">TP {targetLabel} · +{tpAmount.toFixed(2)} USDT{feeLabel}</text><text x={left + 8} y={stop.y + 18} className="paper-stop-label">SL {riskLabel} · -{slAmount.toFixed(2)} USDT{feeLabel}</text><text x={left + width + 8} y={end.y - 8} className={`paper-current-label ${livePnl >= 0 ? 'paper-current-profit' : 'paper-current-loss'}`}>PNL {livePnl >= 0 ? '+' : ''}{livePnl.toFixed(2)} USDT</text></>}{drawing.trackerLive && <><text x={left + 8} y={Math.max(14, start.y - 8)} className="position-label tracker-live-label">TRACKER EN VIVO · {drawing.type.toUpperCase()}</text><text x={left + 8} y={targetPoint.y - 10} className="paper-target-label">TP {targetLabel} · +{tpAmount.toFixed(2)} USDT{feeLabel}</text><text x={left + 8} y={stopLabelY} className="paper-stop-label">SL {riskLabel} · -{slAmount.toFixed(2)} USDT{feeLabel}</text><text x={left + width + 8} y={currentPnlLabelY} className={`paper-current-label tracker-live-pnl-label ${livePnl >= 0 ? 'paper-current-profit' : 'paper-current-loss'}`}>PNL {livePnl >= 0 ? '+' : ''}{livePnl.toFixed(4)} USDT</text></>}{!drawing.paper && drawing.backtest && trackerOperationHover?.id === operationId && <><text x={left + 8} y={targetTop + 18} className={`position-label ${resultLabelClass}`}>{drawing.status === 'CLOSED - WIN' ? 'WIN' : 'FAIL'} · PNL {drawing.pnl != null ? `${drawing.pnl >= 0 ? '+' : ''}${drawing.pnl.toFixed(2)} USDT` : ''}</text><text x={left + 8} y={targetTop + 34} className={`position-label ${resultLabelClass}`}>TP FINAL +{(drawing.finalTargetPercent ?? targetPercent).toFixed(2)}%</text><text x={left + 8} y={targetTop + 48} className={`position-label ${resultLabelClass}`}>N AP {drawing.bodyAveragePercentAtOpen?.toFixed(3) ?? '—'}%</text><text x={left + 8} y={targetTop + 62} className={`position-label ${resultLabelClass}`}>N CIERRE {drawing.bodyAveragePercentAtClose?.toFixed(3) ?? '—'}%</text></>}{!drawing.paper && !drawing.backtest && !drawing.trackerLive && <><text x={left + 8} y={targetTop + 18} className="position-label">TP {targetLabel}</text><text x={left + 8} y={stopTop + 18} className="position-label">SL {riskLabel}</text><text x={left + 8} y={Math.max(targetTop, stopTop) + 34} className="position-label">R:R {rr.toFixed(2)}:1</text></>}{drawing.real ? null : drawing.paper ? handleNodes : handleNodes}</g>;
   };
 
-  const liveReferencePrice = binanceLivePriceRef.current?.price ?? candleBarsRef.current[candleBarsRef.current.length - 1]?.close ?? 0;
+  const currentBinanceMark = binanceLivePriceRef.current;
+  const liveReferencePrice = broker === 'binance'
+    ? currentBinanceMark?.symbol === symbol && Date.now() - currentBinanceMark.receivedAt <= 5_000 ? currentBinanceMark.price : 0
+    : candleBarsRef.current[candleBarsRef.current.length - 1]?.close ?? 0;
   const binanceOnline = broker === 'binance' && executionMode === 'production' && Boolean(binanceLiveAccount?.healthy && binanceLiveAccount?.stream_connected);
   const availableRiskBalance = binanceOnline
     ? Number(binanceLiveAccount?.available_balance ?? binanceSymbolConfig?.futures_balance ?? 0)
@@ -3950,8 +3958,8 @@ function Workspace() {
     setTrackerVirtualOperations(runTrackerVisualSimulation(source, trackerPeriod, binanceStopPercent, binanceTargetPercent, paperInitialBalance, paperRiskPercent, paperLeverage, replayState.active));
   }, [showTracker, trackerPeriod, binanceStopPercent, binanceTargetPercent, paperInitialBalance, paperRiskPercent, paperLeverage, symbol, symbolHistoryReady, trackerRevision, replayState.active, broker, trackerScannerDetail, selectedScannerAnalysis]);
   const latestActiveTrackerBar = candleBarsRef.current[candleBarsRef.current.length - 1];
-  const activeTrackerMark = binanceLivePriceRef.current?.symbol === symbol && Date.now() - binanceLivePriceRef.current.receivedAt <= 5_000
-    ? binanceLivePriceRef.current
+  const activeTrackerMark = broker === 'binance'
+    ? binanceLivePriceRef.current?.symbol === symbol && Date.now() - binanceLivePriceRef.current.receivedAt <= 5_000 ? binanceLivePriceRef.current : null
     : latestActiveTrackerBar ? { time: latestActiveTrackerBar.time, price: latestActiveTrackerBar.close } : null;
   const backtestVisualDrawings: Drawing[] = (showTracker ? trackerVirtualOperations : []).filter(operation => !operation.closed || (operation.rawStatus ?? operation.status) === 'CLOSED - WIN' || (showTrackerFails && operation.status === 'CLOSED - FAILED')).map(operation => ({
     id: operation.id,
@@ -4065,7 +4073,7 @@ function Workspace() {
     <div className="worker-runtime-metrics" aria-label="Métricas recientes del worker">
       <div><small>VELAS PROCESADAS</small><strong>{workerMetrics ? `${workerMetrics.events_processed ?? 0} / ${workerMetrics.events_received ?? 0}` : '—'}</strong></div>
       <div><small>VELAS EN VENTANA</small><strong>{workerMetric(workerMetrics?.bars)}</strong></div>
-      <div><small>PRECIO COMPARTIDO</small><strong>{workerMetrics?.latest_price_source === 'mark-price-stream' ? 'BINANCE MARK' : workerMetrics?.latest_price_source === 'rest-fallback' ? 'REST RECUPERACIÓN' : workerMetrics?.latest_price_source ?? '—'}</strong></div>
+      <div><small>PRECIO COMPARTIDO</small><strong>{workerMetrics?.latest_price_source === 'mark-price-stream' ? 'BINANCE MARK · WS' : workerMetrics?.latest_price_source ?? '—'}</strong></div>
       <div><small>EDAD DEL PRECIO</small><strong className={(workerMetrics?.latest_price_age_ms ?? 0) > 5_000 ? 'worker-log-level-error' : ''}>{workerMetric(workerMetrics?.latest_price_age_ms, ' ms')}</strong></div>
       <div><small>LATENCIA ÚLTIMA</small><strong>{workerMetric(workerMetrics?.last_event_latency_ms, ' ms')}</strong></div>
       <div><small>LATENCIA P50</small><strong>{workerMetric(workerMetrics?.p50_event_latency_ms, ' ms')}</strong></div>

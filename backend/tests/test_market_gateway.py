@@ -57,16 +57,14 @@ def test_latest_mark_price_is_replayed_to_new_worker_listener() -> None:
     asyncio.run(scenario())
 
 
-def test_mark_price_fallback_runs_even_while_klines_are_live(monkeypatch) -> None:
+def test_silent_mark_stream_reconnects_without_rest_price_polling(monkeypatch) -> None:
     async def scenario():
         gateway = BinanceMarketGateway()
         received = []
         gateway._listeners["BTCUSDT"].add(received.append)
-        # Recent market events represent a healthy kline stream. There has been
-        # no mark update, so the separate mark freshness check must still poll.
+        # Recent candle events must not hide a silent mark stream.
         gateway._last_event_ms["BTCUSDT"] = int(time.time() * 1000)
         gateway._connected_at_ms["BTCUSDT"] = int(time.time() * 1000) - MARK_PRICE_MAX_AGE_MS - 1
-        requests = []
         closed_sockets = []
 
         class SilentSocket:
@@ -74,13 +72,6 @@ def test_mark_price_fallback_runs_even_while_klines_are_live(monkeypatch) -> Non
                 closed_sockets.append(kwargs)
 
         gateway._sockets["BTCUSDT"] = SilentSocket()
-
-        class Response:
-            def raise_for_status(self):
-                return None
-
-            def json(self):
-                return {"markPrice": "67501.5", "time": int(time.time() * 1000)}
 
         class Client:
             def __init__(self, **_kwargs):
@@ -93,8 +84,7 @@ def test_mark_price_fallback_runs_even_while_klines_are_live(monkeypatch) -> Non
                 return None
 
             async def get(self, url, **_kwargs):
-                requests.append(url)
-                return Response()
+                raise AssertionError(f"Unexpected REST request during healthy candle feed: {url}")
 
         original_sleep = asyncio.sleep
         sleeps = 0
@@ -109,11 +99,9 @@ def test_mark_price_fallback_runs_even_while_klines_are_live(monkeypatch) -> Non
 
         monkeypatch.setattr("app.market_gateway.httpx.AsyncClient", Client)
         monkeypatch.setattr("app.market_gateway.asyncio.sleep", skip_wait)
-        await gateway._rest_fallback("BTCUSDT")
-        assert requests == ["https://fapi.binance.com/fapi/v1/premiumIndex"]
-        assert received[0]["type"] == "mark_price"
-        assert received[0]["source"] == "rest-fallback"
-        assert received[0]["price"] == 67501.5
+        await gateway._recovery_loop("BTCUSDT")
+        assert not any(event.get("type") == "mark_price" for event in received)
+        assert any(event.get("type") == "status" and event.get("status") == "RECONNECTING" for event in received)
         assert closed_sockets and closed_sockets[0]["reason"] == "mark-price stream silent"
         await gateway.close()
 
