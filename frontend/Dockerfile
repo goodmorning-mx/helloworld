@@ -6,7 +6,8 @@ RUN npm ci
 COPY . .
 ARG VITE_API_URL=/api
 ENV VITE_API_URL=$VITE_API_URL
-RUN npm run build
+# CI runs the TypeScript check separately; keep the deployment image build to bundling.
+RUN npm run build:bundle
 
 FROM nginx:1.27-alpine AS runtime
 COPY --from=build /app/dist /usr/share/nginx/html
