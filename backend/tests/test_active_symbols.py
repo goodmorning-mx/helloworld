@@ -20,11 +20,13 @@ def test_active_symbols_filters_and_ranks_public_binance_data(monkeypatch) -> No
                 {"symbol": "FASTUSDT", "status": "TRADING", "quoteAsset": "USDT", "contractType": "PERPETUAL"},
                 {"symbol": "QUIETUSDT", "status": "TRADING", "quoteAsset": "USDT", "contractType": "PERPETUAL"},
                 {"symbol": "OLDUSDT", "status": "BREAK", "quoteAsset": "USDT", "contractType": "PERPETUAL"},
+                {"symbol": "BAD-USDT", "status": "TRADING", "quoteAsset": "USDT", "contractType": "PERPETUAL"},
             ]})
         return FakeResponse([
             {"symbol": "FASTUSDT", "priceChangePercent": "4.0", "highPrice": "104", "lowPrice": "96", "quoteVolume": "100000000", "count": 200000, "lastPrice": "100"},
             {"symbol": "QUIETUSDT", "priceChangePercent": "0.1", "highPrice": "101", "lowPrice": "99", "quoteVolume": "100000000", "count": 200000, "lastPrice": "100"},
             {"symbol": "OLDUSDT", "priceChangePercent": "50", "highPrice": "150", "lowPrice": "50", "quoteVolume": "100000000", "count": 200000, "lastPrice": "100"},
+            {"symbol": "BAD-USDT", "priceChangePercent": "50", "highPrice": "150", "lowPrice": "50", "quoteVolume": "100000000", "count": 200000, "lastPrice": "100"},
         ])
 
     monkeypatch.setattr(main.httpx, "get", fake_get)
