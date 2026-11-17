@@ -228,8 +228,21 @@ def analyze_tracker_operations(
     signals = _build_tracker_signals(clean, max(1, int(config.tracker_period)))
     with profiling.measure("selected_tp_simulation") if profiling else nullcontext():
         raw_operations = _simulate(clean, config, target_percent, signals)
-    _equity, operations = _limited_operations(raw_operations, config)
-    return {"operation_details": operations, "loss_limit_percent": _loss_limit(raw_operations)}
+    equity, operations = _limited_operations(raw_operations, config)
+    wins = sum(operation["status"] == "WIN" for operation in operations)
+    losses = sum(operation["status"] == "FAIL" for operation in operations)
+    durations = [float(operation["duration_minutes"]) for operation in operations]
+    return {
+        "operation_details": operations,
+        "loss_limit_percent": _loss_limit(raw_operations),
+        "operations": len(operations),
+        "wins": wins,
+        "losses": losses,
+        "win_rate": wins / (wins + losses) * 100 if wins + losses else 0.0,
+        "average_duration_minutes": sum(durations) / len(durations) if durations else None,
+        "equity_final": equity,
+        "final_result_usdt": equity - float(config.initial_balance),
+    }
 
 
 def activity_state(variation_average_pct: float, *, waking_threshold: float = 0.25, active_threshold: float = 0.60) -> str:

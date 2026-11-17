@@ -39,6 +39,34 @@ def test_control_starts_signal_session_and_normalizes_symbols():
     asyncio.run(run())
 
 
+def test_telegram_start_uses_the_shared_symbol_snapshot_parameters():
+    async def run():
+        workers = FakeWorkers()
+
+        async def parameters(_user, symbol):
+            assert symbol == "BTCUSDT"
+            return {
+                "status": "WORKER", "tracker_period": 12, "stop_percent": 0.35,
+                "target_percent": 3.2, "risk_percent": 1.4, "leverage": 15,
+                "initial_balance": 300,
+            }
+
+        control = TelegramControlService(
+            workers, lambda *_: asyncio.sleep(0, result={"symbols": []}), parameters,
+        )
+        await control.start("owner", "BTCUSDT", risk_percent=1, leverage=1, initial_balance=100)
+        settings = workers.started[0][2]
+        assert settings["tracker_period"] == 12
+        assert settings["stop_percent"] == 0.35
+        assert settings["target_percent"] == 3.2
+        assert settings["risk_percent"] == 1.4
+        assert settings["leverage"] == 15
+        assert settings["initial_balance"] == 300
+        assert settings["initial_parameters"]["status"] == "WORKER"
+
+    asyncio.run(run())
+
+
 @pytest.mark.parametrize("symbol", ["BTC", "BTC/USDT", "../BTCUSDT", "BTCUSDT?x=1"])
 def test_control_rejects_invalid_symbols(symbol):
     async def run():
@@ -62,6 +90,21 @@ def test_scanner_message_is_bounded_and_formats_ranked_result():
     assert "TP 2.50%" in message
     assert "Ops 8 · W 5/L 3" in message
     assert len(message) <= 3900
+
+
+def test_telegram_scan_displays_current_worker_parameters_from_shared_row():
+    message = format_scanner_message([{
+        "symbol": "BTCUSDT", "status": "VALID", "final_result_usdt": 5,
+        "tp_optimal_percent": 2, "operations": 3, "wins": 2, "losses": 1,
+        "active_parameters": {
+            "source": "WORKER", "tracker_period": 12, "target_percent": 3.2,
+            "minroe_limit_percent": 6, "stop_percent": .3, "leverage": 15,
+            "risk_percent": 1.4, "risk_usdt": 4.2,
+        },
+    }], updated_at=0)
+
+    assert "TP ACTIVO 3.20% N 12 MINROE 6.0% SL 0.30% 15.0x" in message
+    assert "R1.4% $4.20" in message
 
 
 def test_status_contains_worker_runtime_metrics():

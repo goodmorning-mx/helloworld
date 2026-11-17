@@ -251,6 +251,7 @@ class SymbolWorker:
     pending_bar_times: set[int] = field(default_factory=set)
     lease_owner_id: str | None = None
     on_lease_lost: Any = None
+    parameter_publisher: Any = None
     started: asyncio.Event = field(default_factory=asyncio.Event)
     latest_price: float | None = None
     latest_price_time: int | None = None
@@ -586,11 +587,17 @@ class SymbolWorker:
         if not self.running:
             return
         self.adaptive_parameters = params
+        self.adaptive_parameters["source"] = "WORKER"
         self.tracker_period = int(params["tracker_period"])
         self.stop_percent = float(params["stop_percent"])
         self.target_percent = float(params["target_percent"])
         self.parameter_version += 1
         self.adaptive_parameters["parameter_version"] = self.parameter_version
+        if self.parameter_publisher is not None:
+            try:
+                await self.parameter_publisher(self.user_id, self.symbol, self.adaptive_parameters)
+            except Exception as exc:
+                self.record_log("WARN", "SHARED_PARAMETERS_PUBLISH_FAILED", f"No se pudo publicar la calibración compartida: {type(exc).__name__}.")
         if self.tracker_operation is not None:
             self.tracker_operation.update({
                 "stop_percent": self.stop_percent,
@@ -966,7 +973,7 @@ def _restore_paper_operation(row: dict[str, Any]) -> dict[str, Any]:
 
 
 class ProductionWorkerManager:
-    def __init__(self, gateway: BinanceMarketGateway, paper_store: PaperOperationStore, events: BackendEventBus, binance_manager: BinanceMonitorManager, execution_store: BinanceExecutionStore, config_store: ProductionWorkerConfigStore | None = None, base_url: str = "https://fapi.binance.com", live_enabled: bool = False) -> None:
+    def __init__(self, gateway: BinanceMarketGateway, paper_store: PaperOperationStore, events: BackendEventBus, binance_manager: BinanceMonitorManager, execution_store: BinanceExecutionStore, config_store: ProductionWorkerConfigStore | None = None, base_url: str = "https://fapi.binance.com", live_enabled: bool = False, parameter_publisher: Any = None) -> None:
         self.gateway = gateway
         self.paper_store = paper_store
         self.events = events
@@ -975,6 +982,7 @@ class ProductionWorkerManager:
         self.config_store = config_store
         self.base_url = base_url
         self.live_enabled = bool(live_enabled)
+        self.parameter_publisher = parameter_publisher
         self.owner_id = uuid4().hex
         self.workers: dict[tuple[str, str], SymbolWorker] = {}
         self._user_locks: dict[str, asyncio.Lock] = {}
@@ -984,7 +992,7 @@ class ProductionWorkerManager:
         async with lock:
             return await self._start_locked(user_id, symbol, **settings)
 
-    async def _start_locked(self, user_id: str, symbol: str, *, mode: str = "paper", interval: str = "1m", tracker_period: int = 5, stop_percent: float = 0.2, target_percent: float = 1.0, quantity: float = 0.0, risk_percent: float = 1.0, leverage: float = 1.0, initial_balance: float = 100.0) -> dict[str, Any]:
+    async def _start_locked(self, user_id: str, symbol: str, *, mode: str = "paper", interval: str = "1m", tracker_period: int = 5, stop_percent: float = 0.2, target_percent: float = 1.0, quantity: float = 0.0, risk_percent: float = 1.0, leverage: float = 1.0, initial_balance: float = 100.0, initial_parameters: dict[str, Any] | None = None) -> dict[str, Any]:
         if mode not in {"signals_only", "paper", "live"}:
             raise ValueError("Modo de worker inválido.")
         if mode == "live":
@@ -1014,6 +1022,9 @@ class ProductionWorkerManager:
         adapter: ExecutionAdapter = SignalOnlyExecutionAdapter() if mode == "signals_only" else PaperExecutionAdapter(initial_balance=max(1.0, float(initial_balance)))
         worker = SymbolWorker(user_id, symbol.upper(), interval, max(1, int(tracker_period)), abs(float(stop_percent)), abs(float(target_percent)), adapter, self.paper_store, self.events)
         worker.runtime_store = self.config_store
+        worker.parameter_publisher = self.parameter_publisher
+        if isinstance(initial_parameters, dict):
+            worker.adaptive_parameters = dict(initial_parameters)
         worker.session_store = self.config_store
         worker.event_loop = asyncio.get_running_loop()
         worker.lease_owner_id = self.owner_id if self.config_store is not None else None
@@ -1029,7 +1040,7 @@ class ProductionWorkerManager:
                 if isinstance(saved_logs, list):
                     worker.recent_logs.extend(entry for entry in saved_logs[-100:] if isinstance(entry, dict))
                 saved_parameters = runtime.get("adaptive_parameters")
-                if isinstance(saved_parameters, dict) and saved_parameters:
+                if isinstance(saved_parameters, dict) and saved_parameters and not isinstance(initial_parameters, dict):
                     worker.adaptive_parameters = saved_parameters
                     worker.tracker_period = max(4, min(20, int(saved_parameters.get("tracker_period", worker.tracker_period))))
                     worker.stop_percent = max(0.05, float(saved_parameters.get("stop_percent", worker.stop_percent)))
@@ -1067,6 +1078,11 @@ class ProductionWorkerManager:
                 await asyncio.to_thread(self.config_store.release_lease, user_id, worker.symbol, self.owner_id, "ERROR")
                 await asyncio.to_thread(self.config_store.release_session, user_id, worker.symbol, self.owner_id)
             raise
+        if self.parameter_publisher is not None and worker.adaptive_parameters:
+            try:
+                await self.parameter_publisher(user_id, worker.symbol, worker.adaptive_parameters)
+            except Exception as exc:
+                worker.record_log("WARN", "SHARED_PARAMETERS_PUBLISH_FAILED", f"No se pudo publicar el estado inicial compartido: {type(exc).__name__}.")
         self.workers[key] = worker
         worker.on_lease_lost = lambda: (self.gateway.remove_listener(worker.symbol, worker.offer_market_event), self.workers.pop(key, None))
         worker.task = asyncio.create_task(worker.run(), name=f"production-worker-{user_id}-{worker.symbol}")
@@ -1078,7 +1094,10 @@ class ProductionWorkerManager:
         return self.status(user_id, symbol)
 
     async def _initialize_worker(self, worker: SymbolWorker, runtime: dict[str, Any] | None) -> None:
-        restored_parameters = bool(runtime and isinstance(runtime.get("adaptive_parameters"), dict) and runtime.get("adaptive_parameters"))
+        restored_parameters = bool(
+            (runtime and isinstance(runtime.get("adaptive_parameters"), dict) and runtime.get("adaptive_parameters"))
+            or worker.adaptive_parameters
+        )
         try:
             if len(self.gateway.snapshot(worker.symbol, worker.interval)) < WINDOW_BARS:
                 await self.gateway.prime(worker.symbol, worker.interval, self.base_url)
@@ -1119,12 +1138,15 @@ class ProductionWorkerManager:
                     current_tracker_period=worker.tracker_period,
                 )
                 worker.adaptive_parameters = params
+                worker.adaptive_parameters["source"] = "WORKER"
                 worker.tracker_period = int(params["tracker_period"])
                 worker.stop_percent = float(params["stop_percent"])
                 worker.target_percent = float(params["target_percent"])
                 worker.parameter_version += 1
                 worker.adaptive_parameters["parameter_version"] = worker.parameter_version
-                await self.events.publish({"user_id": worker.user_id, "type": "TRACKER_PARAMETERS_UPDATED", "symbol": worker.symbol, **params, "parameter_version": worker.parameter_version})
+                if worker.parameter_publisher is not None:
+                    await worker.parameter_publisher(worker.user_id, worker.symbol, worker.adaptive_parameters)
+                await self.events.publish({"user_id": worker.user_id, "type": "TRACKER_PARAMETERS_UPDATED", "symbol": worker.symbol, **worker.adaptive_parameters, "parameter_version": worker.parameter_version})
                 await worker._persist_runtime_snapshot()
             if worker.status == "STARTING":
                 worker.record_log("INFO", "WORKER_READY", "Tracker inicializado y esperando velas cerradas.")
@@ -1160,6 +1182,11 @@ class ProductionWorkerManager:
             if worker.recent_logs:
                 await worker._persist_log(worker.recent_logs[-1])
             await self._shutdown_worker(worker, status="STOPPED")
+            if self.parameter_publisher is not None and worker.adaptive_parameters:
+                try:
+                    await self.parameter_publisher(user_id, worker.symbol, {**worker.adaptive_parameters, "running": False})
+                except Exception as exc:
+                    logger.warning("production_worker_shared_parameters_stop_failed symbol=%s error_type=%s", worker.symbol, type(exc).__name__)
             await self.events.publish({"user_id": user_id, "type": "WORKER_STOPPED", "symbol": worker.symbol})
         if self.config_store is not None:
             await asyncio.to_thread(self.config_store.disable, user_id, symbol)

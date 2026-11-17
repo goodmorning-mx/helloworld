@@ -68,7 +68,7 @@ type ProductionWorkerView = {
   p95_event_latency_ms?: number | null;
   max_event_latency_ms?: number | null;
   last_error?: string | null;
-  adaptive_parameters?: { status?: string; tracker_period?: number; target_percent?: number; stop_percent?: number; minroe_limit_percent?: number; risk_percent?: number; risk_usdt?: number; leverage?: number; initial_balance?: number; bars?: number; window_hours?: number; sample_operations?: number; last_bar_time?: number | null };
+  adaptive_parameters?: { status?: string; source?: string; tracker_period?: number; target_percent?: number; stop_percent?: number; minroe_limit_percent?: number; risk_percent?: number; risk_usdt?: number; leverage?: number; initial_balance?: number; bars?: number; window_hours?: number; sample_operations?: number; last_bar_time?: number | null; parameter_version?: number };
   parameter_version?: number;
   operation?: WorkerOperationView | null;
   tracker_operation?: WorkerOperationView | null;
@@ -1485,7 +1485,7 @@ function Workspace() {
   const [depositAmount, setDepositAmount] = useState('');
   const [paperRiskPercent, setPaperRiskPercent] = useState(() => Number(JSON.parse(localStorage.getItem('helloworld-paper-assist') ?? '{}').riskPercent ?? 1) || 1);
   type ActiveMarketSymbol = { symbol: string; last_price: number; change_pct: number; movement_pct: number; range_pct: number; quote_volume: number; trades: number; score: number; max_leverage: number | null; horizon: number; interval: string; variation_sum_pct: number; variation_average_pct: number; leverage?: number };
-  type ScannerAnalysis = { symbol: string; status: 'ANALYZING' | 'VALID' | 'STALE' | 'ERROR'; tp_optimal_percent: number | null; average_duration_minutes: number | null; activity_state?: 'DORMIDA' | 'DESPERTANDO' | 'ACTIVA'; operations: number; wins: number; losses: number; win_rate?: number; equity_final: number | null; final_result_usdt: number | null; loss_limit_percent?: number; tracker_period?: number; stop_percent?: number; initial_balance?: number; risk_percent?: number; leverage?: number; variation_average_pct?: number; window_seconds?: number; last_bar_time: number | null; bars: number; operation_details?: TrackerScannerOperation[]; error?: string; profiling?: { total_ms?: number; stages?: Array<{ stage: string; total_ms: number; last_ms: number; max_ms: number; count: number }> } };
+  type ScannerAnalysis = { symbol: string; status: 'ANALYZING' | 'VALID' | 'STALE' | 'ERROR'; tp_optimal_percent: number | null; average_duration_minutes: number | null; activity_state?: 'DORMIDA' | 'DESPERTANDO' | 'ACTIVA'; operations: number; wins: number; losses: number; win_rate?: number; equity_final: number | null; final_result_usdt: number | null; loss_limit_percent?: number; tracker_period?: number; stop_percent?: number; initial_balance?: number; risk_percent?: number; leverage?: number; active_parameters?: { status?: string; source?: string; tracker_period?: number; stop_percent?: number; target_percent?: number; minroe_limit_percent?: number; initial_balance?: number; risk_percent?: number; leverage?: number; risk_usdt?: number; bars?: number; last_bar_time?: number | null; parameter_version?: number }; variation_average_pct?: number; window_seconds?: number; last_bar_time: number | null; bars: number; operation_details?: TrackerScannerOperation[]; error?: string; profiling?: { total_ms?: number; stages?: Array<{ stage: string; total_ms: number; last_ms: number; max_ms: number; count: number }> } };
   type ScannerSnapshot = { scan_id?: string | null; updated_at?: number | null; age_seconds?: number; freshness: 'EMPTY' | 'FRESH' | 'STALE'; config?: Record<string, number | string> | null; universe: ActiveMarketSymbol[]; symbols: ScannerAnalysis[]; window_seconds?: number };
   type ScannerSortKey = 'operations' | 'wins' | 'losses' | 'tp_optimal_percent' | 'average_duration_minutes' | 'final_result_usdt';
   const [activeMarketSymbols, setActiveMarketSymbols] = useState<ActiveMarketSymbol[]>([]);
@@ -1833,6 +1833,10 @@ function Workspace() {
       return;
     }
     const cachedSummary = scannerAnalysisBySymbolRef.current[symbol];
+    const sharedParameters = cachedSummary?.active_parameters;
+    const workerParameters = productionWorkerRunning && productionWorkerStatus?.adaptive_parameters
+      ? productionWorkerStatus.adaptive_parameters
+      : sharedParameters;
     if (cachedSummary?.tp_optimal_percent != null && (cachedSummary.status === 'VALID' || cachedSummary.status === 'STALE')) {
       setBinanceTargetPercent(current => current === cachedSummary.tp_optimal_percent ? current : cachedSummary.tp_optimal_percent!);
       localStorage.setItem('helloworld-binance-target-percent', String(cachedSummary.tp_optimal_percent));
@@ -1847,13 +1851,14 @@ function Workspace() {
           symbols: symbol,
           // N is an immediate UI control. Do not let an older cached summary
           // override the value the user just selected while the next snapshot runs.
-          tracker_period: String(trackerPeriod),
-          stop_percent: String(cachedSummary?.stop_percent ?? binanceStopPercent),
-          initial_balance: String(cachedSummary?.initial_balance ?? paperInitialBalance),
-          risk_percent: String(cachedSummary?.risk_percent ?? paperRiskPercent),
-          leverage: String(cachedSummary?.leverage ?? scannerSelectedLeverage),
+          tracker_period: String(workerParameters?.tracker_period ?? trackerPeriod),
+          stop_percent: String(workerParameters?.stop_percent ?? cachedSummary?.stop_percent ?? binanceStopPercent),
+          initial_balance: String(workerParameters?.initial_balance ?? cachedSummary?.initial_balance ?? paperInitialBalance),
+          risk_percent: String(workerParameters?.risk_percent ?? cachedSummary?.risk_percent ?? paperRiskPercent),
+          leverage: String(workerParameters?.leverage ?? cachedSummary?.leverage ?? scannerSelectedLeverage),
           limit: '480',
           include_operations: 'true',
+          ...(workerParameters?.target_percent != null ? { target_percent: String(workerParameters.target_percent) } : {}),
         });
         const payload = await fetchJson<{ symbols?: ScannerAnalysis[] }>(`${apiUrl}/market/binance/scanner-analysis?${query}`, {
           headers: auth.accessToken ? { Authorization: `Bearer ${auth.accessToken}` } : undefined,
@@ -1866,7 +1871,7 @@ function Workspace() {
           setTrackerDetailError(row?.error ?? 'El scanner no devolvió el detalle de operaciones para este símbolo.');
           return;
         }
-        setTrackerScannerDetail(row);
+        setTrackerScannerDetail({ ...row, active_parameters: workerParameters });
         setTrackerDetailStatus('ready');
         setTrackerDetailError('');
         hasLoadedOnce = true;
@@ -1884,7 +1889,7 @@ function Workspace() {
     void refreshSelectedTracker();
     const timer = window.setInterval(() => void refreshSelectedTracker(), 60_000);
     return () => { active = false; window.clearInterval(timer); };
-  }, [apiUrl, auth.accessToken, binanceStopPercent, broker, paperInitialBalance, paperRiskPercent, replayState.active, scannerSelectedLeverage, scannerSnapshotUpdatedAt, showTracker, symbol, trackerPeriod]);
+  }, [apiUrl, auth.accessToken, binanceStopPercent, broker, paperInitialBalance, paperRiskPercent, productionWorkerRunning, productionWorkerStatus?.adaptive_parameters?.parameter_version, replayState.active, scannerSelectedLeverage, scannerSnapshotUpdatedAt, showTracker, symbol, trackerPeriod]);
 
   useEffect(() => {
     if (broker !== 'binance' || activeMarketSymbols.length === 0) return;
@@ -3331,7 +3336,7 @@ function Workspace() {
     const recommendation = labRecommendations?.[type];
     const storedAssist = JSON.parse(localStorage.getItem('helloworld-paper-assist') ?? '{}') as { stopPercent?: number; targetPercent?: number };
     const stopDistance = broker === 'binance'
-      ? binanceStopPercent / 100
+      ? activeSharedStopPercent / 100
       : recommendation?.mae
         ? recommendation.mae / 100
         : Number.isFinite(storedAssist.stopPercent) && (storedAssist.stopPercent ?? 0) > 0
@@ -3411,7 +3416,7 @@ function Workspace() {
             quantity,
             stop_loss: stop,
             take_profit: target,
-            stop_percent: binanceStopPercent,
+            stop_percent: activeSharedStopPercent,
             target_percent: scannerTargetPercent ?? binanceTargetPercent,
             leverage: effectiveLeverage,
             confirmed: true,
@@ -3893,13 +3898,18 @@ function Workspace() {
   const riskBalanceForSizing = availableRiskBalance;
   const activeRiskPercent = Number((JSON.parse(localStorage.getItem('helloworld-paper-assist') ?? '{}') as { riskPercent?: number }).riskPercent) || paperRiskPercent;
   const selectedScannerAnalysis = trackerScannerDetail?.symbol === symbol && (trackerScannerDetail.status === 'VALID' || trackerScannerDetail.status === 'STALE')
-    ? trackerScannerDetail
+    ? { ...trackerScannerDetail, active_parameters: scannerAnalysisBySymbol[symbol]?.active_parameters ?? trackerScannerDetail.active_parameters }
     : scannerAnalysisBySymbol[symbol] ?? null;
-  const scannerTargetPercent = selectedScannerAnalysis?.tp_optimal_percent ?? null;
+  const scannerTargetPercent = selectedScannerAnalysis?.active_parameters?.target_percent ?? selectedScannerAnalysis?.tp_optimal_percent ?? null;
+  const activeSharedParameters = productionWorkerRunning && productionWorkerStatus?.adaptive_parameters
+    ? productionWorkerStatus.adaptive_parameters
+    : selectedScannerAnalysis?.active_parameters;
+  const activeSharedStopPercent = activeSharedParameters?.stop_percent ?? binanceStopPercent;
+  const activeSharedTrackerPeriod = activeSharedParameters?.tracker_period ?? trackerPeriod;
   const binancePreview = broker === 'binance' && binanceRules && liveReferencePrice > 0 && scannerTargetPercent != null ? (['LONG', 'SHORT'] as const).map(side => {
     const direction = side === 'LONG' ? 1 : -1;
     const entry = roundToBinance(liveReferencePrice, binanceRules.tick_size, binanceRules.price_precision);
-    const stop = roundToBinance(entry * (1 - direction * binanceStopPercent / 100), binanceRules.tick_size, binanceRules.price_precision);
+    const stop = roundToBinance(entry * (1 - direction * activeSharedStopPercent / 100), binanceRules.tick_size, binanceRules.price_precision);
     const targetPercent = scannerTargetPercent;
     const target = roundToBinance(entry * (1 + direction * targetPercent / 100), binanceRules.tick_size, binanceRules.price_precision);
     const availableBalance = binanceOnline
@@ -3912,7 +3922,7 @@ function Workspace() {
     const leverage = Math.min(recommendedLeverage, maximumLeverage);
     const marginMultiplier = leverage > 0 ? recommendedLeverage / leverage : 1;
     const riskBudget = riskBalanceForSizing * activeRiskPercent / 100;
-    const riskBoundNotional = (binanceStopPercent / 100 + tradingCostRate('binance')) > 0 ? riskBudget / (binanceStopPercent / 100 + tradingCostRate('binance')) : 0;
+    const riskBoundNotional = (activeSharedStopPercent / 100 + tradingCostRate('binance')) > 0 ? riskBudget / (activeSharedStopPercent / 100 + tradingCostRate('binance')) : 0;
     const desiredNotional = binanceSizingMode === 'minimum' ? binanceRules.min_notional : Math.max(binanceRules.min_notional, riskBoundNotional);
     const usableMargin = availableBalance > 0 ? Math.max(0, availableBalance - BINANCE_MARGIN_RESERVE_USDT) : 0;
     const affordableNotional = usableMargin * leverage;
@@ -3933,7 +3943,7 @@ function Workspace() {
     }
     if (broker === 'binance' && !replayState.active) {
       const history = trackerScannerDetail?.symbol === symbol && trackerScannerDetail.operation_details
-        ? trackerOperationsFromScanner(trackerScannerDetail.operation_details, trackerScannerDetail.tp_optimal_percent ?? binanceTargetPercent, binanceStopPercent)
+        ? trackerOperationsFromScanner(trackerScannerDetail.operation_details, trackerScannerDetail.active_parameters?.target_percent ?? trackerScannerDetail.tp_optimal_percent ?? binanceTargetPercent, trackerScannerDetail.active_parameters?.stop_percent ?? binanceStopPercent)
         : [];
       if (!symbolHistoryReady) {
         setTrackerVirtualOperations(history);
@@ -3944,12 +3954,12 @@ function Workspace() {
       const liveSource = renderBars(candleBarsRef.current, 480);
       const liveOperations = runTrackerVisualSimulation(
         liveSource,
-        trackerPeriod,
-        selectedScannerAnalysis?.stop_percent ?? binanceStopPercent,
-        selectedScannerAnalysis?.tp_optimal_percent ?? binanceTargetPercent,
-        selectedScannerAnalysis?.initial_balance ?? paperInitialBalance,
-        selectedScannerAnalysis?.risk_percent ?? paperRiskPercent,
-        selectedScannerAnalysis?.leverage ?? paperLeverage,
+        activeSharedTrackerPeriod,
+        activeSharedStopPercent,
+        activeSharedParameters?.target_percent ?? selectedScannerAnalysis?.tp_optimal_percent ?? binanceTargetPercent,
+        activeSharedParameters?.initial_balance ?? selectedScannerAnalysis?.initial_balance ?? paperInitialBalance,
+        activeSharedParameters?.risk_percent ?? selectedScannerAnalysis?.risk_percent ?? paperRiskPercent,
+        activeSharedParameters?.leverage ?? selectedScannerAnalysis?.leverage ?? paperLeverage,
         false,
       ).filter(operation => !operation.closed);
       setTrackerVirtualOperations([...history, ...liveOperations]);
@@ -3957,7 +3967,7 @@ function Workspace() {
     }
     const source = renderBars(candleBarsRef.current, Math.max(300, Math.round(trackerPeriod) + 1));
     setTrackerVirtualOperations(runTrackerVisualSimulation(source, trackerPeriod, binanceStopPercent, binanceTargetPercent, paperInitialBalance, paperRiskPercent, paperLeverage, replayState.active));
-  }, [showTracker, trackerPeriod, binanceStopPercent, binanceTargetPercent, paperInitialBalance, paperRiskPercent, paperLeverage, symbol, symbolHistoryReady, trackerRevision, replayState.active, broker, trackerScannerDetail, selectedScannerAnalysis]);
+  }, [showTracker, trackerPeriod, binanceStopPercent, binanceTargetPercent, paperInitialBalance, paperRiskPercent, paperLeverage, symbol, symbolHistoryReady, trackerRevision, replayState.active, broker, trackerScannerDetail, selectedScannerAnalysis, activeSharedStopPercent, activeSharedTrackerPeriod, activeSharedParameters]);
   const latestActiveTrackerBar = candleBarsRef.current[candleBarsRef.current.length - 1];
   const activeTrackerMark = broker === 'binance'
     ? binanceLivePriceRef.current?.symbol === symbol && Date.now() - binanceLivePriceRef.current.receivedAt <= 5_000 ? binanceLivePriceRef.current : null
@@ -4153,7 +4163,7 @@ function Workspace() {
   const scannerSortButton = (label: string, key: ScannerSortKey) => <button type="button" onClick={() => toggleScannerSort(key)} aria-label={`Ordenar por ${label} ${scannerSort.key === key && scannerSort.direction === 'desc' ? 'ascendente' : 'descendente'}`}>{label}{scannerSort.key === key ? scannerSort.direction === 'desc' ? ' ↓' : ' ↑' : ''}</button>;
   const scannerSnapshotTimeLabel = scannerSnapshotUpdatedAt == null ? 'sin snapshot' : new Date(scannerSnapshotUpdatedAt * 1000).toLocaleTimeString('es-MX', { timeZone: timezone, hour: '2-digit', minute: '2-digit' });
   const scannerResultsTable = broker === 'binance' ? <details className="scanner-results-panel"><summary>Scan compartido · {scannerSnapshotFreshness} · {scannerSnapshotTimeLabel} · {scannerRowsForTable.length} símbolos · {scannerTotals.operations} ops / {scannerTotals.wins} wins / {scannerTotals.losses} losses</summary><div className="scanner-results-scroll"><table className="scanner-results-table"><thead><tr><th>Símbolo</th><th>Estado</th><th>{scannerSortButton('Ops', 'operations')}</th><th>{scannerSortButton('Wins', 'wins')}</th><th>{scannerSortButton('Losses', 'losses')}</th><th>{scannerSortButton('TP', 'tp_optimal_percent')}</th><th>{scannerSortButton('Duración', 'average_duration_minutes')}</th><th>{scannerSortButton('Resultado USD', 'final_result_usdt')}</th></tr></thead><tbody>{scannerRowsForTable.map(({ candidate, analysis }) => <tr key={candidate.symbol} className={candidate.symbol === symbol ? 'scanner-table-active' : ''}><td><button type="button" className="scanner-table-symbol" onClick={() => { setLabRecommendations(null); setSymbol(candidate.symbol); }}>{candidate.symbol}</button></td><td>{analysis?.status ?? (candidate.symbol === runningWorkerSymbol ? 'WORKER ACTIVO' : 'ANALYZING')}</td><td>{analysis?.last_bar_time != null ? analysis.operations : '—'}</td><td>{analysis?.last_bar_time != null ? analysis.wins : '—'}</td><td>{analysis?.last_bar_time != null ? analysis.losses : '—'}</td><td>{analysis?.tp_optimal_percent != null ? `${analysis.tp_optimal_percent.toFixed(2)}%` : '—'}</td><td>{analysis?.average_duration_minutes != null ? `${analysis.average_duration_minutes.toFixed(1)}m` : '—'}</td><td className={analysis?.final_result_usdt != null ? analysis.final_result_usdt >= 0 ? 'scanner-table-positive' : 'scanner-table-negative' : ''}>{analysis?.final_result_usdt != null ? `${analysis.final_result_usdt >= 0 ? '+' : ''}${analysis.final_result_usdt.toFixed(2)}` : '—'}</td></tr>)}</tbody><tfoot><tr><th colSpan={2}>Totales</th><td>{scannerTotals.operations}</td><td>{scannerTotals.wins}</td><td>{scannerTotals.losses}</td><td colSpan={3}>{activeMarketLoading ? 'Actualizando el snapshot compartido…' : `${scannerAnalysisProgress.completed}/${scannerAnalysisProgress.total} analizados`}</td></tr></tfoot></table></div></details> : null;
-  const scannerStatusBar = broker === 'binance' ? <div className="header-market-scanner" aria-label="Market scanner Binance"><small className="scanner-profiling" title={`Tiempo total del ciclo: ${scannerProfiling.totalMs.toFixed(0)}ms`}>{scannerProfilingLabel}</small>{runningWorkerSymbol && <small className="scanner-running-symbol" title={`Worker ${productionWorkerStatus?.mode ?? 'paper'} · ${productionWorkerStatus?.status ?? 'RUNNING'}`}>▶ WORKER · {runningWorkerSymbol}</small>}{[...scannerCardSymbols].sort((a, b) => b.variation_sum_pct - a.variation_sum_pct).map(candidate => { const variation = candidate.variation_sum_pct; const analysis = scannerAnalysisBySymbol[candidate.symbol]; const activity = analysis?.status === 'STALE' ? 'STALE' : analysis?.status === 'ERROR' ? 'ERROR' : analysis?.activity_state ?? (runningWorkerSymbol === candidate.symbol.toUpperCase() ? 'WORKER ACTIVO' : 'ANALIZANDO'); const activityClass = analysis?.status === 'ERROR' ? 'scanner-error' : analysis?.activity_state ? `scanner-activity-${analysis.activity_state.toLowerCase()}` : ''; const workerOnSymbol = runningWorkerSymbol === candidate.symbol.toUpperCase(); const scannerTitle = analysis?.status === 'ERROR' ? `ERROR del scanner: no se pudo completar el análisis. Se reintentará en el próximo ciclo. ${analysis.error ?? ''}` : workerOnSymbol ? `Este símbolo conserva el worker activo en modo ${productionWorkerStatus?.mode ?? 'paper'}.` : undefined; return <article key={candidate.symbol} className={`header-market-item ${candidate.symbol === symbol ? 'active' : ''} ${activityClass} ${analysis?.status === 'STALE' ? 'scanner-stale' : ''} ${workerOnSymbol ? 'scanner-worker-active' : ''}`}><button type="button" className="header-market-main" title={scannerTitle} onClick={() => { setLabRecommendations(null); setSymbol(candidate.symbol); }}><b>{candidate.symbol}</b><span className={variation >= 0 ? 'ticker-up' : 'ticker-down'}>{variation >= 0 ? '▲' : '▼'} {Math.abs(variation).toFixed(2)}%</span>{workerOnSymbol && <em className="scanner-worker-badge" aria-label="Worker ejecutando para este símbolo" title="Este símbolo tiene el worker activo">▶ RUNNING</em>}<em className="scanner-activity-label">{activity}</em><small className="scanner-metrics"><i>Ops {analysis?.last_bar_time != null ? analysis.operations : '—'} · W {analysis?.last_bar_time != null ? analysis.wins : '—'} · L {analysis?.last_bar_time != null ? analysis.losses : '—'}</i><i>TP {analysis?.tp_optimal_percent != null ? `+${analysis.tp_optimal_percent.toFixed(2)}%` : '—'}</i><i>⌀ {analysis?.average_duration_minutes != null ? `${analysis.average_duration_minutes.toFixed(1)}m` : '—'}</i><i>USD {analysis?.final_result_usdt != null ? `${analysis.final_result_usdt >= 0 ? '+' : ''}${analysis.final_result_usdt.toFixed(2)}` : '—'} · {analysis?.profiling?.total_ms != null ? `${analysis.profiling.total_ms.toFixed(0)}ms` : '…'}</i></small></button></article>; })}</div> : null;
+  const scannerStatusBar = broker === 'binance' ? <div className="header-market-scanner" aria-label="Market scanner Binance"><small className="scanner-profiling" title={`Tiempo total del ciclo: ${scannerProfiling.totalMs.toFixed(0)}ms`}>{scannerProfilingLabel}</small>{runningWorkerSymbol && <small className="scanner-running-symbol" title={`Worker ${productionWorkerStatus?.mode ?? 'paper'} · ${productionWorkerStatus?.status ?? 'RUNNING'}`}>▶ WORKER · {runningWorkerSymbol}</small>}{[...scannerCardSymbols].sort((a, b) => b.variation_sum_pct - a.variation_sum_pct).map(candidate => { const variation = candidate.variation_sum_pct; const analysis = scannerAnalysisBySymbol[candidate.symbol]; const workerOnSymbol = runningWorkerSymbol === candidate.symbol.toUpperCase(); const activeParameters = workerOnSymbol && productionWorkerStatus?.adaptive_parameters ? { ...productionWorkerStatus.adaptive_parameters, source: 'WORKER' } : analysis?.active_parameters; const activity = analysis?.status === 'STALE' ? 'STALE' : analysis?.status === 'ERROR' ? 'ERROR' : analysis?.activity_state ?? (runningWorkerSymbol === candidate.symbol.toUpperCase() ? 'WORKER ACTIVO' : 'ANALIZANDO'); const activityClass = analysis?.status === 'ERROR' ? 'scanner-error' : analysis?.activity_state ? `scanner-activity-${analysis.activity_state.toLowerCase()}` : ''; const scannerTitle = analysis?.status === 'ERROR' ? `ERROR del scanner: no se pudo completar el análisis. Se reintentará en el próximo ciclo. ${analysis.error ?? ''}` : workerOnSymbol ? `Worker activo · N ${activeParameters?.tracker_period ?? '—'} · TP +${(activeParameters?.target_percent ?? 0).toFixed(2)}% · SL −${(activeParameters?.stop_percent ?? 0).toFixed(2)}% · v${activeParameters?.parameter_version ?? 0}` : undefined; const displayTp = activeParameters?.target_percent ?? analysis?.tp_optimal_percent; return <article key={candidate.symbol} className={`header-market-item ${candidate.symbol === symbol ? 'active' : ''} ${activityClass} ${analysis?.status === 'STALE' ? 'scanner-stale' : ''} ${workerOnSymbol ? 'scanner-worker-active' : ''}`}><button type="button" className="header-market-main" title={scannerTitle} onClick={() => { setLabRecommendations(null); setSymbol(candidate.symbol); }}><b>{candidate.symbol}</b><span className={variation >= 0 ? 'ticker-up' : 'ticker-down'}>{variation >= 0 ? '▲' : '▼'} {Math.abs(variation).toFixed(2)}%</span>{workerOnSymbol && <em className="scanner-worker-badge" aria-label="Worker ejecutando para este símbolo" title="Este símbolo tiene el worker activo">▶ RUNNING</em>}<em className="scanner-activity-label">{activity}</em><small className="scanner-metrics"><i>Ops {analysis?.last_bar_time != null ? analysis.operations : '—'} · W {analysis?.last_bar_time != null ? analysis.wins : '—'} · L {analysis?.last_bar_time != null ? analysis.losses : '—'}</i><i>{activeParameters?.source === 'WORKER' ? 'TP ACTIVO' : 'TP'} {displayTp != null ? `+${displayTp.toFixed(2)}%` : '—'}{activeParameters?.tracker_period != null ? ` · N ${activeParameters.tracker_period}` : ''}</i><i>⌀ {analysis?.average_duration_minutes != null ? `${analysis.average_duration_minutes.toFixed(1)}m` : '—'}</i><i>USD {analysis?.final_result_usdt != null ? `${analysis.final_result_usdt >= 0 ? '+' : ''}${analysis.final_result_usdt.toFixed(2)}` : '—'} · {analysis?.profiling?.total_ms != null ? `${analysis.profiling.total_ms.toFixed(0)}ms` : '…'}</i></small></button></article>; })}</div> : null;
   const statusBarMessage = paperSyncError || binanceLeverageError || activeMarketError || productionWorkerError;
   const binanceReady = binanceOnline;
   const binanceStatusClass = binanceReady
@@ -4184,10 +4194,11 @@ function Workspace() {
   const parameterLastBar = parameterAnalysis?.last_bar_time
     ? new Date(parameterAnalysis.last_bar_time * 1000).toLocaleTimeString('es-MX', { timeZone: timezone, hour: '2-digit', minute: '2-digit' })
     : '—';
-  const effectiveTargetPercent = liveAdaptiveParameters?.target_percent ?? scannerTargetPercent;
-  const effectiveTrackerPeriod = liveAdaptiveParameters?.tracker_period ?? trackerPeriod;
-  const effectiveStopPercent = liveAdaptiveParameters?.stop_percent ?? binanceStopPercent;
-  const limitedStopRoePercent = liveAdaptiveParameters?.minroe_limit_percent ?? parameterAnalysis?.loss_limit_percent ?? null;
+  const sharedParameters = parameterAnalysis?.active_parameters;
+  const effectiveTargetPercent = liveAdaptiveParameters?.target_percent ?? sharedParameters?.target_percent ?? scannerTargetPercent;
+  const effectiveTrackerPeriod = liveAdaptiveParameters?.tracker_period ?? sharedParameters?.tracker_period ?? trackerPeriod;
+  const effectiveStopPercent = liveAdaptiveParameters?.stop_percent ?? sharedParameters?.stop_percent ?? binanceStopPercent;
+  const limitedStopRoePercent = liveAdaptiveParameters?.minroe_limit_percent ?? sharedParameters?.minroe_limit_percent ?? parameterAnalysis?.loss_limit_percent ?? null;
   const parameterSizingPreview = binancePreview[0] ?? null;
   const parameterCard = <aside className={`parameter-card parameter-card-${parameterStatus.toLowerCase()}`} aria-label={`Parámetros de control de ${symbol}`}>
     <div className="parameter-card-head">

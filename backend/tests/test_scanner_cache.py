@@ -235,11 +235,12 @@ def test_scanner_endpoint_fetches_only_new_closed_candles(monkeypatch) -> None:
 
     detail = asyncio.run(main.binance_scanner_analysis(
         symbols="BTCUSDT", tracker_period=2, limit=100, movement_averages="0.5",
-        leverage=10, include_operations=True, identity=None,
+        leverage=10, include_operations=True, target_percent=2.75, identity=None,
     ))
     assert detail["config"]["leverage"] == 10
     assert detail["window_seconds"] == 8 * 60 * 60
     assert detail["symbols"][0]["operations"] == len(detail["symbols"][0]["operation_details"])
+    assert detail["symbols"][0]["tp_optimal_percent"] == 2.75
 
 
 def test_scanner_cold_loads_8_hour_window_in_one_page(monkeypatch) -> None:

@@ -2,7 +2,7 @@ import asyncio
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
-from app.scanner_snapshot import public_snapshot
+from app.scanner_snapshot import public_snapshot, worker_parameters_from_snapshot
 
 
 def test_snapshot_is_fresh_for_three_minutes_and_keeps_one_payload():
@@ -20,7 +20,9 @@ def test_snapshot_is_fresh_for_three_minutes_and_keeps_one_payload():
     assert result["freshness"] == "FRESH"
     assert result["age_seconds"] == 120
     assert result["config"] == snapshot["config"]
-    assert result["symbols"] == snapshot["symbols"]
+    assert result["symbols"][0]["symbol"] == "BTCUSDT"
+    assert result["symbols"][0]["active_parameters"]["target_percent"] == 2.2
+    assert result["symbols"][0]["active_parameters"]["tracker_period"] == 8
     assert result["window_seconds"] == 28_800
 
 
@@ -35,6 +37,63 @@ def test_old_snapshot_is_explicitly_stale():
 
     assert result["freshness"] == "STALE"
     assert result["age_seconds"] == 181
+
+
+def test_public_snapshot_exposes_worker_parameters_as_current_symbol_values():
+    snapshot = {
+        "scan_id": "scan-2", "config": {}, "universe": [],
+        "symbols": [{
+            "symbol": "BTCUSDT", "status": "VALID", "tp_optimal_percent": 2.0,
+            "tracker_period": 8, "stop_percent": 0.2, "loss_limit_percent": 6.0,
+            "worker_parameters": {
+                "source": "WORKER", "running": True, "tracker_period": 11,
+                "target_percent": 3.5, "stop_percent": 0.3, "parameter_version": 4,
+            },
+        }],
+        "updated_at": datetime.now(timezone.utc),
+    }
+
+    public = public_snapshot(snapshot)
+
+    assert public["symbols"][0]["active_parameters"]["source"] == "WORKER"
+    assert public["symbols"][0]["active_parameters"]["target_percent"] == 3.5
+    assert public["symbols"][0]["active_parameters"]["tracker_period"] == 11
+
+
+def test_worker_startup_parameters_come_from_the_shared_symbol_row():
+    snapshot = {
+        "config": {"tracker_period": 8, "stop_percent": 0.25, "risk_percent": 1.5, "initial_balance": 250},
+        "symbols": [{
+            "symbol": "BTCUSDT", "status": "VALID", "tp_optimal_percent": 2.4,
+            "loss_limit_percent": 5.0, "tracker_period": 8, "stop_percent": 0.25,
+            "risk_percent": 1.5, "initial_balance": 250, "leverage": 12,
+        }],
+    }
+
+    parameters = worker_parameters_from_snapshot(snapshot, "btcusdt")
+
+    assert parameters == {
+        "tracker_period": 8, "stop_percent": 0.25, "target_percent": 2.4,
+        "minroe_limit_percent": 5.0, "risk_percent": 1.5, "leverage": 12,
+        "initial_balance": 250, "bars": 0, "last_bar_time": None,
+        "status": "SCANNER_SNAPSHOT",
+    }
+
+
+def test_stopped_worker_parameters_fall_back_to_latest_scanner_result():
+    snapshot = {
+        "config": {},
+        "symbols": [{
+            "symbol": "BTCUSDT", "status": "VALID", "tp_optimal_percent": 1.8,
+            "tracker_period": 7, "stop_percent": 0.2,
+            "worker_parameters": {"running": False, "target_percent": 9.0, "tracker_period": 20},
+        }],
+    }
+
+    parameters = worker_parameters_from_snapshot(snapshot, "BTCUSDT")
+
+    assert parameters["target_percent"] == 1.8
+    assert parameters["tracker_period"] == 7
 
 
 def test_scanner_snapshot_accepts_valid_two_character_binance_base_symbol():
