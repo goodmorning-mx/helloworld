@@ -128,28 +128,19 @@ class BinanceMarketGateway:
             if isinstance(result, Exception):
                 self._clients[symbol].discard(client)
 
-    async def _rest_fallback(self, symbol: str) -> None:
-        """Recover a silent upstream socket without polling while it is live."""
+    async def _recovery_loop(self, symbol: str) -> None:
+        """Repair missing candles and recycle a silent socket; never poll prices."""
         async with httpx.AsyncClient(timeout=5) as client:
             while self._clients[symbol] or self._listeners[symbol]:
                 await asyncio.sleep(3)
                 now_ms = int(time.time() * 1000)
-                # Klines and aggregate trades can remain healthy while the mark
-                # stream is silent. Keep a separate freshness clock and use the
-                # exchange's mark endpoint only as a recovery path.
+                # The mark feed is the only live quote source. When stale, signal
+                # reconnect and recycle the socket; do not substitute REST prices.
                 last_mark = self._last_mark_ws_event_ms.get(symbol, 0)
                 if not last_mark or now_ms - last_mark > MARK_PRICE_MAX_AGE_MS:
-                    try:
-                        response = await client.get("https://fapi.binance.com/fapi/v1/premiumIndex", params={"symbol": symbol})
-                        response.raise_for_status()
-                        value = response.json()
-                        if isinstance(value, dict) and value.get("markPrice") is not None:
-                            await self._publish_mark_price(symbol, float(value["markPrice"]), int(value.get("time", now_ms)), "rest-fallback")
-                    except (httpx.HTTPError, ValueError, TypeError):
-                        logger.warning("binance_mark_price_fallback_error symbol=%s", symbol)
                     # A websocket can complete its handshake and then stop
-                    # delivering frames. Recycle it so the UI and worker can
-                    # recover the real stream instead of living on REST polls.
+                    # delivering frames. Recycle it so the UI and worker recover
+                    # from the same pushed stream.
                     last_activity = max(last_mark, self._connected_at_ms.get(symbol, 0))
                     socket = self._sockets.get(symbol)
                     if socket is not None and last_activity and now_ms - last_activity > MARK_PRICE_MAX_AGE_MS:
@@ -185,7 +176,7 @@ class BinanceMarketGateway:
 
     async def _consume(self, symbol: str) -> None:
         delay = 1.0
-        fallback_task = asyncio.create_task(self._rest_fallback(symbol), name=f"binance-fallback-{symbol}")
+        recovery_task = asyncio.create_task(self._recovery_loop(symbol), name=f"binance-market-recovery-{symbol}")
         try:
             while self._clients[symbol] or self._listeners[symbol]:
                 try:
@@ -245,8 +236,8 @@ class BinanceMarketGateway:
                     if self._sockets.get(symbol) is not None:
                         self._sockets.pop(symbol, None)
         finally:
-            fallback_task.cancel()
-            await asyncio.gather(fallback_task, return_exceptions=True)
+            recovery_task.cancel()
+            await asyncio.gather(recovery_task, return_exceptions=True)
 
     async def subscribe(self, symbol: str, websocket: WebSocket) -> None:
         symbol = self._symbol(symbol)
