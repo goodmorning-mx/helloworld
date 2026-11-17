@@ -47,7 +47,7 @@ from app.telegram_service import BackendEventBus, TelegramCommandService, Telegr
 from app.telegram_control import TelegramControlService, format_scanner_message
 from app.scanner_analysis import ScannerAnalysisConfig, activity_state, analyze_tracker, analyze_tracker_operations
 from app.scanner_cache import SCANNER_MAX_BARS, SCANNER_WINDOW_SECONDS, ScannerCache
-from app.scanner_snapshot import ScannerSnapshotStore, public_snapshot
+from app.scanner_snapshot import ScannerSnapshotStore, public_snapshot, worker_parameters_from_snapshot
 from app.profiling import Profiling
 
 settings = get_settings()
@@ -78,11 +78,25 @@ if settings.telegram_enabled:
     ))
 production_worker_config_store = ProductionWorkerConfigStore(engine)
 scanner_snapshot_store = ScannerSnapshotStore(engine)
+
+
+async def _shared_worker_parameters(user_id: str, symbol: str) -> dict[str, object] | None:
+    stored = await asyncio.to_thread(scanner_snapshot_store.get, user_id)
+    if not stored:
+        return None
+    return worker_parameters_from_snapshot(stored, symbol)
+
+
+async def _publish_shared_worker_parameters(user_id: str, symbol: str, parameters: dict[str, object]) -> None:
+    await asyncio.to_thread(scanner_snapshot_store.publish_worker_parameters, user_id, symbol, parameters)
+
+
 production_workers = ProductionWorkerManager(
     binance_market_gateway, paper_operation_store, backend_events, binance_manager,
     binance_execution_store, production_worker_config_store, settings.binance_base_url,
     live_enabled=(settings.binance_real_trading_enabled and settings.production_worker_live_enabled
                   and settings.production_worker_live_validated),
+    parameter_publisher=_publish_shared_worker_parameters,
 )
 
 
@@ -104,7 +118,7 @@ async def _telegram_scan_snapshot(user_id: str, limit: int) -> dict[str, object]
     }
 
 
-telegram_control = TelegramControlService(production_workers, _telegram_scan_snapshot)
+telegram_control = TelegramControlService(production_workers, _telegram_scan_snapshot, _shared_worker_parameters)
 telegram_commands = TelegramCommandService(
     settings.telegram_bot_token,
     settings.telegram_chat_id,
@@ -643,16 +657,28 @@ async def start_production_worker(payload: ProductionWorkerInput, identity: Auth
             raise HTTPException(status_code=503, detail="El adaptador Live del engine está bloqueado hasta completar la validación de reconciliación y protecciones.")
         if not payload.confirmed:
             raise HTTPException(status_code=409, detail="Confirma explícitamente el modo live.")
+    shared = await _shared_worker_parameters(identity.user_id, payload.symbol)
+    if shared is None:
+        raise HTTPException(status_code=409, detail=f"{payload.symbol.upper()} no tiene un resultado válido en el snapshot compartido del scanner.")
+    # Scanner snapshot is authoritative. Request fields remain in the schema for
+    # compatibility but cannot create a second, divergent parameter set.
+    tracker_period = int(shared.get("tracker_period", payload.tracker_period))
+    stop_percent = float(shared.get("stop_percent", payload.stop_percent))
+    target_percent = float(shared.get("target_percent", payload.target_percent))
+    risk_percent = float(shared.get("risk_percent", payload.risk_percent))
+    leverage = float(shared.get("leverage", payload.leverage))
+    initial_balance = float(shared.get("initial_balance", payload.initial_balance))
     try:
         if payload.mode == "live":
             return await production_workers.activate_live(
                 identity.user_id, payload.symbol,
-                interval=payload.interval, tracker_period=payload.tracker_period,
-                stop_percent=payload.stop_percent, target_percent=payload.target_percent,
-                quantity=payload.quantity, risk_percent=payload.risk_percent,
-                leverage=payload.leverage, initial_balance=payload.initial_balance,
+                interval=payload.interval, tracker_period=tracker_period,
+                stop_percent=stop_percent, target_percent=target_percent,
+                quantity=payload.quantity, risk_percent=risk_percent,
+                leverage=leverage, initial_balance=initial_balance,
+                initial_parameters=shared,
             )
-        return await production_workers.start(identity.user_id, payload.symbol, mode=payload.mode, interval=payload.interval, tracker_period=payload.tracker_period, stop_percent=payload.stop_percent, target_percent=payload.target_percent, quantity=payload.quantity, risk_percent=payload.risk_percent, leverage=payload.leverage, initial_balance=payload.initial_balance)
+        return await production_workers.start(identity.user_id, payload.symbol, mode=payload.mode, interval=payload.interval, tracker_period=tracker_period, stop_percent=stop_percent, target_percent=target_percent, quantity=payload.quantity, risk_percent=risk_percent, leverage=leverage, initial_balance=initial_balance, initial_parameters=shared)
     except ValueError as exc:
         code = 409 if "otra instancia" in str(exc) else 422
         raise HTTPException(status_code=code, detail=str(exc)) from exc
@@ -1251,6 +1277,7 @@ async def binance_scanner_analysis(
     limit: int = SCANNER_MAX_BARS,
     movement_averages: str = Query("", description="Optional comma-separated 1m movement averages matching symbols."),
     include_operations: bool = False,
+    target_percent: float | None = Query(None, gt=0, le=1_000, description="Use an already selected shared TP when reconstructing Tracker operations."),
     identity: AuthIdentity = Depends(identity_dependency(auth_service)),
 ) -> dict[str, object]:
     """Analyze the scanner universe without requiring a chart to be selected.
@@ -1260,6 +1287,7 @@ async def binance_scanner_analysis(
     expensive TP search until a new closed candle is available.
     """
     del identity
+    selected_target_override = target_percent if isinstance(target_percent, (int, float)) else None
     requested = list(dict.fromkeys(value.strip().upper() for value in symbols.split(",") if value.strip()))[:30]
     if not requested:
         return {"symbols": [], "updated_at": int(time.time()), "cache_ttl_seconds": 50}
@@ -1356,9 +1384,12 @@ async def binance_scanner_analysis(
                     return {"symbol": symbol, **previous[1], "status": "STALE", "error": fetch_error or "Sin velas cerradas disponibles.", "stale_since_bar_time": previous[0], "profiling": profile.snapshot()}
                 return {"symbol": symbol, "status": "ERROR", "error": fetch_error or "Sin velas cerradas disponibles.", "tp_optimal_percent": None, "average_duration_minutes": None, "operations": 0, "wins": 0, "losses": 0, "equity_final": None, "final_result_usdt": None, "last_bar_time": None, "bars": 0, "profiling": profile.snapshot()}
 
-            if include_operations and "operation_details" not in analysis and analysis.get("tp_optimal_percent") is not None:
-                details = await asyncio.to_thread(analyze_tracker_operations, bars, config, float(analysis["tp_optimal_percent"]), profile)
+            if include_operations and "operation_details" not in analysis and (selected_target_override is not None or analysis.get("tp_optimal_percent") is not None):
+                selected_target = float(selected_target_override if selected_target_override is not None else analysis["tp_optimal_percent"])
+                details = await asyncio.to_thread(analyze_tracker_operations, bars, config, selected_target, profile)
                 analysis = {**analysis, **details}
+                if selected_target_override is not None:
+                    analysis["tp_optimal_percent"] = selected_target
 
             status = "STALE" if fetch_error else "VALID"
             row: dict[str, object] = {"symbol": symbol, **analysis, "status": status, "profiling": profile.snapshot()}

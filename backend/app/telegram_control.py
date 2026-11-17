@@ -8,6 +8,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 ScanProvider = Callable[[str, int], Awaitable[dict[str, object]]]
+WorkerParametersProvider = Callable[[str, str], Awaitable[dict[str, Any] | None]]
 SYMBOL_RE = re.compile(r"^[A-Z0-9]{3,32}USDT$")
 
 
@@ -30,10 +31,11 @@ def format_scanner_message(rows: list[dict[str, object]], *, updated_at: object 
         symbol = str(row.get("symbol", "?"))
         state = str(row.get("status", "?"))
         result = row.get("final_result_usdt")
-        tp = row.get("tp_optimal_percent")
-        stop = row.get("loss_limit_percent")
-        execution_stop = row.get("stop_percent")
-        tracker_period = row.get("tracker_period")
+        active = row.get("active_parameters") if isinstance(row.get("active_parameters"), dict) else {}
+        tp = active.get("target_percent", row.get("tp_optimal_percent"))
+        stop = active.get("minroe_limit_percent", row.get("loss_limit_percent"))
+        execution_stop = active.get("stop_percent", row.get("stop_percent"))
+        tracker_period = active.get("tracker_period", row.get("tracker_period"))
         ops = row.get("operations", 0)
         wins = row.get("wins", 0)
         losses = row.get("losses", 0)
@@ -43,17 +45,19 @@ def format_scanner_message(rows: list[dict[str, object]], *, updated_at: object 
             continue
         result_value = float(result)
         sign = "+" if result_value >= 0 else ""
-        tp_text = f"TP {float(tp):.2f}%" if tp is not None else "TP —"
+        tp_label = "TP ACTIVO" if active.get("source") == "WORKER" else "TP"
+        tp_text = f"{tp_label} {float(tp):.2f}%" if tp is not None else "TP —"
         if tracker_period is not None:
             tp_text += f" N {int(tracker_period)}"
         if stop is not None:
             tp_text += f" MINROE {float(stop):.1f}%"
         if execution_stop is not None:
             tp_text += f" SL {float(execution_stop):.2f}%"
-        if row.get("leverage") is not None:
-            tp_text += f" {float(row['leverage']):.1f}x"
-        risk_percent = row.get("risk_percent")
-        risk_usdt = row.get("risk_usdt")
+        active_leverage = active.get("leverage", row.get("leverage"))
+        if active_leverage is not None:
+            tp_text += f" {float(active_leverage):.1f}x"
+        risk_percent = active.get("risk_percent", row.get("risk_percent"))
+        risk_usdt = active.get("risk_usdt", row.get("risk_usdt"))
         risk_text = f" R{float(risk_percent):.1f}%" if risk_percent is not None else ""
         if risk_usdt is not None:
             risk_text += f" ${float(risk_usdt):.2f}"
@@ -71,27 +75,40 @@ def format_scanner_message(rows: list[dict[str, object]], *, updated_at: object 
 class TelegramControlService:
     """Own the command use cases so REST and Telegram share identical logic."""
 
-    def __init__(self, worker_manager: object, scan_provider: ScanProvider) -> None:
+    def __init__(self, worker_manager: object, scan_provider: ScanProvider, worker_parameters_provider: WorkerParametersProvider | None = None) -> None:
         self.worker_manager = worker_manager
         self.scan_provider = scan_provider
+        self.worker_parameters_provider = worker_parameters_provider
 
     async def scan(self, user_id: str, limit: int = 20) -> dict[str, object]:
         return await self.scan_provider(user_id, max(1, min(int(limit), 30)))
 
     async def start(self, user_id: str, symbol: str, *, risk_percent: float = 1.0, leverage: float = 1.0, initial_balance: float = 100.0) -> dict[str, Any]:
         normalized = self._symbol(symbol)
+        parameters = await self.worker_parameters_provider(user_id, normalized) if self.worker_parameters_provider else None
+        if self.worker_parameters_provider is not None and parameters is None:
+            raise ValueError(f"{normalized} no tiene un resultado válido en el snapshot compartido. Ejecuta /scan desde la web y vuelve a intentar.")
+        if parameters:
+            risk_percent = float(parameters.get("risk_percent", risk_percent))
+            leverage = float(parameters.get("leverage", leverage))
+            initial_balance = float(parameters.get("initial_balance", initial_balance))
         activate = getattr(self.worker_manager, "activate", self.worker_manager.start)
+        settings: dict[str, Any] = {
+            "mode": "signals_only",
+            "interval": "1m",
+            "tracker_period": int(parameters.get("tracker_period", 5)) if parameters else 5,
+            "stop_percent": float(parameters.get("stop_percent", 0.2)) if parameters else 0.2,
+            "target_percent": float(parameters.get("target_percent", 1.0)) if parameters else 1.0,
+            "risk_percent": risk_percent,
+            "leverage": leverage,
+            "initial_balance": initial_balance,
+        }
+        if parameters is not None:
+            settings["initial_parameters"] = parameters
         return await activate(
             user_id,
             normalized,
-            mode="signals_only",
-            interval="1m",
-            tracker_period=5,
-            stop_percent=0.2,
-            target_percent=1.0,
-            risk_percent=risk_percent,
-            leverage=leverage,
-            initial_balance=initial_balance,
+            **settings,
         )
 
     async def set_mode(self, user_id: str, mode: str, symbol: str | None = None) -> dict[str, Any]:
