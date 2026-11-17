@@ -3962,7 +3962,38 @@ function Workspace() {
   const activeTrackerMark = broker === 'binance'
     ? binanceLivePriceRef.current?.symbol === symbol && Date.now() - binanceLivePriceRef.current.receivedAt <= 5_000 ? binanceLivePriceRef.current : null
     : latestActiveTrackerBar ? { time: latestActiveTrackerBar.time, price: latestActiveTrackerBar.close } : null;
-  const backtestVisualDrawings: Drawing[] = (showTracker ? trackerVirtualOperations : []).filter(operation => !operation.closed || (operation.rawStatus ?? operation.status) === 'CLOSED - WIN' || (showTrackerFails && operation.status === 'CLOSED - FAILED')).map(operation => ({
+  const trackerCanonicalAnalysis = broker === 'binance' && !replayState.active && trackerScannerDetail?.symbol === symbol && trackerScannerDetail.operation_details ? trackerScannerDetail : null;
+  const trackerClosedOperations = trackerVirtualOperations.filter(operation => operation.closed);
+  const trackerLossLimitAnalysis = trackerCanonicalAnalysis ? (() => {
+    const records = trackerCanonicalAnalysis.operation_details ?? [];
+    const limit = trackerCanonicalAnalysis.loss_limit_percent ?? 0;
+    const wins = records.filter(operation => operation.raw_status === 'WIN');
+    const losses = records.filter(operation => operation.raw_status === 'FAIL');
+    const winsKept = wins.filter(operation => operation.min_roe >= -limit).length;
+    const lossesLimited = losses.filter(operation => operation.min_roe <= -limit).length;
+    const winCoverage = wins.length ? winsKept / wins.length : 0;
+    const lossCoverage = losses.length ? lossesLimited / losses.length : 0;
+    return { limit, winsKept, lossesLimited, winCoverage, lossCoverage, targetDistance: Math.abs(winCoverage - .8) + Math.abs(lossCoverage - .8) };
+  })() : findBestTrackerLossLimit(trackerClosedOperations);
+  const trackerAdjustedOutcome = (operation: TrackerVirtualOperation) => {
+    const rawStatus = operation.rawStatus ?? operation.status;
+    if (trackerCanonicalAnalysis) {
+      const limited = Boolean(operation.limited || rawStatus !== operation.status);
+      if (!limited) return { status: rawStatus, rawStatus, pnl: operation.pnl, resultRoePercent: operation.resultRoePercent, limited: false };
+      if (operation.limited) return { status: rawStatus, rawStatus, pnl: operation.pnl, resultRoePercent: operation.resultRoePercent, limited: true };
+      const limitedPnl = -(trackerLossLimitAnalysis.limit / 100 / Math.max(1, operation.leverage)) * operation.notional - tradingCosts('binance', operation.notional).total;
+      return { status: rawStatus, rawStatus, pnl: limitedPnl, resultRoePercent: -trackerLossLimitAnalysis.limit, limited: true };
+    }
+    const crossedLimitedStop = trackerLossLimitEnabled && operation.minRoe.roePercent <= -trackerLossLimitAnalysis.limit;
+    if (!crossedLimitedStop) return { status: rawStatus, rawStatus, pnl: operation.pnl, resultRoePercent: operation.resultRoePercent, limited: false };
+    const grossLimitedPnl = -(trackerLossLimitAnalysis.limit / 100 / Math.max(1, operation.leverage)) * operation.notional;
+    const pnl = grossLimitedPnl - tradingCosts('binance', operation.notional).total;
+    return { status: rawStatus, rawStatus, pnl, resultRoePercent: -trackerLossLimitAnalysis.limit, limited: true };
+  };
+  const trackerDisplayedOutcomes = trackerClosedOperations.map(trackerAdjustedOutcome);
+  const backtestVisualDrawings: Drawing[] = (showTracker ? trackerVirtualOperations : []).filter(operation => !operation.closed || (operation.rawStatus ?? operation.status) === 'CLOSED - WIN' || (showTrackerFails && operation.status === 'CLOSED - FAILED')).map(operation => {
+    const operationOutcome = operation.closed ? trackerDisplayedOutcomes[trackerClosedOperations.indexOf(operation)] : undefined;
+    return ({
     id: operation.id,
     symbol,
     type: operation.side,
@@ -3978,14 +4009,14 @@ function Workspace() {
       : { time: operation.end.time as UTCTimestamp, price: operation.end.price },
     stop: { time: operation.end.time as UTCTimestamp, price: trackerLivePriceOverride?.symbol === symbol && trackerLivePriceOverride.operationId === operation.id ? trackerLivePriceOverride.stopPrice ?? operation.stop.price : operation.stop.price },
     target: { time: operation.end.time as UTCTimestamp, price: trackerLivePriceOverride?.symbol === symbol && trackerLivePriceOverride.operationId === operation.id ? trackerLivePriceOverride.targetPrice ?? operation.target.price : operation.target.price },
-    pnl: !operation.closed && operation.start.price > 0
+    pnl: operationOutcome?.pnl ?? (!operation.closed && operation.start.price > 0
       ? ((activeTrackerMark?.price ?? operation.end.price) - operation.start.price) / operation.start.price * (operation.side === 'long' ? 1 : -1) * operation.notional
-      : operation.pnl,
+      : operation.pnl),
     notional: operation.notional,
     leverage: operation.leverage,
     fees: operation.fees ?? tradingCosts('binance', operation.notional).total,
     balanceAfter: operation.balanceAfter,
-    resultRoePercent: operation.resultRoePercent,
+    resultRoePercent: operationOutcome?.resultRoePercent ?? operation.resultRoePercent,
     bodyAveragePercentAtOpen: operation.bodyAveragePercentAtOpen,
     bodyAveragePercentAtClose: operation.bodyAveragePercentAtClose,
     finalTargetPercent: operation.finalTargetPercent,
@@ -3994,7 +4025,8 @@ function Workspace() {
     realMaxRoe: operation.realMaxRoe,
     minRoe: operation.minRoe,
     realMinRoe: operation.realMinRoe,
-  }));
+  });
+  });
   const trackerLayerDrawings = backtestVisualDrawings;
   const renderOhlcOverlay = (hover: OhlcHover | null) => hover ? <div className="chart-ohlc-overlay" aria-label="Datos OHLC de la vela seleccionada"><span className="chart-ohlc-time">{chartTimeLabel(hover.time, timezone, true)}</span><span>O <b>{formatPaperPrice(hover.open)}</b></span><span>H <b className="chart-ohlc-high">{formatPaperPrice(hover.high)}</b></span><span>L <b className="chart-ohlc-low">{formatPaperPrice(hover.low)}</b></span><span>C <b>{formatPaperPrice(hover.close)}</b></span></div> : null;
   const chartStageView = <div ref={chartStage} className={`chart-stage ${tool ? 'drawing-mode' : ''}`} onPointerDownCapture={startDrawing} onPointerMoveCapture={updateDrawing} onPointerUpCapture={event => finishDrawingAndCapture(event, 'entry')} onPointerCancelCapture={() => { setDrawingStart(null); setDrawingEnd(null); setMoveStart(null); panStartRef.current = null; setResizeStart(null); setLassoStart(null); setLassoEnd(null); }}><div className="chart-viewport-snapshot" aria-label="Snapshot del viewport de entrada">X {entryViewportSnapshot.bars} · Futuro {entryViewportSnapshot.futureBars} · Y− {entryViewportSnapshot.yBelow}% · Y+ {entryViewportSnapshot.yAbove}%</div>
@@ -4177,35 +4209,6 @@ function Workspace() {
   const tradingAgent = <TradingAgentChat activeSymbol={symbol} interval={interval} apiUrl={apiUrl} accessToken={auth.accessToken} />;
 
   const toolOptions = [['line', '╱', 'Línea'], ['ruler', '▥', 'Medir'], ['long', 'L', 'Long'], ['short', 'S', 'Short'], ['zoom', '⌗', 'Zoom lazo'], ['pan', '✋', 'Pan']] as const;
-  const trackerCanonicalAnalysis = broker === 'binance' && !replayState.active && trackerScannerDetail?.symbol === symbol && trackerScannerDetail.operation_details ? trackerScannerDetail : null;
-  const trackerClosedOperations = trackerVirtualOperations.filter(operation => operation.closed);
-  const trackerLossLimitAnalysis = trackerCanonicalAnalysis ? (() => {
-    const records = trackerCanonicalAnalysis.operation_details ?? [];
-    const limit = trackerCanonicalAnalysis.loss_limit_percent ?? 0;
-    const wins = records.filter(operation => operation.raw_status === 'WIN');
-    const losses = records.filter(operation => operation.raw_status === 'FAIL');
-    const winsKept = wins.filter(operation => operation.min_roe >= -limit).length;
-    const lossesLimited = losses.filter(operation => operation.min_roe <= -limit).length;
-    const winCoverage = wins.length ? winsKept / wins.length : 0;
-    const lossCoverage = losses.length ? lossesLimited / losses.length : 0;
-    return { limit, winsKept, lossesLimited, winCoverage, lossCoverage, targetDistance: Math.abs(winCoverage - .8) + Math.abs(lossCoverage - .8) };
-  })() : findBestTrackerLossLimit(trackerClosedOperations);
-  const trackerAdjustedOutcome = (operation: TrackerVirtualOperation) => {
-    const rawStatus = operation.rawStatus ?? operation.status;
-    if (trackerCanonicalAnalysis) {
-      const limited = Boolean(operation.limited || rawStatus !== operation.status);
-      if (!limited) return { status: rawStatus, rawStatus, pnl: operation.pnl, resultRoePercent: operation.resultRoePercent, limited: false };
-      if (operation.limited) return { status: rawStatus, rawStatus, pnl: operation.pnl, resultRoePercent: operation.resultRoePercent, limited: true };
-      const limitedPnl = -(trackerLossLimitAnalysis.limit / 100 / Math.max(1, operation.leverage)) * operation.notional - tradingCosts('binance', operation.notional).total;
-      return { status: rawStatus, rawStatus, pnl: limitedPnl, resultRoePercent: -trackerLossLimitAnalysis.limit, limited: true };
-    }
-    const crossedLimitedStop = trackerLossLimitEnabled && operation.minRoe.roePercent <= -trackerLossLimitAnalysis.limit;
-    if (!crossedLimitedStop) return { status: rawStatus, rawStatus, pnl: operation.pnl, resultRoePercent: operation.resultRoePercent, limited: false };
-    const grossLimitedPnl = -(trackerLossLimitAnalysis.limit / 100 / Math.max(1, operation.leverage)) * operation.notional;
-    const pnl = grossLimitedPnl - tradingCosts('binance', operation.notional).total;
-    return { status: rawStatus, rawStatus, pnl, resultRoePercent: -trackerLossLimitAnalysis.limit, limited: true };
-  };
-  const trackerDisplayedOutcomes = trackerClosedOperations.map(trackerAdjustedOutcome);
   const trackerWins = trackerDisplayedOutcomes.filter(outcome => outcome.status === 'CLOSED - WIN').length;
   const trackerLosses = trackerDisplayedOutcomes.filter(outcome => outcome.status === 'CLOSED - FAILED').length;
   const trackerSettled = trackerWins + trackerLosses;
