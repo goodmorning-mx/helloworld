@@ -18,7 +18,7 @@ from fastapi import Depends, FastAPI, HTTPException, Query, WebSocket
 from fastapi.responses import StreamingResponse
 from fastapi.encoders import jsonable_encoder
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from typing import Literal
 from threading import Lock
 import httpx
@@ -393,6 +393,11 @@ class ScannerSnapshotSymbolInput(BaseModel):
     horizon: int = 10
     interval: Literal["1m", "5m"] = "5m"
     variation_sum_pct: float = 0
+
+    @field_validator("symbol", mode="before")
+    @classmethod
+    def normalize_symbol(cls, value: object) -> object:
+        return value.strip().upper() if isinstance(value, str) else value
 
 
 class ScannerSnapshotInput(BaseModel):
@@ -1116,6 +1121,8 @@ def binance_active_symbols(
     ranked: list[dict[str, object]] = []
     for item in ticker_payload if isinstance(ticker_payload, list) else []:
         symbol = str(item.get("symbol", ""))
+        if not (symbol.endswith("USDT") and 1 <= len(symbol[:-4]) <= 32 and symbol[:-4].isalnum()):
+            continue
         try:
             movement_pct = abs(float(item.get("priceChangePercent", 0)))
             high = float(item.get("highPrice", 0))

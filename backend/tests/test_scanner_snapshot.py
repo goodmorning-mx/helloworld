@@ -106,6 +106,16 @@ def test_scanner_snapshot_accepts_valid_two_character_binance_base_symbol():
     assert payload.symbol == "OPUSDT"
 
 
+def test_scanner_snapshot_normalizes_case_and_whitespace_before_validation():
+    from app import main
+
+    payload = main.ScannerSnapshotSymbolInput(
+        symbol="  btcusdt ", variation_average_pct=0.7, leverage=12,
+    )
+
+    assert payload.symbol == "BTCUSDT"
+
+
 def test_web_snapshot_uses_existing_scanner_parameters_and_saves_complete_rows(monkeypatch):
     from app import main
 

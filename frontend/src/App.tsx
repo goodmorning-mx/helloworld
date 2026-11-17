@@ -1781,9 +1781,13 @@ function Workspace() {
         const payload = await scannerProfilerRef.current.measure('scanner.active_markets', () => fetchJson<{ symbols?: ActiveMarketSymbol[] }>(`${apiUrl}/market/binance/active-symbols?limit=20&min_movement_pct=0.5&horizon=10&interval=5m`, { headers: auth.accessToken ? { Authorization: `Bearer ${auth.accessToken}` } : undefined, credentials: 'include' }));
         const markets = Array.isArray(payload.symbols) ? payload.symbols : [];
         if (!active) return;
-        setScannerAnalysisProgress({ completed: 0, total: markets.length });
-        const universe = markets.map(candidate => ({
+        const validMarkets = markets.filter(candidate => /^[A-Z0-9]{1,32}USDT$/.test(String(candidate.symbol ?? '').trim().toUpperCase()));
+        const invalidSymbolCount = markets.length - validMarkets.length;
+        setScannerAnalysisProgress({ completed: 0, total: validMarkets.length });
+        if (!validMarkets.length && markets.length) throw new Error('El universo no contiene símbolos Binance USDT válidos.');
+        const universe = validMarkets.map(candidate => ({
           ...candidate,
+          symbol: candidate.symbol.trim().toUpperCase(),
           leverage: Math.min(scannerTheoreticalLeverage, maxLeverageFor('binance', candidate.symbol)),
         }));
         const snapshot = await scannerProfilerRef.current.measure('scanner.shared_snapshot', () => fetchJson<ScannerSnapshot>(`${apiUrl}/market/binance/scanner-snapshot`, {
@@ -1801,7 +1805,9 @@ function Workspace() {
         setScannerSnapshotUpdatedAt(snapshot.updated_at ?? null);
         setScannerSnapshotFreshness(snapshot.freshness);
         setScannerAnalysisProgress({ completed: savedRows.length, total: savedRows.length });
-        setActiveMarketError(savedRows.some(row => row.status === 'ERROR' || row.status === 'STALE')
+        setActiveMarketError(invalidSymbolCount > 0
+          ? `Se omitieron ${invalidSymbolCount} símbolo(s) con formato inválido del universo Binance.`
+          : savedRows.some(row => row.status === 'ERROR' || row.status === 'STALE')
           ? 'El snapshot compartido contiene símbolos con datos stale o error.'
           : snapshot.freshness === 'STALE' ? 'El snapshot compartido está desactualizado.' : '');
       } catch (error) {
