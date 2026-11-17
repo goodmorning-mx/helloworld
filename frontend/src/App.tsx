@@ -1782,7 +1782,6 @@ function Workspace() {
         const markets = Array.isArray(payload.symbols) ? payload.symbols : [];
         if (!active) return;
         const validMarkets = markets.filter(candidate => /^[A-Z0-9]{1,32}USDT$/.test(String(candidate.symbol ?? '').trim().toUpperCase()));
-        const invalidSymbolCount = markets.length - validMarkets.length;
         setScannerAnalysisProgress({ completed: 0, total: validMarkets.length });
         if (!validMarkets.length && markets.length) throw new Error('El universo no contiene símbolos Binance USDT válidos.');
         const universe = validMarkets.map(candidate => ({
@@ -1805,9 +1804,7 @@ function Workspace() {
         setScannerSnapshotUpdatedAt(snapshot.updated_at ?? null);
         setScannerSnapshotFreshness(snapshot.freshness);
         setScannerAnalysisProgress({ completed: savedRows.length, total: savedRows.length });
-        setActiveMarketError(invalidSymbolCount > 0
-          ? `Se omitieron ${invalidSymbolCount} símbolo(s) con formato inválido del universo Binance.`
-          : savedRows.some(row => row.status === 'ERROR' || row.status === 'STALE')
+        setActiveMarketError(savedRows.some(row => row.status === 'ERROR' || row.status === 'STALE')
           ? 'El snapshot compartido contiene símbolos con datos stale o error.'
           : snapshot.freshness === 'STALE' ? 'El snapshot compartido está desactualizado.' : '');
       } catch (error) {
