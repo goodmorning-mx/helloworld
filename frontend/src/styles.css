@@ -270,6 +270,8 @@
 .scanner-total-positive strong { color: #47e2a0; }
 .scanner-total-negative { border-color: #87414b; background: linear-gradient(145deg, #29151b, #101923 78%); }
 .scanner-total-negative strong { color: #ff8585; }
+.header-market-item.scanner-result-positive, .header-market-item.scanner-result-positive:hover, .header-market-item.scanner-result-positive.active { border-color: #2e9b68; background: #10221d; }
+.header-market-item.scanner-result-negative, .header-market-item.scanner-result-negative:hover, .header-market-item.scanner-result-negative.active { border-color: #a34848; background: #281519; }
 .scanner-results-panel > summary { padding: .55rem .7rem; color: #d7eaff; cursor: pointer; }
 .scanner-results-panel[open] > summary { border-bottom: 1px solid #263746; }
 .scanner-results-scroll { max-height: min(52vh, 460px); overflow: auto; }
