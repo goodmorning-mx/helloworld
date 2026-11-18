@@ -124,7 +124,7 @@ type BacktestResult = {
 };
 
 const defaultStorycard = JSON.stringify({
-  timezone: 'America/Mexico_City',
+  timezone: 'America/Cancun',
   events: [{ id: 'monday-open-long', weekday: 'monday', time: '07:00', action: 'open_long', sl_percent: 0.2, tp_percent: 1, risk_usdt: 1, leverage: 1 }],
 }, null, 2);
 

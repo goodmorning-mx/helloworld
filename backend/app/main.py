@@ -153,7 +153,7 @@ async def _backtest(*, context: RequestContext, symbol: str, strategy: str = "",
     del context
     card = storycard if isinstance(storycard, dict) else {"events": []}
     bars = await fetch_binance_history(symbol=symbol, interval=interval, days=days, base_url=settings.binance_base_url)
-    result = run_storycard_backtest(bars=bars, symbol=symbol, storycard={**card, "strategy": strategy}, timezone_name=str(card.get("timezone", "America/Mexico_City")))
+    result = run_storycard_backtest(bars=bars, symbol=symbol, storycard={**card, "strategy": strategy}, timezone_name=str(card.get("timezone", "America/Cancun")))
     result["strategy"] = strategy
     return result
 
@@ -253,7 +253,7 @@ class BacktestEventInput(BaseModel):
 
 
 class BacktestStorycardInput(BaseModel):
-    timezone: str = "America/Mexico_City"
+    timezone: str = "America/Cancun"
     events: list[BacktestEventInput] = Field(default_factory=list, max_length=100)
 
 
