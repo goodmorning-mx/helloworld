@@ -263,6 +263,13 @@
   .parameter-card-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
 .scanner-results-panel { margin: .35rem 0 .65rem; border: 1px solid #263746; border-radius: 8px; background: #0e141b; color: #c7d2df; font: 600 .65rem 'DM Mono', monospace; }
+.scanner-total-card { flex: 0 0 7.2rem; min-width: 7.2rem; min-height: 76px; align-self: flex-start; display: flex; flex-direction: column; justify-content: center; gap: .24rem; padding: .42rem .5rem; overflow: hidden; border: 1px solid #286c58; border-radius: 7px; background: linear-gradient(145deg, #10251f, #101923 78%); }
+.scanner-total-card small { color: #a9bac8; font: 700 .48rem 'DM Mono', monospace; letter-spacing: .08em; }
+.scanner-total-card strong { overflow: hidden; font: 800 .68rem 'DM Mono', monospace; text-overflow: ellipsis; white-space: nowrap; }
+.scanner-total-card em { color: #8fa2b3; font: 500 .46rem 'DM Mono', monospace; font-style: normal; }
+.scanner-total-positive strong { color: #47e2a0; }
+.scanner-total-negative { border-color: #87414b; background: linear-gradient(145deg, #29151b, #101923 78%); }
+.scanner-total-negative strong { color: #ff8585; }
 .scanner-results-panel > summary { padding: .55rem .7rem; color: #d7eaff; cursor: pointer; }
 .scanner-results-panel[open] > summary { border-bottom: 1px solid #263746; }
 .scanner-results-scroll { max-height: min(52vh, 460px); overflow: auto; }
