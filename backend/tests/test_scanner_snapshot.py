@@ -163,3 +163,104 @@ def test_web_snapshot_uses_existing_scanner_parameters_and_saves_complete_rows(m
     assert result["symbols"][0]["tracker_period"] == 8
     assert result["symbols"][0]["leverage"] == 12
     assert result["symbols"][0]["risk_usdt"] == 3.75
+
+
+def test_web_snapshot_reuses_running_worker_parameters_for_its_result(monkeypatch):
+    from app import main
+
+    worker_parameters = {
+        "running": True, "source": "WORKER", "parameter_version": 7,
+        "tracker_period": 9, "stop_percent": 0.3, "target_percent": 2.25,
+        "initial_balance": 420, "risk_percent": 1.2, "leverage": 12,
+    }
+    previous = {
+        "config": {"tracker_period": 5, "stop_percent": 0.2, "initial_balance": 100, "risk_percent": 1},
+        "universe": [{"symbol": "DOGEUSDT", "leverage": 10}],
+        "symbols": [{"symbol": "DOGEUSDT", "worker_parameters": worker_parameters}],
+    }
+    calls = []
+    saved = {}
+
+    async def analyze(**kwargs):
+        calls.append(kwargs)
+        return {"symbols": [{
+            "symbol": "DOGEUSDT", "status": "VALID", "tp_optimal_percent": kwargs["target_percent"],
+            "average_duration_minutes": 2.0, "operations": 4, "wins": 2, "losses": 2,
+            "win_rate": 50.0, "equity_final": 435.0, "final_result_usdt": 15.0,
+            "loss_limit_percent": 5.0, "last_bar_time": 1_800_000_000, "bars": 480,
+        }]}
+
+    class FakeStore:
+        def get(self, _user_id):
+            return previous
+
+        def replace(self, user_id, **snapshot):
+            saved["user_id"] = user_id
+            saved.update(snapshot)
+            return {**snapshot, "user_id": user_id, "updated_at": datetime.now(timezone.utc)}
+
+    monkeypatch.setattr(main, "binance_scanner_analysis", analyze)
+    monkeypatch.setattr(main, "scanner_snapshot_store", FakeStore())
+    payload = main.ScannerSnapshotInput(
+        symbols=[{"symbol": "DOGEUSDT", "variation_average_pct": 0.7, "leverage": 10}],
+        tracker_period=5, stop_percent=0.2, initial_balance=100, risk_percent=1,
+    )
+
+    result = asyncio.run(main.update_scanner_snapshot(payload, SimpleNamespace(user_id="owner")))
+
+    assert len(calls) == 1
+    assert calls[0]["tracker_period"] == 9
+    assert calls[0]["stop_percent"] == 0.3
+    assert calls[0]["initial_balance"] == 420
+    assert calls[0]["risk_percent"] == 1.2
+    assert calls[0]["leverage"] == 12
+    assert calls[0]["target_percent"] == 2.25
+    assert calls[0]["include_operations"] is False
+    row = saved["symbols"][0]
+    assert row["final_result_usdt"] == 15.0
+    assert row["tp_optimal_percent"] == 2.25
+    assert row["analysis_parameter_version"] == 7
+    assert result["symbols"][0]["final_result_usdt"] == 15.0
+
+
+def test_worker_parameter_publication_refreshes_shared_result_asynchronously(monkeypatch):
+    from app import main
+
+    published = []
+    analyzed = []
+
+    class FakeStore:
+        def publish_worker_parameters(self, user_id, symbol, parameters):
+            published.append(("parameters", user_id, symbol, dict(parameters)))
+
+        def publish_worker_analysis(self, user_id, symbol, analysis, *, parameter_version):
+            published.append(("analysis", user_id, symbol, dict(analysis), parameter_version))
+            return True
+
+    async def analyze(**kwargs):
+        analyzed.append(kwargs)
+        return {"symbols": [{"symbol": "BTCUSDT", "status": "VALID", "final_result_usdt": 12.0}]}
+
+    monkeypatch.setattr(main, "scanner_snapshot_store", FakeStore())
+    monkeypatch.setattr(main, "binance_scanner_analysis", analyze)
+    monkeypatch.setattr(main, "_shared_analysis_refresh_tasks", {})
+    monkeypatch.setattr(main, "_shared_analysis_refresh_requested", {})
+    parameters = {
+        "running": True, "parameter_version": 5, "tracker_period": 8,
+        "stop_percent": 0.3, "target_percent": 2.4, "initial_balance": 300,
+        "risk_percent": 1.5, "leverage": 10,
+    }
+
+    async def scenario():
+        await main._publish_shared_worker_parameters("owner", "BTCUSDT", parameters)
+        assert [item[0] for item in published] == ["parameters"]
+        task = main._shared_analysis_refresh_tasks[("owner", "BTCUSDT")]
+        await task
+
+    asyncio.run(scenario())
+
+    assert len(analyzed) == 1
+    assert analyzed[0]["target_percent"] == 2.4
+    assert analyzed[0]["tracker_period"] == 8
+    assert published[-1][0] == "analysis"
+    assert published[-1][-1] == 5

@@ -46,14 +46,34 @@ class ScannerSnapshotStore:
             ).mappings().first()
             previous = dict(previous) if previous else None
             previous_rows = {
-                str(row.get("symbol", "")).upper(): row.get("worker_parameters")
+                str(row.get("symbol", "")).upper(): row
                 for row in (previous or {}).get("symbols", [])
-                if isinstance(row, dict) and isinstance(row.get("worker_parameters"), dict)
+                if isinstance(row, dict)
             }
-            symbols = [
-                {**row, **({"worker_parameters": previous_rows[str(row.get("symbol", "")).upper()]} if str(row.get("symbol", "")).upper() in previous_rows and previous_rows[str(row.get("symbol", "")).upper()].get("running") else {})}
-                for row in symbols
-            ]
+            retained_symbols = []
+            analysis_fields = (
+                "tp_optimal_percent", "average_duration_minutes", "operations", "wins", "losses",
+                "win_rate", "equity_final", "final_result_usdt", "loss_limit_percent", "last_bar_time", "bars",
+            )
+            for row in symbols:
+                symbol = str(row.get("symbol", "")).upper()
+                previous_row = previous_rows.get(symbol, {})
+                worker_parameters = previous_row.get("worker_parameters")
+                if isinstance(worker_parameters, dict) and worker_parameters.get("running"):
+                    row = {**row, "worker_parameters": worker_parameters}
+                    expected_version = worker_parameters.get("parameter_version")
+                    if row.get("analysis_parameter_version") != expected_version:
+                        if previous_row.get("analysis_parameter_version") == expected_version:
+                            row.update({key: previous_row[key] for key in analysis_fields if key in previous_row})
+                            row["analysis_parameter_version"] = expected_version
+                        else:
+                            # Never pair a worker's current controls with a result
+                            # calculated for a different parameter version.
+                            row.update({key: None for key in analysis_fields})
+                            row["status"] = "ANALYZING"
+                            row["error"] = "Recalculando resultado con los parámetros actuales del worker."
+                retained_symbols.append(row)
+            symbols = retained_symbols
             incoming_symbols = {str(row.get("symbol", "")).upper() for row in symbols if isinstance(row, dict)}
             for old_row in (previous or {}).get("symbols", []):
                 if not isinstance(old_row, dict) or str(old_row.get("symbol", "")).upper() in incoming_symbols:
@@ -123,7 +143,20 @@ class ScannerSnapshotStore:
             next_symbols = []
             for item in symbols:
                 if isinstance(item, dict) and str(item.get("symbol", "")).upper() == normalized:
-                    next_symbols.append({**item, "worker_parameters": {**dict(parameters), "running": bool(parameters.get("running", True))}})
+                    updated_item = {
+                        **item,
+                        "worker_parameters": {**dict(parameters), "running": bool(parameters.get("running", True))},
+                    }
+                    parameter_version = parameters.get("parameter_version")
+                    if parameters.get("running", True) and item.get("analysis_parameter_version") != parameter_version:
+                        for key in (
+                            "tp_optimal_percent", "average_duration_minutes", "operations", "wins", "losses",
+                            "win_rate", "equity_final", "final_result_usdt", "loss_limit_percent", "last_bar_time", "bars",
+                        ):
+                            updated_item[key] = None
+                        updated_item["status"] = "ANALYZING"
+                        updated_item["error"] = "Recalculando resultado con los parámetros actuales del worker."
+                    next_symbols.append(updated_item)
                     updated = True
                 else:
                     next_symbols.append(item)
@@ -132,6 +165,57 @@ class ScannerSnapshotStore:
                     scanner_latest_snapshots_table.update()
                     .where(scanner_latest_snapshots_table.c.user_id == user_id)
                     .values(symbols=next_symbols)
+                )
+            return updated
+
+    def publish_worker_analysis(
+        self,
+        user_id: str,
+        symbol: str,
+        analysis: dict[str, Any],
+        *,
+        parameter_version: int,
+    ) -> bool:
+        """Publish metrics calculated for the still-current active worker version."""
+        normalized = symbol.upper()
+        analysis_fields = (
+            "tp_optimal_percent", "average_duration_minutes", "operations", "wins", "losses",
+            "win_rate", "equity_final", "final_result_usdt", "loss_limit_percent", "last_bar_time", "bars",
+        )
+        with self._engine.begin() as connection:
+            row = connection.execute(
+                select(scanner_latest_snapshots_table).where(
+                    scanner_latest_snapshots_table.c.user_id == user_id
+                ).with_for_update()
+            ).mappings().first()
+            if not row:
+                return False
+            symbols = row.get("symbols") or []
+            updated = False
+            next_symbols = []
+            for item in symbols:
+                if isinstance(item, dict) and str(item.get("symbol", "")).upper() == normalized:
+                    worker_parameters = item.get("worker_parameters")
+                    if not isinstance(worker_parameters, dict) or not worker_parameters.get("running"):
+                        return False
+                    if int(worker_parameters.get("parameter_version", -1)) != parameter_version:
+                        return False
+                    updated_row = dict(item)
+                    for key in analysis_fields:
+                        if key in analysis:
+                            updated_row[key] = analysis[key]
+                    updated_row["analysis_parameter_version"] = parameter_version
+                    updated_row["status"] = analysis.get("status", "VALID")
+                    updated_row.pop("error", None)
+                    next_symbols.append(updated_row)
+                    updated = True
+                else:
+                    next_symbols.append(item)
+            if updated:
+                connection.execute(
+                    scanner_latest_snapshots_table.update()
+                    .where(scanner_latest_snapshots_table.c.user_id == user_id)
+                    .values(symbols=next_symbols, updated_at=datetime.now(timezone.utc))
                 )
             return updated
 

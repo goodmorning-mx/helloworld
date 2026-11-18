@@ -1875,6 +1875,19 @@ function Workspace() {
           return;
         }
         setTrackerScannerDetail({ ...row, active_parameters: workerParameters });
+        setScannerAnalysisBySymbol(current => {
+          const existing = current[symbol];
+          return {
+            ...current,
+            [symbol]: {
+              ...existing,
+              ...row,
+              activity_state: existing?.activity_state,
+              variation_average_pct: existing?.variation_average_pct,
+              active_parameters: workerParameters ?? existing?.active_parameters ?? row.active_parameters,
+            },
+          };
+        });
         setTrackerDetailStatus('ready');
         setTrackerDetailError('');
         hasLoadedOnce = true;

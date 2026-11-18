@@ -78,6 +78,8 @@ if settings.telegram_enabled:
     ))
 production_worker_config_store = ProductionWorkerConfigStore(engine)
 scanner_snapshot_store = ScannerSnapshotStore(engine)
+_shared_analysis_refresh_tasks: dict[tuple[str, str], asyncio.Task[None]] = {}
+_shared_analysis_refresh_requested: dict[tuple[str, str], dict[str, object]] = {}
 
 
 async def _shared_worker_parameters(user_id: str, symbol: str) -> dict[str, object] | None:
@@ -87,8 +89,59 @@ async def _shared_worker_parameters(user_id: str, symbol: str) -> dict[str, obje
     return worker_parameters_from_snapshot(stored, symbol)
 
 
+async def _refresh_shared_worker_analysis(user_id: str, symbol: str, parameters: dict[str, object]) -> None:
+    try:
+        result = await binance_scanner_analysis(
+            symbols=symbol,
+            tracker_period=int(parameters.get("tracker_period", 5)),
+            stop_percent=float(parameters.get("stop_percent", 0.2)),
+            initial_balance=float(parameters.get("initial_balance", 100.0)),
+            risk_percent=float(parameters.get("risk_percent", 1.0)),
+            leverage=float(parameters.get("leverage", 1.0)),
+            limit=SCANNER_MAX_BARS,
+            include_operations=False,
+            target_percent=float(parameters["target_percent"]),
+            identity=None,
+        )
+        row = next((item for item in result.get("symbols", []) if isinstance(item, dict)), None)
+        if row and row.get("status") == "VALID":
+            await asyncio.to_thread(
+                scanner_snapshot_store.publish_worker_analysis,
+                user_id,
+                symbol,
+                row,
+                parameter_version=int(parameters.get("parameter_version", -1)),
+            )
+    except Exception as exc:
+        logger.warning("shared_tracker_analysis_refresh_failed symbol=%s error=%s", symbol.upper(), type(exc).__name__)
+
+
+async def _drain_shared_worker_analysis_refreshes(key: tuple[str, str]) -> None:
+    task = asyncio.current_task()
+    try:
+        while key in _shared_analysis_refresh_requested:
+            parameters = _shared_analysis_refresh_requested.pop(key)
+            if parameters.get("running", True) and parameters.get("target_percent") is not None:
+                await _refresh_shared_worker_analysis(key[0], key[1], parameters)
+    finally:
+        if _shared_analysis_refresh_tasks.get(key) is task:
+            _shared_analysis_refresh_tasks.pop(key, None)
+        if key in _shared_analysis_refresh_requested:
+            next_task = asyncio.create_task(_drain_shared_worker_analysis_refreshes(key), name=f"scanner-shared-refresh:{key[1]}")
+            _shared_analysis_refresh_tasks[key] = next_task
+
+
 async def _publish_shared_worker_parameters(user_id: str, symbol: str, parameters: dict[str, object]) -> None:
     await asyncio.to_thread(scanner_snapshot_store.publish_worker_parameters, user_id, symbol, parameters)
+    key = (user_id, symbol.upper())
+    if not parameters.get("running", True) or parameters.get("target_percent") is None:
+        _shared_analysis_refresh_requested.pop(key, None)
+        return
+    _shared_analysis_refresh_requested[key] = dict(parameters)
+    current = _shared_analysis_refresh_tasks.get(key)
+    if current is None or current.done():
+        task = asyncio.create_task(_drain_shared_worker_analysis_refreshes(key), name=f"scanner-shared-refresh:{symbol.upper()}")
+        _shared_analysis_refresh_tasks[key] = task
 
 
 production_workers = ProductionWorkerManager(
@@ -505,6 +558,14 @@ def stop_binance_monitor() -> None:
 @app.on_event("shutdown")
 async def stop_market_gateway() -> None:
     await production_workers.shutdown()
+    refresh_tasks = list(_shared_analysis_refresh_tasks.values())
+    _shared_analysis_refresh_tasks.clear()
+    _shared_analysis_refresh_requested.clear()
+    for task in refresh_tasks:
+        if not task.done():
+            task.cancel()
+    if refresh_tasks:
+        await asyncio.gather(*refresh_tasks, return_exceptions=True)
     await telegram_commands.stop()
     await telegram_sink.stop()
     await binance_market_gateway.close()
@@ -732,17 +793,35 @@ async def update_scanner_snapshot(payload: ScannerSnapshotInput, identity: AuthI
         if isinstance(row, dict)
     }
     for candidate in payload.symbols:
+        previous = previous_rows.get(candidate.symbol)
+        previous_worker_parameters = previous.get("worker_parameters") if previous else None
+        worker_parameters = previous_worker_parameters if isinstance(previous_worker_parameters, dict) and previous_worker_parameters.get("running") else None
+        if worker_parameters:
+            analysis_tracker_period = int(worker_parameters.get("tracker_period", payload.tracker_period))
+            analysis_stop_percent = float(worker_parameters.get("stop_percent", payload.stop_percent))
+            analysis_initial_balance = float(worker_parameters.get("initial_balance", payload.initial_balance))
+            analysis_risk_percent = float(worker_parameters.get("risk_percent", payload.risk_percent))
+            analysis_leverage = float(worker_parameters.get("leverage", candidate.leverage))
+            analysis_target_percent = float(worker_parameters.get("target_percent", 0)) or None
+        else:
+            analysis_tracker_period = payload.tracker_period
+            analysis_stop_percent = payload.stop_percent
+            analysis_initial_balance = payload.initial_balance
+            analysis_risk_percent = payload.risk_percent
+            analysis_leverage = candidate.leverage
+            analysis_target_percent = None
         try:
             result = await binance_scanner_analysis(
                 symbols=candidate.symbol,
-                tracker_period=payload.tracker_period,
-                stop_percent=payload.stop_percent,
-                initial_balance=payload.initial_balance,
-                risk_percent=payload.risk_percent,
-                leverage=candidate.leverage,
+                tracker_period=analysis_tracker_period,
+                stop_percent=analysis_stop_percent,
+                initial_balance=analysis_initial_balance,
+                risk_percent=analysis_risk_percent,
+                leverage=analysis_leverage,
                 limit=SCANNER_MAX_BARS,
                 movement_averages=str(candidate.variation_average_pct),
                 include_operations=False,
+                target_percent=analysis_target_percent,
                 identity=identity,
             )
             row = next((item for item in result.get("symbols", []) if isinstance(item, dict)), None)
@@ -766,30 +845,31 @@ async def update_scanner_snapshot(payload: ScannerSnapshotInput, identity: AuthI
                 "last_bar_time": None,
                 "bars": 0,
             }
-        previous = previous_rows.get(candidate.symbol)
         same_parameters = previous is not None and all(
             previous.get(key) == expected
             for key, expected in (
-                ("tracker_period", payload.tracker_period),
-                ("stop_percent", payload.stop_percent),
-                ("initial_balance", payload.initial_balance),
-                ("risk_percent", payload.risk_percent),
-                ("leverage", candidate.leverage),
+                ("tracker_period", analysis_tracker_period),
+                ("stop_percent", analysis_stop_percent),
+                ("initial_balance", analysis_initial_balance),
+                ("risk_percent", analysis_risk_percent),
+                ("leverage", analysis_leverage),
                 ("variation_average_pct", candidate.variation_average_pct),
             )
         )
         if row.get("status") == "ERROR" and same_parameters and previous and previous.get("last_bar_time") is not None:
             row = {**previous, "status": "STALE", "error": row.get("error", "No se pudo actualizar este símbolo.")}
         row.update({
-            "tracker_period": payload.tracker_period,
-            "stop_percent": payload.stop_percent,
-            "risk_percent": payload.risk_percent,
-            "initial_balance": payload.initial_balance,
-            "risk_usdt": payload.initial_balance * payload.risk_percent / 100,
-            "leverage": candidate.leverage,
+            "tracker_period": analysis_tracker_period,
+            "stop_percent": analysis_stop_percent,
+            "risk_percent": analysis_risk_percent,
+            "initial_balance": analysis_initial_balance,
+            "risk_usdt": analysis_initial_balance * analysis_risk_percent / 100,
+            "leverage": analysis_leverage,
             "variation_average_pct": candidate.variation_average_pct,
             "window_seconds": SCANNER_WINDOW_SECONDS,
         })
+        if worker_parameters:
+            row["analysis_parameter_version"] = worker_parameters.get("parameter_version")
         rows.append(row)
 
     stored = await asyncio.to_thread(
@@ -1367,36 +1447,49 @@ async def binance_scanner_analysis(
             )
             profile.mark("scanner_bars_ready", bars=len(bars), changed=changed, stale=fetch_error is not None)
             last_bar_time = int(bars[-1]["time"]) if bars else 0
-            cached = await _scanner_cache.cached_analysis(symbol, config_key, last_bar_time) if last_bar_time else None
-            if cached is not None:
-                analysis = cached
-                profile.mark("analysis_cache_hit", last_bar_time=last_bar_time)
-            elif bars:
-                async def calculate() -> dict[str, object]:
-                    result = await asyncio.to_thread(analyze_tracker, bars, config, profile)
-                    result.pop("operation_details", None)
-                    return result
-                try:
-                    with profile.measure("analysis_cache_or_compute"):
-                        analysis = await _scanner_cache.analyze_once(symbol, config_key, last_bar_time, calculate)
-                except Exception as exc:
-                    profile.mark("analysis_error", error=str(exc))
-                    previous = await _scanner_cache.latest_analysis(symbol, config_key)
-                    if previous:
-                        return {"symbol": symbol, **previous[1], "status": "STALE", "error": str(exc), "stale_since_bar_time": previous[0], "profiling": profile.snapshot()}
-                    return {"symbol": symbol, "status": "ERROR", "error": str(exc), "tp_optimal_percent": None, "average_duration_minutes": None, "operations": 0, "wins": 0, "losses": 0, "equity_final": None, "final_result_usdt": None, "last_bar_time": None, "bars": 0, "profiling": profile.snapshot()}
-            else:
+            if not bars:
                 previous = await _scanner_cache.latest_analysis(symbol, config_key)
                 if previous:
                     return {"symbol": symbol, **previous[1], "status": "STALE", "error": fetch_error or "Sin velas cerradas disponibles.", "stale_since_bar_time": previous[0], "profiling": profile.snapshot()}
                 return {"symbol": symbol, "status": "ERROR", "error": fetch_error or "Sin velas cerradas disponibles.", "tp_optimal_percent": None, "average_duration_minutes": None, "operations": 0, "wins": 0, "losses": 0, "equity_final": None, "final_result_usdt": None, "last_bar_time": None, "bars": 0, "profiling": profile.snapshot()}
 
-            if include_operations and "operation_details" not in analysis and (selected_target_override is not None or analysis.get("tp_optimal_percent") is not None):
-                selected_target = float(selected_target_override if selected_target_override is not None else analysis["tp_optimal_percent"])
-                details = await asyncio.to_thread(analyze_tracker_operations, bars, config, selected_target, profile)
-                analysis = {**analysis, **details}
+            try:
                 if selected_target_override is not None:
-                    analysis["tp_optimal_percent"] = selected_target
+                    selected_target = float(selected_target_override)
+                    selected_key = (*config_key, ("selected_target_percent", round(selected_target, 8)))
+
+                    async def calculate_selected() -> dict[str, object]:
+                        return await asyncio.to_thread(analyze_tracker_operations, bars, config, selected_target, profile)
+
+                    with profile.measure("selected_analysis_cache_or_compute"):
+                        analysis, cache_hit = await _scanner_cache.selected_analysis_once(
+                            symbol, selected_key, last_bar_time, calculate_selected,
+                        )
+                    profile.mark("selected_analysis_cache_hit" if cache_hit else "selected_analysis_calculated", last_bar_time=last_bar_time, target_percent=selected_target)
+                    analysis = {**analysis, "tp_optimal_percent": selected_target, "last_bar_time": last_bar_time, "bars": len(bars)}
+                else:
+                    cached = await _scanner_cache.cached_analysis(symbol, config_key, last_bar_time)
+                    if cached is not None:
+                        analysis = cached
+                        profile.mark("analysis_cache_hit", last_bar_time=last_bar_time)
+                    else:
+                        async def calculate() -> dict[str, object]:
+                            result = await asyncio.to_thread(analyze_tracker, bars, config, profile)
+                            result.pop("operation_details", None)
+                            return result
+
+                        with profile.measure("analysis_cache_or_compute"):
+                            analysis = await _scanner_cache.analyze_once(symbol, config_key, last_bar_time, calculate)
+                    if include_operations and "operation_details" not in analysis and analysis.get("tp_optimal_percent") is not None:
+                        selected_target = float(analysis["tp_optimal_percent"])
+                        details = await asyncio.to_thread(analyze_tracker_operations, bars, config, selected_target, profile)
+                        analysis = {**analysis, **details}
+            except Exception as exc:
+                profile.mark("analysis_error", error=str(exc))
+                previous = await _scanner_cache.latest_analysis(symbol, config_key)
+                if selected_target_override is None and previous:
+                    return {"symbol": symbol, **previous[1], "status": "STALE", "error": str(exc), "stale_since_bar_time": previous[0], "profiling": profile.snapshot()}
+                return {"symbol": symbol, "status": "ERROR", "error": str(exc), "tp_optimal_percent": None, "average_duration_minutes": None, "operations": 0, "wins": 0, "losses": 0, "equity_final": None, "final_result_usdt": None, "last_bar_time": None, "bars": 0, "profiling": profile.snapshot()}
 
             status = "STALE" if fetch_error else "VALID"
             row: dict[str, object] = {"symbol": symbol, **analysis, "status": status, "profiling": profile.snapshot()}

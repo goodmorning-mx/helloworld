@@ -159,6 +159,38 @@ def test_analysis_cache_uses_closed_bar_timestamp_and_deduplicates_work() -> Non
     asyncio.run(scenario())
 
 
+def test_selected_tracker_analyses_share_work_and_keep_a_bounded_detail_cache() -> None:
+    async def scenario() -> None:
+        cache = ScannerCache()
+        cache.max_selected_analyses = 1
+        calls = 0
+
+        async def calculate():
+            nonlocal calls
+            calls += 1
+            await asyncio.sleep(0.01)
+            return {"final_result_usdt": 2.5, "operation_details": [{"pnl": 2.5}]}
+
+        first, second = await asyncio.gather(
+            cache.selected_analysis_once("BTCUSDT", (5, 0.2, 1.5), 120, calculate),
+            cache.selected_analysis_once("BTCUSDT", (5, 0.2, 1.5), 120, calculate),
+        )
+        assert calls == 1
+        assert first[0] == second[0]
+        cached, cache_hit = await cache.selected_analysis_once("BTCUSDT", (5, 0.2, 1.5), 120, calculate)
+        assert cache_hit is True
+        assert cached == first[0]
+
+        async def another():
+            return {"final_result_usdt": 4.0, "operation_details": []}
+
+        await cache.selected_analysis_once("ETHUSDT", (5, 0.2, 1.5), 120, another)
+        assert len(cache._selected_analyses) == 1
+        assert len(cache._selected_analysis_saved_at) == 1
+
+    asyncio.run(scenario())
+
+
 def test_scanner_endpoint_fetches_only_new_closed_candles(monkeypatch) -> None:
     class Response:
         def __init__(self, rows):
@@ -241,6 +273,20 @@ def test_scanner_endpoint_fetches_only_new_closed_candles(monkeypatch) -> None:
     assert detail["window_seconds"] == 8 * 60 * 60
     assert detail["symbols"][0]["operations"] == len(detail["symbols"][0]["operation_details"])
     assert detail["symbols"][0]["tp_optimal_percent"] == 2.75
+    detail_row = detail["symbols"][0]
+    assert abs(sum(operation["pnl"] for operation in detail_row["operation_details"]) - detail_row["final_result_usdt"]) < 1e-8
+
+    summary = asyncio.run(main.binance_scanner_analysis(
+        symbols="BTCUSDT", tracker_period=2, limit=100, movement_averages="0.5",
+        leverage=10, include_operations=False, target_percent=2.75, identity=None,
+    ))["symbols"][0]
+    assert summary["tp_optimal_percent"] == detail_row["tp_optimal_percent"]
+    assert summary["operations"] == detail_row["operations"]
+    assert summary["wins"] == detail_row["wins"]
+    assert summary["losses"] == detail_row["losses"]
+    assert summary["equity_final"] == detail_row["equity_final"]
+    assert summary["final_result_usdt"] == detail_row["final_result_usdt"]
+    assert "operation_details" not in summary
 
 
 def test_scanner_cold_loads_8_hour_window_in_one_page(monkeypatch) -> None:
