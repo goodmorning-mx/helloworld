@@ -25,7 +25,7 @@ export type LabRow = {
 };
 
 type Sample = { slot: number; time: number; adverse: number; favorable: number; row: number };
-export const LAB_TIMEZONE = 'America/Mexico_City';
+export const LAB_TIMEZONE = 'America/Cancun';
 const STOP_PERCENTILES = [75, 80, 85, 90, 95];
 const TARGET_PERCENTILES = [25, 30, 40, 50, 60, 75];
 
