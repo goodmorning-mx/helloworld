@@ -1,4 +1,4 @@
-from app.scanner_analysis import ScannerAnalysisConfig, activity_state, analyze_tracker
+from app.scanner_analysis import ScannerAnalysisConfig, activity_state, analyze_tracker, analyze_tracker_operations
 from app.profiling import Profiling
 
 
@@ -28,6 +28,15 @@ def test_tracker_analysis_reports_optimal_tp_and_average_duration() -> None:
     assert result["operation_details"][0]["limited"] is True
     assert result["operation_details"][0]["pnl"] < 0
     assert result["operation_details"][0]["raw_pnl"] > 0
+
+    selected = analyze_tracker_operations(
+        bars,
+        ScannerAnalysisConfig(tracker_period=2, min_tp_percent=.1, max_tp_percent=.1, tp_step_percent=.1),
+        target_percent=result["tp_optimal_percent"],
+    )
+    for key in ("operations", "wins", "losses", "win_rate", "equity_final", "final_result_usdt", "average_duration_minutes"):
+        assert selected[key] == result[key]
+    assert selected["operation_details"] == result["operation_details"]
 
 
 def test_activity_state_has_stable_thresholds() -> None:

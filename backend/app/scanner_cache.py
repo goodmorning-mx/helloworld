@@ -41,6 +41,10 @@ class ScannerCache:
         self._analyses: OrderedDict[tuple[str, tuple[Any, ...]], tuple[int, dict[str, Any]]] = OrderedDict()
         self._analysis_saved_at: dict[tuple[str, tuple[Any, ...]], float] = {}
         self._analysis_tasks: dict[tuple[str, tuple[Any, ...], int], asyncio.Task[dict[str, Any]]] = {}
+        self._selected_analyses: OrderedDict[tuple[str, tuple[Any, ...]], tuple[int, dict[str, Any]]] = OrderedDict()
+        self._selected_analysis_saved_at: dict[tuple[str, tuple[Any, ...]], float] = {}
+        self._selected_analysis_tasks: dict[tuple[str, tuple[Any, ...], int], asyncio.Task[dict[str, Any]]] = {}
+        self.max_selected_analyses = 30
         self._lock = asyncio.Lock()
 
     async def refresh_bars(
@@ -106,6 +110,9 @@ class ScannerCache:
         for key in [key for key in self._analyses if key[0] == symbol]:
             self._analyses.pop(key, None)
             self._analysis_saved_at.pop(key, None)
+        for key in [key for key in self._selected_analyses if key[0] == symbol]:
+            self._selected_analyses.pop(key, None)
+            self._selected_analysis_saved_at.pop(key, None)
 
     def _evict_expired_analyses(self, now: float) -> None:
         expired = [
@@ -116,6 +123,14 @@ class ScannerCache:
         for key in expired:
             self._analyses.pop(key, None)
             self._analysis_saved_at.pop(key, None)
+        expired_selected = [
+            key
+            for key, saved_at in self._selected_analysis_saved_at.items()
+            if now - saved_at >= self.retention_seconds
+        ]
+        for key in expired_selected:
+            self._selected_analyses.pop(key, None)
+            self._selected_analysis_saved_at.pop(key, None)
 
     def _evict_expired_symbols(self, now: float) -> None:
         expired = [
@@ -191,3 +206,39 @@ class ScannerCache:
             async with self._lock:
                 if self._analysis_tasks.get(key) is task:
                     self._analysis_tasks.pop(key, None)
+
+    async def selected_analysis_once(
+        self,
+        symbol: str,
+        config_key: tuple[Any, ...],
+        last_bar_time: int,
+        analyze: Callable[[], Awaitable[dict[str, Any]]],
+    ) -> tuple[dict[str, Any], bool]:
+        """Share one explicit-TP simulation and retain only a bounded detail set."""
+        symbol_key = symbol.strip().upper()
+        cache_key = (symbol_key, config_key)
+        task_key = (symbol_key, config_key, last_bar_time)
+        async with self._lock:
+            self._evict_expired_analyses(time.monotonic())
+            cached = self._selected_analyses.get(cache_key)
+            if cached and cached[0] == last_bar_time:
+                self._selected_analyses.move_to_end(cache_key)
+                return dict(cached[1]), True
+            task = self._selected_analysis_tasks.get(task_key)
+            if task is None:
+                task = asyncio.create_task(analyze())
+                self._selected_analysis_tasks[task_key] = task
+        try:
+            result = await task
+            async with self._lock:
+                self._selected_analyses[cache_key] = (last_bar_time, dict(result))
+                self._selected_analysis_saved_at[cache_key] = time.monotonic()
+                self._selected_analyses.move_to_end(cache_key)
+                while len(self._selected_analyses) > self.max_selected_analyses:
+                    evicted, _ = self._selected_analyses.popitem(last=False)
+                    self._selected_analysis_saved_at.pop(evicted, None)
+            return dict(result), False
+        finally:
+            async with self._lock:
+                if self._selected_analysis_tasks.get(task_key) is task:
+                    self._selected_analysis_tasks.pop(task_key, None)

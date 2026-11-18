@@ -242,6 +242,8 @@ def analyze_tracker_operations(
         "average_duration_minutes": sum(durations) / len(durations) if durations else None,
         "equity_final": equity,
         "final_result_usdt": equity - float(config.initial_balance),
+        "last_bar_time": clean[-1]["time"] if clean else None,
+        "bars": len(clean),
     }
 
 
