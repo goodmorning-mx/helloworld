@@ -207,7 +207,8 @@ def analyze_tracker(bars: Iterable[dict[str, Any]], config: ScannerAnalysisConfi
         profiling.mark("aggregate_metrics_end", operations=len(operations))
     wins = sum(operation["status"] == "WIN" for operation in operations)
     losses = sum(operation["status"] == "FAIL" for operation in operations)
-    return {"tp_optimal_percent": optimal_tp, "average_duration_minutes": average_duration, "operations": len(operations), "wins": wins, "losses": losses, "win_rate": wins / (wins + losses) * 100 if wins + losses else 0.0, "equity_final": equity, "final_result_usdt": equity - float(config.initial_balance), "loss_limit_percent": loss_limit_percent, "last_bar_time": clean[-1]["time"] if clean else None, "bars": len(clean), "operation_details": operations}
+    balances = [float(config.initial_balance), *(float(operation["balance_after"]) for operation in operations)]
+    return {"tp_optimal_percent": optimal_tp, "average_duration_minutes": average_duration, "operations": len(operations), "wins": wins, "losses": losses, "win_rate": wins / (wins + losses) * 100 if wins + losses else 0.0, "equity_final": equity, "final_result_usdt": equity - float(config.initial_balance), "max_balance": max(balances), "min_balance": min(balances), "loss_limit_percent": loss_limit_percent, "last_bar_time": clean[-1]["time"] if clean else None, "bars": len(clean), "operation_details": operations}
 
 
 def analyze_tracker_operations(
@@ -232,6 +233,7 @@ def analyze_tracker_operations(
     wins = sum(operation["status"] == "WIN" for operation in operations)
     losses = sum(operation["status"] == "FAIL" for operation in operations)
     durations = [float(operation["duration_minutes"]) for operation in operations]
+    balances = [float(config.initial_balance), *(float(operation["balance_after"]) for operation in operations)]
     return {
         "operation_details": operations,
         "loss_limit_percent": _loss_limit(raw_operations),
@@ -242,6 +244,8 @@ def analyze_tracker_operations(
         "average_duration_minutes": sum(durations) / len(durations) if durations else None,
         "equity_final": equity,
         "final_result_usdt": equity - float(config.initial_balance),
+        "max_balance": max(balances),
+        "min_balance": min(balances),
         "last_bar_time": clean[-1]["time"] if clean else None,
         "bars": len(clean),
     }

@@ -842,6 +842,8 @@ async def update_scanner_snapshot(payload: ScannerSnapshotInput, identity: AuthI
                 "win_rate": None,
                 "equity_final": None,
                 "final_result_usdt": None,
+                "max_balance": None,
+                "min_balance": None,
                 "last_bar_time": None,
                 "bars": 0,
             }
@@ -1451,7 +1453,7 @@ async def binance_scanner_analysis(
                 previous = await _scanner_cache.latest_analysis(symbol, config_key)
                 if previous:
                     return {"symbol": symbol, **previous[1], "status": "STALE", "error": fetch_error or "Sin velas cerradas disponibles.", "stale_since_bar_time": previous[0], "profiling": profile.snapshot()}
-                return {"symbol": symbol, "status": "ERROR", "error": fetch_error or "Sin velas cerradas disponibles.", "tp_optimal_percent": None, "average_duration_minutes": None, "operations": 0, "wins": 0, "losses": 0, "equity_final": None, "final_result_usdt": None, "last_bar_time": None, "bars": 0, "profiling": profile.snapshot()}
+                return {"symbol": symbol, "status": "ERROR", "error": fetch_error or "Sin velas cerradas disponibles.", "tp_optimal_percent": None, "average_duration_minutes": None, "operations": 0, "wins": 0, "losses": 0, "equity_final": None, "final_result_usdt": None, "max_balance": None, "min_balance": None, "last_bar_time": None, "bars": 0, "profiling": profile.snapshot()}
 
             try:
                 if selected_target_override is not None:
@@ -1489,7 +1491,7 @@ async def binance_scanner_analysis(
                 previous = await _scanner_cache.latest_analysis(symbol, config_key)
                 if selected_target_override is None and previous:
                     return {"symbol": symbol, **previous[1], "status": "STALE", "error": str(exc), "stale_since_bar_time": previous[0], "profiling": profile.snapshot()}
-                return {"symbol": symbol, "status": "ERROR", "error": str(exc), "tp_optimal_percent": None, "average_duration_minutes": None, "operations": 0, "wins": 0, "losses": 0, "equity_final": None, "final_result_usdt": None, "last_bar_time": None, "bars": 0, "profiling": profile.snapshot()}
+                return {"symbol": symbol, "status": "ERROR", "error": str(exc), "tp_optimal_percent": None, "average_duration_minutes": None, "operations": 0, "wins": 0, "losses": 0, "equity_final": None, "final_result_usdt": None, "max_balance": None, "min_balance": None, "last_bar_time": None, "bars": 0, "profiling": profile.snapshot()}
 
             status = "STALE" if fetch_error else "VALID"
             row: dict[str, object] = {"symbol": symbol, **analysis, "status": status, "profiling": profile.snapshot()}
