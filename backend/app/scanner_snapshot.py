@@ -53,7 +53,8 @@ class ScannerSnapshotStore:
             retained_symbols = []
             analysis_fields = (
                 "tp_optimal_percent", "average_duration_minutes", "operations", "wins", "losses",
-                "win_rate", "equity_final", "final_result_usdt", "loss_limit_percent", "last_bar_time", "bars",
+                "win_rate", "equity_final", "final_result_usdt", "max_balance", "min_balance",
+                "loss_limit_percent", "last_bar_time", "bars",
             )
             for row in symbols:
                 symbol = str(row.get("symbol", "")).upper()
@@ -151,7 +152,8 @@ class ScannerSnapshotStore:
                     if parameters.get("running", True) and item.get("analysis_parameter_version") != parameter_version:
                         for key in (
                             "tp_optimal_percent", "average_duration_minutes", "operations", "wins", "losses",
-                            "win_rate", "equity_final", "final_result_usdt", "loss_limit_percent", "last_bar_time", "bars",
+                            "win_rate", "equity_final", "final_result_usdt", "max_balance", "min_balance",
+                            "loss_limit_percent", "last_bar_time", "bars",
                         ):
                             updated_item[key] = None
                         updated_item["status"] = "ANALYZING"
@@ -180,7 +182,8 @@ class ScannerSnapshotStore:
         normalized = symbol.upper()
         analysis_fields = (
             "tp_optimal_percent", "average_duration_minutes", "operations", "wins", "losses",
-            "win_rate", "equity_final", "final_result_usdt", "loss_limit_percent", "last_bar_time", "bars",
+            "win_rate", "equity_final", "final_result_usdt", "max_balance", "min_balance",
+            "loss_limit_percent", "last_bar_time", "bars",
         )
         with self._engine.begin() as connection:
             row = connection.execute(

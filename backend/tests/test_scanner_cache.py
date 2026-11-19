@@ -286,6 +286,8 @@ def test_scanner_endpoint_fetches_only_new_closed_candles(monkeypatch) -> None:
     assert summary["losses"] == detail_row["losses"]
     assert summary["equity_final"] == detail_row["equity_final"]
     assert summary["final_result_usdt"] == detail_row["final_result_usdt"]
+    assert summary["max_balance"] == detail_row["max_balance"]
+    assert summary["min_balance"] == detail_row["min_balance"]
     assert "operation_details" not in summary
 
 

@@ -20,6 +20,8 @@ def test_tracker_analysis_reports_optimal_tp_and_average_duration() -> None:
     assert result["losses"] == 0
     assert result["average_duration_minutes"] == 2
     assert result["final_result_usdt"] < 0
+    assert result["max_balance"] == 100.0
+    assert result["min_balance"] == result["equity_final"]
     assert len(result["operation_details"]) == result["operations"]
     assert result["operation_details"][0]["entry_price"] == 102
     assert result["operation_details"][0]["exit_price"] == 99.5
@@ -34,7 +36,7 @@ def test_tracker_analysis_reports_optimal_tp_and_average_duration() -> None:
         ScannerAnalysisConfig(tracker_period=2, min_tp_percent=.1, max_tp_percent=.1, tp_step_percent=.1),
         target_percent=result["tp_optimal_percent"],
     )
-    for key in ("operations", "wins", "losses", "win_rate", "equity_final", "final_result_usdt", "average_duration_minutes"):
+    for key in ("operations", "wins", "losses", "win_rate", "equity_final", "final_result_usdt", "max_balance", "min_balance", "average_duration_minutes"):
         assert selected[key] == result[key]
     assert selected["operation_details"] == result["operation_details"]
 
