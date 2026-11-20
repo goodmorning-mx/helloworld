@@ -664,22 +664,16 @@ async def run_backtest(payload: BacktestInput, identity: AuthIdentity = Depends(
 @app.post("/trading/tracker/walk-forward")
 async def tracker_walk_forward(payload: TrackerWalkForwardInput, identity: AuthIdentity = Depends(identity_dependency(auth_service))) -> dict[str, object]:
     """Queue a read-only rolling-window comparison and return a pollable job id."""
+    job_id: str | None = None
     try:
-        bars = await fetch_binance_history(
-            symbol=payload.symbol, interval="1m", days=payload.days,
-            base_url=settings.binance_base_url,
-        )
-        if not bars:
-            raise ValueError("Binance no devolvió velas cerradas para ese símbolo.")
-        active_jobs = sum(
-            item.get("user_id") == identity.user_id and item.get("status") in {"QUEUED", "RUNNING"}
-            for item in _walk_forward_jobs.values()
-        )
-        if active_jobs:
-            raise HTTPException(status_code=429, detail="Ya tienes un walk-forward en curso.")
+        active = [item for item in _walk_forward_jobs.values() if item.get("status") in {"FETCHING", "QUEUED", "RUNNING"}]
+        if active:
+            same_user = any(item.get("user_id") == identity.user_id for item in active)
+            detail = "Ya tienes un walk-forward en curso." if same_user else "El motor de investigación ya está ocupado."
+            raise HTTPException(status_code=429, detail=detail)
         if len(_walk_forward_jobs) >= 20:
             completed = sorted(
-                (item for item in _walk_forward_jobs.items() if item[1].get("status") in {"COMPLETE", "ERROR"}),
+                (item for item in _walk_forward_jobs.items() if item[1].get("status") in {"COMPLETE", "ERROR", "CANCELLED"}),
                 key=lambda item: float(item[1].get("updated_at", 0)),
             )
             while len(_walk_forward_jobs) >= 20 and completed:
@@ -687,18 +681,31 @@ async def tracker_walk_forward(payload: TrackerWalkForwardInput, identity: AuthI
         if len(_walk_forward_jobs) >= 20:
             raise HTTPException(status_code=429, detail="El registro temporal de estudios está lleno; vuelve a intentarlo más tarde.")
 
+        # Reserve the single CPU-heavy slot before the first await, preventing
+        # concurrent requests from flooding Binance or queueing processes.
         job_id = uuid4().hex
         _walk_forward_jobs[job_id] = {
-            "user_id": identity.user_id, "status": "QUEUED", "symbol": payload.symbol,
+            "user_id": identity.user_id, "status": "FETCHING", "symbol": payload.symbol,
             "created_at": time.time(), "updated_at": time.time(), "result": None, "error": None,
         }
+        bars = await fetch_binance_history(
+            symbol=payload.symbol, interval="1m", days=payload.days,
+            base_url=settings.binance_base_url,
+        )
+        if not bars:
+            raise ValueError("Binance no devolvió velas cerradas para ese símbolo.")
+        _walk_forward_jobs[job_id].update({"status": "QUEUED", "updated_at": time.time()})
         task = asyncio.create_task(_run_walk_forward_job(job_id, payload, bars), name=f"walk-forward-{payload.symbol}")
         _walk_forward_tasks.add(task)
         task.add_done_callback(_walk_forward_tasks.discard)
         return {"job_id": job_id, "symbol": payload.symbol, "status": "QUEUED", "poll_url": f"/trading/tracker/walk-forward/{job_id}"}
     except HTTPException:
+        if job_id:
+            _walk_forward_jobs.pop(job_id, None)
         raise
     except (httpx.HTTPError, ValueError) as exc:
+        if job_id:
+            _walk_forward_jobs.pop(job_id, None)
         raise HTTPException(status_code=502, detail=f"No se pudo iniciar el walk-forward del Tracker: {exc}") from exc
 
 
