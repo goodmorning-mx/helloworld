@@ -15,7 +15,7 @@ scanner_latest_snapshots_table = table(
     "scanner_latest_snapshots",
     column("user_id"), column("scan_id"), column("config", JSONB),
     column("universe", JSONB), column("symbols", JSONB),
-    column("started_at"), column("updated_at"),
+    column("started_at"), column("last_scanned_at"), column("updated_at"),
 )
 
 
@@ -93,6 +93,7 @@ class ScannerSnapshotStore:
                 universe=universe,
                 symbols=symbols,
                 started_at=started_at,
+                last_scanned_at=completed_at,
                 updated_at=completed_at,
             )
             statement = statement.on_conflict_do_update(
@@ -103,6 +104,7 @@ class ScannerSnapshotStore:
                     "universe": statement.excluded.universe,
                     "symbols": statement.excluded.symbols,
                     "started_at": statement.excluded.started_at,
+                    "last_scanned_at": statement.excluded.last_scanned_at,
                     "updated_at": statement.excluded.updated_at,
                 },
                 # A slower older request must not replace a scan that started later.
@@ -116,6 +118,7 @@ class ScannerSnapshotStore:
             "universe": universe,
             "symbols": symbols,
             "started_at": started_at,
+            "last_scanned_at": completed_at,
             "updated_at": completed_at,
         }
 
@@ -257,14 +260,17 @@ def worker_parameters_from_snapshot(snapshot: dict[str, Any], symbol: str) -> di
 def public_snapshot(snapshot: dict[str, Any], *, now: datetime | None = None) -> dict[str, Any]:
     """Return a JSON-safe view with explicit freshness and epoch timestamps."""
     current = now or datetime.now(timezone.utc)
-    updated_at = snapshot.get("updated_at")
-    if isinstance(updated_at, datetime):
-        completed = updated_at if updated_at.tzinfo else updated_at.replace(tzinfo=timezone.utc)
-        updated_epoch = int(completed.timestamp())
-        age_seconds = max(0, int((current - completed).total_seconds()))
-    else:
-        updated_epoch = int(updated_at or 0)
-        age_seconds = max(0, int(current.timestamp()) - updated_epoch)
+    def epoch(value: Any) -> int:
+        if isinstance(value, datetime):
+            normalized = value if value.tzinfo else value.replace(tzinfo=timezone.utc)
+            return int(normalized.timestamp())
+        return int(value or 0)
+
+    scanned_value = snapshot.get("last_scanned_at") or snapshot.get("updated_at")
+    scanned_epoch = epoch(scanned_value)
+    scanned_at = datetime.fromtimestamp(scanned_epoch, timezone.utc)
+    age_seconds = max(0, int((current - scanned_at).total_seconds()))
+    updated_epoch = epoch(snapshot.get("updated_at") or scanned_epoch)
     symbols = []
     for item in snapshot.get("symbols") or []:
         if not isinstance(item, dict):
@@ -286,6 +292,7 @@ def public_snapshot(snapshot: dict[str, Any], *, now: datetime | None = None) ->
         symbols.append({**item, "active_parameters": active})
     return {
         "scan_id": str(snapshot.get("scan_id", "")),
+        "last_scanned_at": scanned_epoch,
         "updated_at": updated_epoch,
         "age_seconds": age_seconds,
         "freshness": "FRESH" if age_seconds <= 180 else "STALE",

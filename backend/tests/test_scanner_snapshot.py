@@ -19,6 +19,7 @@ def test_snapshot_is_fresh_for_three_minutes_and_keeps_one_payload():
 
     assert result["freshness"] == "FRESH"
     assert result["age_seconds"] == 120
+    assert result["last_scanned_at"] == int((now - timedelta(seconds=120)).timestamp())
     assert result["config"] == snapshot["config"]
     assert result["symbols"][0]["symbol"] == "BTCUSDT"
     assert result["symbols"][0]["active_parameters"]["target_percent"] == 2.2
@@ -37,6 +38,22 @@ def test_old_snapshot_is_explicitly_stale():
 
     assert result["freshness"] == "STALE"
     assert result["age_seconds"] == 181
+
+
+def test_worker_updates_do_not_change_last_scanned_time_or_snapshot_freshness():
+    now = datetime(2026, 10, 21, 12, 0, tzinfo=timezone.utc)
+    snapshot = {
+        "scan_id": "scan-1", "config": {}, "universe": [], "symbols": [],
+        "last_scanned_at": now - timedelta(minutes=10),
+        "updated_at": now,
+    }
+
+    result = public_snapshot(snapshot, now=now)
+
+    assert result["last_scanned_at"] == int((now - timedelta(minutes=10)).timestamp())
+    assert result["updated_at"] == int(now.timestamp())
+    assert result["freshness"] == "STALE"
+    assert result["age_seconds"] == 600
 
 
 def test_public_snapshot_exposes_worker_parameters_as_current_symbol_values():

@@ -766,7 +766,7 @@ def latest_scanner_snapshot(identity: AuthIdentity = Depends(identity_dependency
     """Read the one persisted scanner snapshot shared with Telegram."""
     stored = scanner_snapshot_store.get(identity.user_id)
     if not stored:
-        return {"scan_id": None, "freshness": "EMPTY", "symbols": [], "universe": [], "config": None, "updated_at": None, "window_seconds": SCANNER_WINDOW_SECONDS}
+        return {"scan_id": None, "freshness": "EMPTY", "symbols": [], "universe": [], "config": None, "last_scanned_at": None, "updated_at": None, "window_seconds": SCANNER_WINDOW_SECONDS}
     return public_snapshot(stored)
 
 
