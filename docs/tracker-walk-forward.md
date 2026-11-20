@@ -7,6 +7,28 @@ worker. Binance history is public, so no new app or exchange user is needed;
 the route uses the existing web login. `mode` defaults to `fixed_holdout` and
 can be set to `adaptive` to evaluate an online window selector.
 
+Example adaptive request (send it to the DEV API with the usual web session
+cookie):
+
+```json
+{
+  "symbol": "BTCUSDT",
+  "days": 7,
+  "mode": "adaptive",
+  "window_bars": [120, 240, 360, 480],
+  "recalibration_bars": [15],
+  "meta_lookback_segments": 4,
+  "initial_balance": 100,
+  "risk_percent": 1,
+  "leverage": 20,
+  "calibration_grid": "coarse"
+}
+```
+
+The response contains `job_id` and `poll_url`; poll the returned path until
+`status` becomes `COMPLETE`. The DEV API base is
+`https://api.dev.helloworld.goodmorning.mx`.
+
 The default candidates are W = 120, 240, 360, and 480 closed candles (2, 4, 6,
 and 8 hours). Binance Futures public klines supply at most seven days. In
 `fixed_holdout`, the tuning portion selects a W/recalibration cadence pair; the
