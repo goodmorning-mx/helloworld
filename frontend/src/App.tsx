@@ -3881,7 +3881,9 @@ function Workspace() {
     const operationId = String(drawing.id ?? index);
     const resultRoe = drawing.resultRoePercent ?? 0;
     const resultPnl = drawing.pnl ?? 0;
-    const resultLabel = drawing.closed ? `${drawing.status === 'CLOSED - WIN' ? 'WIN' : 'FAIL'}${drawing.limited ? ' LIMITADA' : ''}` : 'OPEN';
+    const resultLabel = drawing.closed
+      ? `${drawing.status === 'CLOSED - WIN' ? 'WIN' : 'FAIL'}${drawing.limited ? ` · LIMITED TO -${Math.abs(resultRoe).toFixed(2)}%` : ''}`
+      : 'OPEN';
     const trackerTooltip = trackerOperationHover?.id === operationId ? <g className="tracker-operation-tooltip" pointerEvents="none"><rect x={Math.max(6, Math.min(stageSize.width - 216, trackerOperationHover.x + 10))} y={Math.max(6, trackerOperationHover.y - 62)} width="206" height="52" rx="5" /><text x={Math.max(16, Math.min(stageSize.width - 206, trackerOperationHover.x + 20))} y={Math.max(21, trackerOperationHover.y - 43)}>{trackerOperationHover.label} · ROE {trackerOperationHover.roePercent >= 0 ? '+' : ''}{trackerOperationHover.roePercent.toFixed(2)}%</text><text x={Math.max(16, Math.min(stageSize.width - 206, trackerOperationHover.x + 20))} y={Math.max(39, trackerOperationHover.y - 25)}>PNL {trackerOperationHover.pnlUsd >= 0 ? '+' : ''}{trackerOperationHover.pnlUsd.toFixed(4)} USDT</text><text x={Math.max(16, Math.min(stageSize.width - 206, trackerOperationHover.x + 20))} y={Math.max(56, trackerOperationHover.y - 8)}>{chartTimeLabel(trackerOperationHover.time as Time, timezone, true)}</text></g> : null;
     const trackerMetricRows: Array<[string, TrackerExtremePoint]> = drawing.maxRoe ? ([
       ['maxroe', drawing.maxRoe],
