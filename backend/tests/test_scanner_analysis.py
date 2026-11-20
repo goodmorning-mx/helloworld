@@ -1,5 +1,28 @@
-from app.scanner_analysis import ScannerAnalysisConfig, activity_state, analyze_tracker, analyze_tracker_operations
+from app.scanner_analysis import ScannerAnalysisConfig, _simulate, activity_state, analyze_tracker, analyze_tracker_operations
 from app.profiling import Profiling
+
+
+def test_tracker_does_not_count_signal_candle_wick_after_close_entry() -> None:
+    bars = [
+        {"time": 0, "open": 100, "high": 101, "low": 99, "close": 100},
+        {"time": 60, "open": 100, "high": 101, "low": 99, "close": 100},
+        # The LONG signal is known only at this candle's close. Its low of 50
+        # happened before the fill and must not affect the operation's MINROE.
+        {"time": 120, "open": 100, "high": 101, "low": 50, "close": 100},
+        {"time": 180, "open": 100, "high": 100.2, "low": 99.9, "close": 100.2},
+    ]
+    signals = [None, None, ("LONG", "L1"), ("SHORT", "H1")]
+    operations = _simulate(
+        bars,
+        ScannerAnalysisConfig(tracker_period=2, stop_percent=10, leverage=1),
+        target_percent=0.1,
+        signals=signals,
+    )
+
+    assert len(operations) == 1
+    assert operations[0]["entry_time"] == 120
+    assert operations[0]["min_roe_time"] == 180
+    assert operations[0]["min_roe"] > -0.2
 
 
 def test_tracker_analysis_reports_optimal_tp_and_average_duration() -> None:

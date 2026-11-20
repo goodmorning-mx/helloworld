@@ -4039,10 +4039,13 @@ function Workspace() {
     closed: operation.closed,
     closeReason: operation.closeReason,
     status: operation.status as Drawing['status'],
-    start: { time: operation.start.time as UTCTimestamp, price: operation.start.price },
+    // Tracker entries fill at the signal candle close. Candle timestamps are
+    // opens, so draw the position from the next 1m candle boundary; otherwise
+    // the signal candle's pre-entry wick appears to belong to this operation.
+    start: { time: (operation.start.time + 60) as UTCTimestamp, price: operation.start.price },
     end: !operation.closed
       ? { time: (activeTrackerMark?.time ?? operation.end.time) as UTCTimestamp, price: activeTrackerMark?.price ?? operation.end.price }
-      : { time: operation.end.time as UTCTimestamp, price: operation.end.price },
+      : { time: (operation.end.time + 60) as UTCTimestamp, price: operation.end.price },
     stop: { time: operation.end.time as UTCTimestamp, price: trackerLivePriceOverride?.symbol === symbol && trackerLivePriceOverride.operationId === operation.id ? trackerLivePriceOverride.stopPrice ?? operation.stop.price : operation.stop.price },
     target: { time: operation.end.time as UTCTimestamp, price: trackerLivePriceOverride?.symbol === symbol && trackerLivePriceOverride.operationId === operation.id ? trackerLivePriceOverride.targetPrice ?? operation.target.price : operation.target.price },
     pnl: operationOutcome?.pnl ?? (!operation.closed && operation.start.price > 0
