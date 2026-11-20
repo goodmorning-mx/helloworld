@@ -21,7 +21,7 @@ TRACKER_PERIOD_CANDIDATES = range(4, 21)
 def minroe_to_price_stop_percent(minroe_limit_percent: float, leverage: float) -> float:
     """Convert a leveraged ROE threshold into an underlying price percentage."""
     value = abs(float(minroe_limit_percent)) / max(1.0, float(leverage))
-    return max(0.05, min(value or 0.2, 20.0))
+    return max(0.2, min(value or 0.2, 20.0))
 
 
 def calibrate_tracker_parameters(
@@ -66,6 +66,10 @@ def calibrate_tracker_parameters(
         config = ScannerAnalysisConfig(
             tracker_period=period,
             stop_percent=20.0,
+            # Calibration leaves the close-based stop wide so it can observe
+            # full trades, but the intrabar Limited floor remains the fixed
+            # 0.20% price stop used by the product.
+            loss_limit_floor_price_percent=0.2,
             initial_balance=max(1.0, min(float(initial_balance), 1_000_000.0)),
             risk_percent=max(0.01, min(float(risk_percent), 100.0)),
             leverage=max(1.0, min(float(leverage), 125.0)),

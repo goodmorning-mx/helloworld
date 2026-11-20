@@ -1,4 +1,4 @@
-from app.scanner_analysis import ScannerAnalysisConfig, _simulate, activity_state, analyze_tracker, analyze_tracker_operations
+from app.scanner_analysis import ScannerAnalysisConfig, _limited_operations, _simulate, activity_state, analyze_tracker, analyze_tracker_operations
 from app.profiling import Profiling
 
 
@@ -25,12 +25,37 @@ def test_tracker_does_not_count_signal_candle_wick_after_close_entry() -> None:
     assert operations[0]["min_roe"] > -0.2
 
 
+def test_limited_floor_cannot_be_tighter_than_fixed_price_stop() -> None:
+    operation = {
+        "pnl": 1.0,
+        "status": "WIN",
+        "side": "LONG",
+        "entry_price": 100.0,
+        "exit_price": 101.0,
+        "leverage": 20.0,
+        "min_roe": -1.54,
+        "notional": 605.8489,
+    }
+    _equity, adjusted = _limited_operations(
+        [operation],
+        ScannerAnalysisConfig(stop_percent=0.2, leverage=20),
+    )
+
+    # The adaptive MINROE (-1.54% ROE = -0.077% price) has not reached
+    # the fixed -0.20% price stop (-4.00% ROE at 20x).
+    assert adjusted[0]["limited"] is False
+    assert adjusted[0]["result_roe"] > -4.0
+    assert adjusted[0]["pnl"] == operation["pnl"]
+
+
 def test_tracker_analysis_reports_optimal_tp_and_average_duration() -> None:
     bars = [
         {"time": 0, "open": 100, "high": 101, "low": 99, "close": 100},
         {"time": 60, "open": 100, "high": 101, "low": 99, "close": 100},
         {"time": 120, "open": 100, "high": 102, "low": 100, "close": 102},
-        {"time": 180, "open": 102, "high": 102, "low": 101.9, "close": 101.9},
+        # The SHORT's high crosses the fixed 0.20% price stop in ROE terms,
+        # while the close remains open and the later Tracker close is a WIN.
+        {"time": 180, "open": 102, "high": 102.5, "low": 101.9, "close": 101.9},
         {"time": 240, "open": 101.8, "high": 102, "low": 99.5, "close": 99.5},
     ]
     result = analyze_tracker(bars, ScannerAnalysisConfig(tracker_period=2, min_tp_percent=.1, max_tp_percent=.1, tp_step_percent=.1))
