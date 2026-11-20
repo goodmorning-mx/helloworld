@@ -1,4 +1,4 @@
-from app.scanner_analysis import ScannerAnalysisConfig, _limited_operations, _simulate, activity_state, analyze_tracker, analyze_tracker_operations
+from app.scanner_analysis import ScannerAnalysisConfig, _limited_operations, _loss_limit, _simulate, activity_state, analyze_tracker, analyze_tracker_operations
 from app.profiling import Profiling
 
 
@@ -46,6 +46,17 @@ def test_limited_floor_cannot_be_tighter_than_fixed_price_stop() -> None:
     assert adjusted[0]["limited"] is False
     assert adjusted[0]["result_roe"] > -4.0
     assert adjusted[0]["pnl"] == operation["pnl"]
+
+
+def test_loss_limit_calibration_treats_exact_boundary_as_limited():
+    operations = [
+        {"status": "WIN", "min_roe": -4.0, "side": "LONG", "entry_price": 100, "exit_price": 105, "leverage": 20, "notional": 100, "pnl": 5},
+        {"status": "FAIL", "min_roe": -10.0, "side": "SHORT", "entry_price": 100, "exit_price": 110, "leverage": 20, "notional": 100, "pnl": -10},
+    ]
+
+    assert _loss_limit(operations) == 10.0
+    _equity, adjusted = _limited_operations(operations, ScannerAnalysisConfig(stop_percent=0.2, leverage=20))
+    assert [operation["limited"] for operation in adjusted] == [False, True]
 
 
 def test_tracker_analysis_reports_optimal_tp_and_average_duration() -> None:

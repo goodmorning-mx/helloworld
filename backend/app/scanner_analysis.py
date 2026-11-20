@@ -122,7 +122,9 @@ def _loss_limit(operations: list[dict[str, float | int | str]]) -> float:
         return 0.0
     evaluated = []
     for limit in candidates:
-        win_coverage = sum(float(operation["min_roe"]) >= -limit for operation in wins) / len(wins) if wins else 0.0
+        # Keep the calibration boundary identical to _limited_operations:
+        # an excursion exactly at the limit is Limited, not safe.
+        win_coverage = sum(float(operation["min_roe"]) > -limit for operation in wins) / len(wins) if wins else 0.0
         loss_coverage = sum(float(operation["min_roe"]) <= -limit for operation in losses) / len(losses) if losses else 0.0
         evaluated.append((win_coverage >= .8 and loss_coverage >= .8, abs(win_coverage - .8) + abs(loss_coverage - .8), limit))
     feasible = [item for item in evaluated if item[0]]
