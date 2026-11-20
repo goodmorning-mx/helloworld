@@ -34,4 +34,5 @@ def test_adaptive_calibration_keeps_safe_defaults_with_small_history():
 
 def test_minroe_stop_converts_to_unleveraged_price_distance():
     assert minroe_to_price_stop_percent(20, 20) == 1
+    assert minroe_to_price_stop_percent(1.54, 20) == 0.2
     assert minroe_to_price_stop_percent(0, 10) == 0.2

@@ -17,6 +17,9 @@ class ScannerAnalysisConfig:
     initial_balance: float = 100.0
     risk_percent: float = 1.0
     leverage: float = 1.0
+    # Minimum allowed loss limit expressed as an underlying price move. When
+    # omitted, use the configured Tracker close stop as the floor.
+    loss_limit_floor_price_percent: float | None = None
     fee_rate: float = 0.0014  # Binance taker commission + estimated slippage.
     min_tp_percent: float = 0.1
     max_tp_percent: float = 20.0
@@ -126,8 +129,18 @@ def _loss_limit(operations: list[dict[str, float | int | str]]) -> float:
     return min(feasible or evaluated, key=lambda item: (item[1], item[2]))[2]
 
 
+def _effective_loss_limit(operations: list[dict[str, float | int | str]], config: ScannerAnalysisConfig) -> float:
+    if not operations:
+        return 0.0
+    floor_price_percent = config.loss_limit_floor_price_percent
+    if floor_price_percent is None:
+        floor_price_percent = config.stop_percent
+    floor_roe_percent = abs(float(floor_price_percent)) * max(1.0, float(config.leverage))
+    return max(_loss_limit(operations), floor_roe_percent)
+
+
 def _limited_operations(operations: list[dict[str, float | int | str]], config: ScannerAnalysisConfig) -> tuple[float, list[dict[str, float | int | str]]]:
-    limit = _loss_limit(operations)
+    limit = _effective_loss_limit(operations, config)
     equity = float(config.initial_balance)
     adjusted: list[dict[str, float | int | str]] = []
     for operation in operations:
@@ -199,7 +212,7 @@ def analyze_tracker(bars: Iterable[dict[str, Any]], config: ScannerAnalysisConfi
         profiling.mark("tp_optimization_end", candidates=target_count, best_tp=best[1] if best else None)
     _raw_equity, optimal_tp, raw_operations = best or (float(config.initial_balance), float(config.min_tp_percent), [])
     equity, operations = _limited_operations(raw_operations, config)
-    loss_limit_percent = _loss_limit(raw_operations)
+    loss_limit_percent = _effective_loss_limit(raw_operations, config)
     with profiling.measure("aggregate_metrics") if profiling else nullcontext():
         durations = [float(operation["duration_minutes"]) for operation in operations]
         average_duration = sum(durations) / len(durations) if durations else None
@@ -236,7 +249,7 @@ def analyze_tracker_operations(
     balances = [float(config.initial_balance), *(float(operation["balance_after"]) for operation in operations)]
     return {
         "operation_details": operations,
-        "loss_limit_percent": _loss_limit(raw_operations),
+        "loss_limit_percent": _effective_loss_limit(raw_operations, config),
         "operations": len(operations),
         "wins": wins,
         "losses": losses,

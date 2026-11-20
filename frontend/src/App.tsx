@@ -223,10 +223,14 @@ function trackerOperationsFromScanner(records: TrackerScannerOperation[], target
 }
 type TrackerLossLimitSummary = { limit: number; winsKept: number; lossesLimited: number; winCoverage: number; lossCoverage: number; targetDistance: number };
 
-function findBestTrackerLossLimit(operations: TrackerVirtualOperation[]): TrackerLossLimitSummary {
+function findBestTrackerLossLimit(operations: TrackerVirtualOperation[], fixedStopPercent: number): TrackerLossLimitSummary {
+  if (!operations.length) return { limit: 0, winsKept: 0, lossesLimited: 0, winCoverage: 0, lossCoverage: 0, targetDistance: 0 };
+  // MINROE is leveraged ROE; convert the fixed price stop into the same unit
+  // before choosing a historical limit, so Limited cannot trigger sooner.
+  const floor = Math.abs(fixedStopPercent) * Math.max(1, operations[0].leverage);
   const wins = operations.filter(operation => operation.status === 'CLOSED - WIN');
   const losses = operations.filter(operation => operation.status === 'CLOSED - FAILED');
-  const candidates = [...new Set([0, ...operations.map(operation => Math.max(0, -operation.minRoe.roePercent))])].sort((a, b) => a - b);
+  const candidates = [...new Set([0, floor, ...operations.map(operation => Math.max(0, -operation.minRoe.roePercent))])].sort((a, b) => a - b);
   const evaluated = candidates.map(limit => {
     const winsKept = wins.filter(operation => operation.minRoe.roePercent >= -limit).length;
     const lossesLimited = losses.filter(operation => operation.minRoe.roePercent <= -limit).length;
@@ -234,8 +238,9 @@ function findBestTrackerLossLimit(operations: TrackerVirtualOperation[]): Tracke
     const lossCoverage = losses.length ? lossesLimited / losses.length : 0;
     return { limit, winsKept, lossesLimited, winCoverage, lossCoverage, targetDistance: Math.abs(winCoverage - .8) + Math.abs(lossCoverage - .8) };
   });
-  const feasible = evaluated.filter(item => item.winCoverage >= .8 && item.lossCoverage >= .8);
-  return [...(feasible.length ? feasible : evaluated)].sort((a, b) => a.targetDistance - b.targetDistance || a.limit - b.limit)[0] ?? { limit: 0, winsKept: 0, lossesLimited: 0, winCoverage: 0, lossCoverage: 0, targetDistance: 0 };
+  const aboveFixedStop = evaluated.filter(item => item.limit >= floor);
+  const feasible = aboveFixedStop.filter(item => item.winCoverage >= .8 && item.lossCoverage >= .8);
+  return [...(feasible.length ? feasible : aboveFixedStop)].sort((a, b) => a.targetDistance - b.targetDistance || a.limit - b.limit)[0] ?? { limit: floor, winsKept: 0, lossesLimited: 0, winCoverage: 0, lossCoverage: 0, targetDistance: 0 };
 }
 
 function applyTrackerLossLimit(operations: TrackerVirtualOperation[], summary: TrackerLossLimitSummary): number[] {
@@ -4004,7 +4009,7 @@ function Workspace() {
     const winCoverage = wins.length ? winsKept / wins.length : 0;
     const lossCoverage = losses.length ? lossesLimited / losses.length : 0;
     return { limit, winsKept, lossesLimited, winCoverage, lossCoverage, targetDistance: Math.abs(winCoverage - .8) + Math.abs(lossCoverage - .8) };
-  })() : findBestTrackerLossLimit(trackerClosedOperations);
+  })() : findBestTrackerLossLimit(trackerClosedOperations, activeSharedStopPercent);
   const trackerAdjustedOutcome = (operation: TrackerVirtualOperation) => {
     const rawStatus = operation.rawStatus ?? operation.status;
     if (trackerCanonicalAnalysis) {
