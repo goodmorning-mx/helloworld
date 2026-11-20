@@ -1,5 +1,9 @@
 from datetime import datetime, timezone
 
+import asyncio
+import time
+
+from app import backtest_engine
 from app.backtest_engine import run_storycard_backtest
 
 
@@ -50,3 +54,38 @@ def test_storycard_honors_close_event_and_reports_event_counter():
     assert result["event_count"] == 2
     assert result["scheduled_event_count"] == 2
     assert result["trades"][0]["close_reason"] == "EVENT"
+
+
+def test_binance_history_excludes_current_unclosed_candle(monkeypatch):
+    now_ms = int(time.time() * 1000)
+    closed_time = now_ms - 120_000
+    open_time = now_ms - 30_000
+    rows = [
+        [closed_time, "100", "101", "99", "100.5", "1", closed_time + 59_999],
+        [open_time, "100.5", "102", "100", "101", "1", open_time + 59_999],
+    ]
+
+    class Response:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return rows
+
+    class Client:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return None
+
+        async def get(self, *args, **kwargs):
+            return Response()
+
+    monkeypatch.setattr(backtest_engine.httpx, "AsyncClient", Client)
+    result = asyncio.run(backtest_engine.fetch_binance_history(symbol="BTCUSDT", interval="1m", days=1))
+
+    assert [bar["time"] for bar in result] == [closed_time // 1000]
