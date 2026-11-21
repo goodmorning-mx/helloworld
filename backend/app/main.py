@@ -2,16 +2,14 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import asyncio
-import hashlib
 import logging
 import math
 import json
 import time
 from datetime import datetime, timezone
 from collections import OrderedDict
-from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor
 from decimal import Decimal, ROUND_CEILING, ROUND_FLOOR
-from functools import partial
 from uuid import uuid4
 from urllib.parse import urlencode
 from zoneinfo import ZoneInfoNotFoundError
@@ -48,7 +46,6 @@ from app.production_worker import ProductionWorkerConfigStore, ProductionWorkerM
 from app.telegram_service import BackendEventBus, TelegramCommandService, TelegramSink, telegram_event_sink
 from app.telegram_control import TelegramControlService, format_scanner_message
 from app.scanner_analysis import ScannerAnalysisConfig, activity_state, analyze_tracker, analyze_tracker_operations
-from app.walk_forward import DEFAULT_WINDOW_CANDIDATES, _clean_bars, run_adaptive_window_walk_forward, run_walk_forward_study
 from app.scanner_cache import SCANNER_MAX_BARS, SCANNER_WINDOW_SECONDS, ScannerCache
 from app.scanner_snapshot import ScannerSnapshotStore, public_snapshot, worker_parameters_from_snapshot
 from app.profiling import Profiling
@@ -83,9 +80,6 @@ production_worker_config_store = ProductionWorkerConfigStore(engine)
 scanner_snapshot_store = ScannerSnapshotStore(engine)
 _shared_analysis_refresh_tasks: dict[tuple[str, str], asyncio.Task[None]] = {}
 _shared_analysis_refresh_requested: dict[tuple[str, str], dict[str, object]] = {}
-_walk_forward_executor = ProcessPoolExecutor(max_workers=1)
-_walk_forward_jobs: dict[str, dict[str, object]] = {}
-_walk_forward_tasks: set[asyncio.Task[None]] = set()
 
 
 async def _shared_worker_parameters(user_id: str, symbol: str) -> dict[str, object] | None:
@@ -322,40 +316,6 @@ class BacktestInput(BaseModel):
     days: int = Field(default=7, ge=1, le=7)
     strategy: str = Field(default="storycard", max_length=200)
     storycard: BacktestStorycardInput
-
-
-class TrackerWalkForwardInput(BaseModel):
-    symbol: str = Field(pattern=r"^[A-Z0-9]{1,32}USDT$")
-    days: int = Field(default=7, ge=2, le=7)
-    window_bars: list[int] = Field(default_factory=lambda: list(DEFAULT_WINDOW_CANDIDATES), min_length=1, max_length=4)
-    recalibration_bars: list[int] = Field(default_factory=lambda: [15, 30, 60], min_length=1, max_length=4)
-    holdout_fraction: float = Field(default=0.30, gt=0.15, le=0.45)
-    initial_balance: float = Field(default=100.0, gt=0, le=1_000_000)
-    risk_percent: float = Field(default=1.0, gt=0, le=100)
-    leverage: float = Field(default=20.0, ge=1, le=125)
-    calibration_grid: Literal["coarse", "full"] = "coarse"
-    mode: Literal["fixed_holdout", "adaptive"] = "fixed_holdout"
-    meta_lookback_segments: int = Field(default=4, ge=1, le=24)
-    loss_limit_selection: Literal["coverage", "equity"] = "coverage"
-
-    @field_validator("symbol", mode="before")
-    @classmethod
-    def normalize_symbol(cls, value: object) -> object:
-        return value.upper() if isinstance(value, str) else value
-
-    @field_validator("window_bars")
-    @classmethod
-    def validate_windows(cls, values: list[int]) -> list[int]:
-        if any(value < 120 or value > 480 for value in values):
-            raise ValueError("Cada ventana debe estar entre 120 y 480 velas de 1m.")
-        return sorted(set(values))
-
-    @field_validator("recalibration_bars")
-    @classmethod
-    def validate_recalibration_intervals(cls, values: list[int]) -> list[int]:
-        if any(value < 15 or value > 240 for value in values):
-            raise ValueError("Cada recalibración debe estar entre 15 y 240 velas de 1m.")
-        return sorted(set(values))
 
 
 class BinanceCredentialsInput(BaseModel):
@@ -598,13 +558,6 @@ def stop_binance_monitor() -> None:
 @app.on_event("shutdown")
 async def stop_market_gateway() -> None:
     await production_workers.shutdown()
-    for task in list(_walk_forward_tasks):
-        if not task.done():
-            task.cancel()
-    if _walk_forward_tasks:
-        await asyncio.gather(*_walk_forward_tasks, return_exceptions=True)
-    _walk_forward_tasks.clear()
-    _walk_forward_executor.shutdown(wait=False, cancel_futures=True)
     refresh_tasks = list(_shared_analysis_refresh_tasks.values())
     _shared_analysis_refresh_tasks.clear()
     _shared_analysis_refresh_requested.clear()
@@ -659,121 +612,6 @@ async def run_backtest(payload: BacktestInput, identity: AuthIdentity = Depends(
         ) | {"strategy": payload.strategy, "interval": payload.interval}
     except (httpx.HTTPError, ValueError, ZoneInfoNotFoundError) as exc:
         raise HTTPException(status_code=502, detail=f"No se pudo ejecutar el backtest: {exc}") from exc
-
-
-@app.post("/trading/tracker/walk-forward")
-async def tracker_walk_forward(payload: TrackerWalkForwardInput, identity: AuthIdentity = Depends(identity_dependency(auth_service))) -> dict[str, object]:
-    """Queue a read-only rolling-window comparison and return a pollable job id."""
-    job_id: str | None = None
-    try:
-        active = [item for item in _walk_forward_jobs.values() if item.get("status") in {"FETCHING", "QUEUED", "RUNNING"}]
-        if active:
-            same_user = any(item.get("user_id") == identity.user_id for item in active)
-            detail = "Ya tienes un walk-forward en curso." if same_user else "El motor de investigación ya está ocupado."
-            raise HTTPException(status_code=429, detail=detail)
-        if len(_walk_forward_jobs) >= 20:
-            completed = sorted(
-                (item for item in _walk_forward_jobs.items() if item[1].get("status") in {"COMPLETE", "ERROR", "CANCELLED"}),
-                key=lambda item: float(item[1].get("updated_at", 0)),
-            )
-            while len(_walk_forward_jobs) >= 20 and completed:
-                _walk_forward_jobs.pop(completed.pop(0)[0], None)
-        if len(_walk_forward_jobs) >= 20:
-            raise HTTPException(status_code=429, detail="El registro temporal de estudios está lleno; vuelve a intentarlo más tarde.")
-
-        # Reserve the single CPU-heavy slot before the first await, preventing
-        # concurrent requests from flooding Binance or queueing processes.
-        job_id = uuid4().hex
-        _walk_forward_jobs[job_id] = {
-            "user_id": identity.user_id, "status": "FETCHING", "symbol": payload.symbol,
-            "created_at": time.time(), "updated_at": time.time(), "result": None, "error": None,
-        }
-        bars = await fetch_binance_history(
-            symbol=payload.symbol, interval="1m", days=payload.days,
-            base_url=settings.binance_base_url,
-        )
-        if not bars:
-            raise ValueError("Binance no devolvió velas cerradas para ese símbolo.")
-        _walk_forward_jobs[job_id].update({"status": "QUEUED", "updated_at": time.time()})
-        task = asyncio.create_task(_run_walk_forward_job(job_id, payload, bars), name=f"walk-forward-{payload.symbol}")
-        _walk_forward_tasks.add(task)
-        task.add_done_callback(_walk_forward_tasks.discard)
-        return {"job_id": job_id, "symbol": payload.symbol, "status": "QUEUED", "poll_url": f"/trading/tracker/walk-forward/{job_id}"}
-    except HTTPException:
-        if job_id:
-            _walk_forward_jobs.pop(job_id, None)
-        raise
-    except (httpx.HTTPError, ValueError) as exc:
-        if job_id:
-            _walk_forward_jobs.pop(job_id, None)
-        raise HTTPException(status_code=502, detail=f"No se pudo iniciar el walk-forward del Tracker: {exc}") from exc
-
-
-async def _run_walk_forward_job(job_id: str, payload: TrackerWalkForwardInput, bars: list[dict[str, Any]]) -> None:
-    job = _walk_forward_jobs.get(job_id)
-    if job is None:
-        return
-    job.update({"status": "RUNNING", "updated_at": time.time()})
-    loop = asyncio.get_running_loop()
-    try:
-        if payload.mode == "adaptive":
-            result = await loop.run_in_executor(
-                _walk_forward_executor,
-                partial(
-                    run_adaptive_window_walk_forward,
-                    bars,
-                    symbol=payload.symbol,
-                    window_candidates=payload.window_bars,
-                    recalibration_bars=min(payload.recalibration_bars),
-                    initial_balance=payload.initial_balance,
-                    risk_percent=payload.risk_percent,
-                    leverage=payload.leverage,
-                    coarse_search=payload.calibration_grid == "coarse",
-                    loss_limit_selection=payload.loss_limit_selection,
-                    meta_lookback_segments=payload.meta_lookback_segments,
-                ),
-            )
-            clean = _clean_bars(bars)
-            result["data_signature"] = {
-                "sha256": hashlib.sha256(json.dumps(clean, sort_keys=True, separators=(",", ":")).encode()).hexdigest(),
-                "first_bar_time": int(clean[0]["time"]) if clean else None,
-                "last_bar_time": int(clean[-1]["time"]) if clean else None,
-            }
-        else:
-            result = await loop.run_in_executor(
-                _walk_forward_executor,
-                partial(
-                    run_walk_forward_study,
-                    bars,
-                    symbol=payload.symbol,
-                    window_candidates=payload.window_bars,
-                    recalibration_candidates=payload.recalibration_bars,
-                    holdout_fraction=payload.holdout_fraction,
-                    initial_balance=payload.initial_balance,
-                    risk_percent=payload.risk_percent,
-                    leverage=payload.leverage,
-                    coarse_search=payload.calibration_grid == "coarse",
-                    loss_limit_selection=payload.loss_limit_selection,
-                ),
-            )
-        job.update({
-            "status": "COMPLETE", "updated_at": time.time(),
-            "result": result | {"interval": "1m", "data_source": "Binance Futures public klines", "fee_rate": 0.0014},
-        })
-    except asyncio.CancelledError:
-        job.update({"status": "CANCELLED", "updated_at": time.time()})
-        raise
-    except Exception as exc:
-        logger.exception("tracker_walk_forward_failed job=%s", job_id)
-        job.update({"status": "ERROR", "updated_at": time.time(), "error": f"{type(exc).__name__}: no se pudo completar el estudio."})
-
-
-@app.get("/trading/tracker/walk-forward/{job_id}")
-async def tracker_walk_forward_status(job_id: str, identity: AuthIdentity = Depends(identity_dependency(auth_service))) -> dict[str, object]:
-    job = _walk_forward_jobs.get(job_id)
-    if job is None or job.get("user_id") != identity.user_id:
-        raise HTTPException(status_code=404, detail="No se encontró ese estudio walk-forward.")
-    return {key: value for key, value in job.items() if key != "user_id"} | {"job_id": job_id}
 
 
 @app.get("/trading/backtest/context/{symbol}")
