@@ -1,12 +1,26 @@
 # Tracker adaptive walk-forward research — 2026-11-20
 
+## Scope correction
+
+These six symbol tests used a manually specified list. They did **not** use the
+universe returned by the live Scanner, so their combined result must not be
+reported as the Scanner's performance or as four Scanner-selected losses.
+
+The live Scanner currently filters Binance USDT perpetuals by at least 50M USDT
+24-hour quote volume, 100,000 trades, and 0.5% absolute 24-hour movement. It
+keeps up to 20 ranked candidates, then orders those candidates by summed
+absolute close-to-close variation over the latest ten 5-minute candles. The
+web client refreshes this universe every 60 seconds. Persistence retains only
+the latest scanner snapshot, so historical symbol membership for the tested
+period is unavailable. A valid Scanner-specific forward test must record the
+actual Scanner universe at each scan time and evaluate those symbols forward;
+it cannot be reconstructed from this fixed sample after the fact.
+
 ## Result
 
-The adaptive method is implemented and has been exercised without look-ahead,
-but profitability is **not sustained across assets**. Its six final-window tests
-produced a combined −75.21 USDT from six independent 100 USDT starting balances
-(−12.54% equal-weight average); only BTC and DOGE finished positive. This is not
-evidence to enable the settings for paper or production.
+On this fixed manual sample, the adaptive method did not sustain profitability.
+The symbol-level figures below describe only these individually selected pairs;
+they say nothing about which symbols the Scanner actually returned.
 
 | Symbol | Adaptive holdout | Mark-to-market | Trades | Max drawdown (USDT) | Fixed 70/30 holdout, where run |
 | --- | ---: | ---: | ---: | ---: | ---: |
