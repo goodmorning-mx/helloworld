@@ -198,8 +198,6 @@ async def fetch_binance_history(*, symbol: str, interval: str, days: int = MAX_B
                 break
             for row in payload:
                 if isinstance(row, list) and len(row) >= 5:
-                    if len(row) > 6 and int(_number(row[6])) >= end_ms:
-                        continue
                     rows.append({"time": int(_number(row[0]) / 1000), "open": _number(row[1]), "high": _number(row[2]), "low": _number(row[3]), "close": _number(row[4]), "closed": True})
             last_time = int(_number(payload[-1][0]))
             next_cursor = last_time + interval_ms
