@@ -396,6 +396,12 @@
 .replay-controls button:hover:not(:disabled) { background: #3a3118; color: #fff0b0; }
 .replay-controls button:disabled { cursor: not-allowed; opacity: .35; }
 .replay-controls small { margin-left: .2rem; letter-spacing: .04em; }
+.replay-start-marker { cursor: ew-resize; pointer-events: all; touch-action: none; }
+.replay-start-marker-locked { cursor: default; pointer-events: none; }
+.replay-start-line { stroke: #f5c45e; stroke-width: 2; stroke-dasharray: 5 3; vector-effect: non-scaling-stroke; }
+.replay-start-label-bg { fill: #241d0e; stroke: #f5b84b; stroke-width: 1; vector-effect: non-scaling-stroke; }
+.replay-start-label { fill: #ffe29a; font: 600 9px 'DM Mono', monospace; pointer-events: none; }
+.tracker-live-volatility-label { fill: #f5c45e; font: 800 11px 'DM Mono', monospace; paint-order: stroke; stroke: #080a0d; stroke-width: 3px; stroke-linejoin: round; pointer-events: none; }
 
 /* Keep the scanner compact while its symbols are analyzed progressively. */
 .symbol-bar { align-items: center; }
