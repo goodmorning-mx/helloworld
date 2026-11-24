@@ -45,8 +45,8 @@ from app.backtest_engine import MAX_BACKTEST_DAYS, fetch_binance_history, run_st
 from app.production_worker import ProductionWorkerConfigStore, ProductionWorkerManager
 from app.telegram_service import BackendEventBus, TelegramCommandService, TelegramSink, telegram_event_sink
 from app.telegram_control import TelegramControlService, format_scanner_message
-from app.scanner_analysis import ScannerAnalysisConfig, activity_state, analyze_tracker, analyze_tracker_operations, analyze_walk_forward
-from app.scanner_cache import SCANNER_MAX_BARS, SCANNER_WINDOW_SECONDS, ScannerCache
+from app.scanner_analysis import ScannerAnalysisConfig, activity_state, analyze_tracker_forward_operations, analyze_walk_forward
+from app.scanner_cache import SCANNER_ANALYSIS_MAX_BARS, SCANNER_ANALYSIS_WINDOW_SECONDS, SCANNER_EVALUATION_HOURS, SCANNER_SNAPSHOT_HOURS, ScannerCache
 from app.scanner_snapshot import ScannerSnapshotStore, public_snapshot, worker_parameters_from_snapshot
 from app.profiling import Profiling
 
@@ -98,7 +98,7 @@ async def _refresh_shared_worker_analysis(user_id: str, symbol: str, parameters:
             initial_balance=float(parameters.get("initial_balance", 100.0)),
             risk_percent=float(parameters.get("risk_percent", 1.0)),
             leverage=float(parameters.get("leverage", 1.0)),
-            limit=SCANNER_MAX_BARS,
+            limit=SCANNER_ANALYSIS_MAX_BARS,
             include_operations=False,
             target_percent=float(parameters["target_percent"]),
             identity=None,
@@ -185,7 +185,7 @@ _binance_exchange_info_lock = Lock()
 _active_symbols_cache: OrderedDict[tuple[object, ...], tuple[float, dict[str, object]]] = OrderedDict()
 _active_symbols_cache_lock = Lock()
 _scanner_analysis_states: dict[str, str] = {}
-_scanner_cache = ScannerCache()
+_scanner_cache = ScannerCache(max_bars=SCANNER_ANALYSIS_MAX_BARS, retention_seconds=SCANNER_ANALYSIS_WINDOW_SECONDS)
 
 
 class FallbackProvider:
@@ -766,7 +766,7 @@ def latest_scanner_snapshot(identity: AuthIdentity = Depends(identity_dependency
     """Read the one persisted scanner snapshot shared with Telegram."""
     stored = scanner_snapshot_store.get(identity.user_id)
     if not stored:
-        return {"scan_id": None, "freshness": "EMPTY", "symbols": [], "universe": [], "config": None, "last_scanned_at": None, "updated_at": None, "window_seconds": SCANNER_WINDOW_SECONDS}
+        return {"scan_id": None, "freshness": "EMPTY", "symbols": [], "universe": [], "config": None, "last_scanned_at": None, "updated_at": None, "window_seconds": SCANNER_ANALYSIS_WINDOW_SECONDS, "snapshot_hours": SCANNER_SNAPSHOT_HOURS, "evaluation_hours": SCANNER_EVALUATION_HOURS}
     return public_snapshot(stored)
 
 
@@ -781,8 +781,10 @@ async def update_scanner_snapshot(payload: ScannerSnapshotInput, identity: AuthI
         "initial_balance": payload.initial_balance,
         "risk_percent": payload.risk_percent,
         "interval": "1m",
-        "window_seconds": SCANNER_WINDOW_SECONDS,
-        "max_bars": SCANNER_MAX_BARS,
+        "window_seconds": SCANNER_ANALYSIS_WINDOW_SECONDS,
+        "snapshot_hours": SCANNER_SNAPSHOT_HOURS,
+        "evaluation_hours": SCANNER_EVALUATION_HOURS,
+        "max_bars": SCANNER_ANALYSIS_MAX_BARS,
     }
     universe = [item.model_dump() for item in payload.symbols]
     rows: list[dict[str, object]] = []
@@ -818,7 +820,7 @@ async def update_scanner_snapshot(payload: ScannerSnapshotInput, identity: AuthI
                 initial_balance=analysis_initial_balance,
                 risk_percent=analysis_risk_percent,
                 leverage=analysis_leverage,
-                limit=SCANNER_MAX_BARS,
+                limit=SCANNER_ANALYSIS_MAX_BARS,
                 movement_averages=str(candidate.variation_average_pct),
                 include_operations=False,
                 target_percent=analysis_target_percent,
@@ -868,7 +870,7 @@ async def update_scanner_snapshot(payload: ScannerSnapshotInput, identity: AuthI
             "risk_usdt": analysis_initial_balance * analysis_risk_percent / 100,
             "leverage": analysis_leverage,
             "variation_average_pct": candidate.variation_average_pct,
-            "window_seconds": SCANNER_WINDOW_SECONDS,
+            "window_seconds": SCANNER_ANALYSIS_WINDOW_SECONDS,
         })
         if worker_parameters:
             row["analysis_parameter_version"] = worker_parameters.get("parameter_version")
@@ -1413,7 +1415,7 @@ async def binance_scanner_analysis(
     initial_balance: float = 100.0,
     risk_percent: float = 1.0,
     leverage: float = 1.0,
-    limit: int = SCANNER_MAX_BARS,
+    limit: int = SCANNER_ANALYSIS_MAX_BARS,
     movement_averages: str = Query("", description="Optional comma-separated 1m movement averages matching symbols."),
     include_operations: bool = False,
     target_percent: float | None = Query(None, gt=0, le=1_000, description="Use an already selected shared TP when reconstructing Tracker operations."),
@@ -1437,10 +1439,40 @@ async def binance_scanner_analysis(
         risk_percent=max(0.01, min(float(risk_percent), 100)),
         leverage=max(1.0, min(float(leverage), 125)),
     )
-    safe_limit = max(100, min(int(limit), SCANNER_MAX_BARS))
+    # The shared scanner always keeps the adjacent 8h fit and 8h evaluation
+    # windows; legacy callers passing 480 are transparently upgraded.
+    safe_limit = SCANNER_ANALYSIS_MAX_BARS
     semaphore = asyncio.Semaphore(5)
     request_profile = Profiling("scanner_analysis")
     config_key = (*tuple(vars(config).items()), ("limit", safe_limit))
+
+    def scanner_row_from_walk_forward(result: dict[str, object], *, bars_count: int, last_bar_time: int) -> dict[str, object]:
+        snapshot = dict(result["snapshot"])
+        forward = dict(result["forward"])
+        snapshot.pop("operation_details", None)
+        forward.pop("operation_details", None)
+        parameters = dict(result["parameters"])
+        return {
+            **forward,
+            "snapshot": snapshot,
+            "forward": forward,
+            "parameters": parameters,
+            "snapshot_final_result_usdt": snapshot.get("final_result_usdt"),
+            "forward_final_result_usdt": forward.get("final_result_usdt"),
+            "snapshot_operations": snapshot.get("operations", 0),
+            "snapshot_wins": snapshot.get("wins", 0),
+            "snapshot_losses": snapshot.get("losses", 0),
+            "forward_operations": forward.get("operations", 0),
+            "forward_wins": forward.get("wins", 0),
+            "forward_losses": forward.get("losses", 0),
+            "tp_optimal_percent": parameters.get("tp_optimal_percent"),
+            "loss_limit_percent": parameters.get("loss_limit_percent"),
+            "last_bar_time": last_bar_time,
+            "bars": bars_count,
+            "snapshot_hours": result.get("snapshot_hours", SCANNER_SNAPSHOT_HOURS),
+            "evaluation_hours": result.get("evaluation_hours", SCANNER_EVALUATION_HOURS),
+            "split_time": result.get("split_time"),
+        }
 
     async def analyze_symbol(symbol: str) -> dict[str, object]:
         async with semaphore:
@@ -1449,11 +1481,10 @@ async def binance_scanner_analysis(
 
             async def load_new_bars(existing: list[dict[str, object]]) -> list[dict[str, object]]:
                 profile.mark("fetch_klines_start", cached_bars=len(existing), limit=safe_limit)
-                # Scanner and Tracker use the same rolling 8-hour closed-candle
-                # window. A cold cache fits in one Binance page; a warm cache
-                # appends only from its latest candle.
+                # Keep adjacent 8h snapshot + 8h forward windows. A cold cache
+                # fits in one Binance page; a warm cache appends only new bars.
                 now_seconds = int(time.time())
-                window_start = max(0, (now_seconds - SCANNER_WINDOW_SECONDS) // 60 * 60)
+                window_start = max(0, (now_seconds - SCANNER_ANALYSIS_WINDOW_SECONDS) // 60 * 60)
                 cursor: int | None = max(window_start, int(existing[-1]["time"]) - 60) if existing else window_start
                 now_ms = int(time.time() * 1000)
                 bars: list[dict[str, object]] = []
@@ -1474,8 +1505,8 @@ async def binance_scanner_analysis(
                                 if not isinstance(row, list) or len(row) < 7:
                                     continue
                                 try:
-                                    # Ignore Binance's still-forming candle and
-                                    # anything older than the shared rolling window.
+                                    # Ignore the still-forming candle and bars
+                                    # outside the shared scanner evaluation window.
                                     timestamp = int(float(row[0]) / 1000)
                                     if int(row[6]) >= now_ms or timestamp < window_start:
                                         continue
@@ -1503,7 +1534,7 @@ async def binance_scanner_analysis(
                 previous = await _scanner_cache.latest_analysis(symbol, config_key)
                 if previous:
                     return {"symbol": symbol, **previous[1], "status": "STALE", "error": fetch_error or "Sin velas cerradas disponibles.", "stale_since_bar_time": previous[0], "profiling": profile.snapshot()}
-                return {"symbol": symbol, "status": "ERROR", "error": fetch_error or "Sin velas cerradas disponibles.", "tp_optimal_percent": None, "average_duration_minutes": None, "operations": 0, "wins": 0, "losses": 0, "equity_final": None, "final_result_usdt": None, "max_balance": None, "min_balance": None, "last_bar_time": None, "bars": 0, "profiling": profile.snapshot()}
+                return {"symbol": symbol, "status": "ERROR", "error": fetch_error or "Sin velas cerradas disponibles.", "tp_optimal_percent": None, "average_duration_minutes": None, "operations": 0, "wins": 0, "losses": 0, "equity_final": None, "final_result_usdt": None, "snapshot": None, "forward": None, "snapshot_final_result_usdt": None, "forward_final_result_usdt": None, "max_balance": None, "min_balance": None, "last_bar_time": None, "bars": 0, "profiling": profile.snapshot()}
 
             try:
                 if selected_target_override is not None:
@@ -1511,14 +1542,23 @@ async def binance_scanner_analysis(
                     selected_key = (*config_key, ("selected_target_percent", round(selected_target, 8)))
 
                     async def calculate_selected() -> dict[str, object]:
-                        return await asyncio.to_thread(analyze_tracker_operations, bars, config, selected_target, profile)
+                        walk_forward = await asyncio.to_thread(
+                            analyze_walk_forward,
+                            bars,
+                            config,
+                            SCANNER_SNAPSHOT_HOURS,
+                            SCANNER_EVALUATION_HOURS,
+                            profile,
+                            selected_target,
+                            False,
+                        )
+                        return scanner_row_from_walk_forward(walk_forward, bars_count=len(bars), last_bar_time=last_bar_time)
 
                     with profile.measure("selected_analysis_cache_or_compute"):
                         analysis, cache_hit = await _scanner_cache.selected_analysis_once(
                             symbol, selected_key, last_bar_time, calculate_selected,
                         )
                     profile.mark("selected_analysis_cache_hit" if cache_hit else "selected_analysis_calculated", last_bar_time=last_bar_time, target_percent=selected_target)
-                    analysis = {**analysis, "tp_optimal_percent": selected_target, "last_bar_time": last_bar_time, "bars": len(bars)}
                 else:
                     cached = await _scanner_cache.cached_analysis(symbol, config_key, last_bar_time)
                     if cached is not None:
@@ -1526,22 +1566,41 @@ async def binance_scanner_analysis(
                         profile.mark("analysis_cache_hit", last_bar_time=last_bar_time)
                     else:
                         async def calculate() -> dict[str, object]:
-                            result = await asyncio.to_thread(analyze_tracker, bars, config, profile)
-                            result.pop("operation_details", None)
-                            return result
+                            walk_forward = await asyncio.to_thread(
+                                analyze_walk_forward,
+                                bars,
+                                config,
+                                SCANNER_SNAPSHOT_HOURS,
+                                SCANNER_EVALUATION_HOURS,
+                                profile,
+                                None,
+                                False,
+                            )
+                            return scanner_row_from_walk_forward(walk_forward, bars_count=len(bars), last_bar_time=last_bar_time)
 
                         with profile.measure("analysis_cache_or_compute"):
                             analysis = await _scanner_cache.analyze_once(symbol, config_key, last_bar_time, calculate)
-                    if include_operations and "operation_details" not in analysis and analysis.get("tp_optimal_percent") is not None:
-                        selected_target = float(analysis["tp_optimal_percent"])
-                        details = await asyncio.to_thread(analyze_tracker_operations, bars, config, selected_target, profile)
-                        analysis = {**analysis, **details}
+                if include_operations and "operation_details" not in analysis and analysis.get("tp_optimal_percent") is not None:
+                    with profile.measure("forward_operations_detail"):
+                        details = await asyncio.to_thread(
+                            analyze_tracker_forward_operations,
+                            bars,
+                            config,
+                            split_time=int(analysis["split_time"]),
+                            target_percent=float(analysis["tp_optimal_percent"]),
+                            loss_limit_percent=float(analysis["loss_limit_percent"]),
+                        )
+                    analysis = {
+                        **analysis,
+                        "operation_details": details["operation_details"],
+                        "forward": {**dict(analysis["forward"]), **{key: value for key, value in details.items() if key != "operation_details"}},
+                    }
             except Exception as exc:
                 profile.mark("analysis_error", error=str(exc))
                 previous = await _scanner_cache.latest_analysis(symbol, config_key)
                 if selected_target_override is None and previous:
                     return {"symbol": symbol, **previous[1], "status": "STALE", "error": str(exc), "stale_since_bar_time": previous[0], "profiling": profile.snapshot()}
-                return {"symbol": symbol, "status": "ERROR", "error": str(exc), "tp_optimal_percent": None, "average_duration_minutes": None, "operations": 0, "wins": 0, "losses": 0, "equity_final": None, "final_result_usdt": None, "max_balance": None, "min_balance": None, "last_bar_time": None, "bars": 0, "profiling": profile.snapshot()}
+                return {"symbol": symbol, "status": "ERROR", "error": str(exc), "tp_optimal_percent": None, "average_duration_minutes": None, "operations": 0, "wins": 0, "losses": 0, "equity_final": None, "final_result_usdt": None, "snapshot": None, "forward": None, "snapshot_final_result_usdt": None, "forward_final_result_usdt": None, "max_balance": None, "min_balance": None, "last_bar_time": None, "bars": 0, "profiling": profile.snapshot()}
 
             status = "STALE" if fetch_error else "VALID"
             row: dict[str, object] = {"symbol": symbol, **analysis, "status": status, "profiling": profile.snapshot()}
@@ -1569,7 +1628,7 @@ async def binance_scanner_analysis(
     request_profile.mark("activity_classification_end", changed_states=sum(1 for row in rows if row.get("activity_state")))
     if not include_operations:
         rows = [{key: value for key, value in row.items() if key != "operation_details"} for row in rows]
-    return {"symbols": rows, "updated_at": int(time.time()), "cache_ttl_seconds": 5, "window_seconds": SCANNER_WINDOW_SECONDS, "config": {"tracker_period": config.tracker_period, "stop_percent": config.stop_percent, "initial_balance": config.initial_balance, "risk_percent": config.risk_percent, "leverage": config.leverage}, "profiling": request_profile.snapshot()}
+    return {"symbols": rows, "updated_at": int(time.time()), "cache_ttl_seconds": 5, "window_seconds": SCANNER_ANALYSIS_WINDOW_SECONDS, "snapshot_hours": SCANNER_SNAPSHOT_HOURS, "evaluation_hours": SCANNER_EVALUATION_HOURS, "config": {"tracker_period": config.tracker_period, "stop_percent": config.stop_percent, "initial_balance": config.initial_balance, "risk_percent": config.risk_percent, "leverage": config.leverage}, "profiling": request_profile.snapshot()}
 
 
 @app.websocket("/market/binance/stream/{symbol}")

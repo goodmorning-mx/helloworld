@@ -2,7 +2,50 @@ import asyncio
 import time
 
 from app import main
-from app.scanner_cache import SCANNER_WINDOW_SECONDS, ScannerCache
+from app.scanner_cache import SCANNER_ANALYSIS_MAX_BARS, SCANNER_ANALYSIS_WINDOW_SECONDS, ScannerCache
+
+
+def _fake_walk_forward(bars, config, snapshot_hours, evaluation_hours, _profiling, target_override=None, _include_operations=False):
+    split_index = max(1, len(bars) // 2)
+    target = float(target_override if target_override is not None else 1.25)
+    snapshot = {
+        "operations": 3, "wins": 2, "losses": 1, "win_rate": 66.7,
+        "average_duration_minutes": 2.0, "equity_final": config.initial_balance + 3.5,
+        "final_result_usdt": 3.5, "max_balance": config.initial_balance + 4,
+        "min_balance": config.initial_balance - 1, "loss_limit_percent": 4.0,
+        "tp_optimal_percent": target, "tracker_period": config.tracker_period,
+        "stop_percent": config.stop_percent, "start_time": bars[0]["time"],
+        "last_bar_time": bars[split_index - 1]["time"], "bars": split_index,
+    }
+    forward = {
+        "operations": 1, "wins": 1, "losses": 0, "win_rate": 100.0,
+        "average_duration_minutes": 1.0, "equity_final": config.initial_balance + target,
+        "final_result_usdt": target, "max_balance": config.initial_balance + target,
+        "min_balance": config.initial_balance, "loss_limit_percent": 4.0,
+        "tp_optimal_percent": target, "tracker_period": config.tracker_period,
+        "stop_percent": config.stop_percent, "start_time": bars[split_index]["time"],
+        "last_bar_time": bars[-1]["time"], "bars": len(bars) - split_index,
+    }
+    return {
+        "snapshot": snapshot, "forward": forward, "split_time": bars[split_index]["time"],
+        "snapshot_hours": snapshot_hours, "evaluation_hours": evaluation_hours,
+        "parameters": {"tp_optimal_percent": target, "loss_limit_percent": 4.0,
+                       "tracker_period": config.tracker_period, "stop_percent": config.stop_percent,
+                       "initial_balance": config.initial_balance, "risk_percent": config.risk_percent,
+                       "leverage": config.leverage, "source": "SNAPSHOT_OPTIMIZED"},
+        "bars": len(bars),
+    }
+
+
+def _fake_forward_details(_bars, config, *, split_time, target_percent, loss_limit_percent):
+    return {
+        "operation_details": [{"entry_time": split_time, "pnl": target_percent, "status": "WIN"}],
+        "operations": 1, "wins": 1, "losses": 0, "win_rate": 100.0,
+        "average_duration_minutes": 1.0, "equity_final": config.initial_balance + target_percent,
+        "final_result_usdt": target_percent, "max_balance": config.initial_balance + target_percent,
+        "min_balance": config.initial_balance, "loss_limit_percent": loss_limit_percent,
+        "last_bar_time": split_time + 60,
+    }
 
 
 def test_refresh_bars_shares_in_flight_request_and_merges_incrementally() -> None:
@@ -237,10 +280,12 @@ def test_scanner_endpoint_fetches_only_new_closed_candles(monkeypatch) -> None:
             return Response(self.second_rows)
 
     now_seconds = [int(time.time() // 60 * 60) + 5]
-    expected_window_start = ((now_seconds[0] - SCANNER_WINDOW_SECONDS) // 60 * 60) * 1000
+    expected_window_start = ((now_seconds[0] - SCANNER_ANALYSIS_WINDOW_SECONDS) // 60 * 60) * 1000
     monkeypatch.setattr(main.time, "time", lambda: now_seconds[0])
-    monkeypatch.setattr(main, "_scanner_cache", ScannerCache(refresh_seconds=0))
+    monkeypatch.setattr(main, "_scanner_cache", ScannerCache(max_bars=SCANNER_ANALYSIS_MAX_BARS, refresh_seconds=0))
     monkeypatch.setattr(main.httpx, "AsyncClient", Client)
+    monkeypatch.setattr(main, "analyze_walk_forward", _fake_walk_forward)
+    monkeypatch.setattr(main, "analyze_tracker_forward_operations", _fake_forward_details)
     main._scanner_analysis_states.clear()
 
     async def scenario():
@@ -253,7 +298,7 @@ def test_scanner_endpoint_fetches_only_new_closed_candles(monkeypatch) -> None:
 
     first, second, third, fourth = asyncio.run(scenario())
     assert len(Client.calls) == 4
-    assert Client.calls[0]["limit"] == 100
+    assert Client.calls[0]["limit"] == SCANNER_ANALYSIS_MAX_BARS
     assert Client.calls[0]["startTime"] == expected_window_start
     assert Client.calls[1]["startTime"] == int(first["symbols"][0]["last_bar_time"]) * 1000 - 60_000
     assert first["symbols"][0]["status"] == "VALID"
@@ -270,7 +315,7 @@ def test_scanner_endpoint_fetches_only_new_closed_candles(monkeypatch) -> None:
         leverage=10, include_operations=True, target_percent=2.75, identity=None,
     ))
     assert detail["config"]["leverage"] == 10
-    assert detail["window_seconds"] == 8 * 60 * 60
+    assert detail["window_seconds"] == 16 * 60 * 60
     assert detail["symbols"][0]["operations"] == len(detail["symbols"][0]["operation_details"])
     assert detail["symbols"][0]["tp_optimal_percent"] == 2.75
     detail_row = detail["symbols"][0]
@@ -291,7 +336,7 @@ def test_scanner_endpoint_fetches_only_new_closed_candles(monkeypatch) -> None:
     assert "operation_details" not in summary
 
 
-def test_scanner_cold_loads_8_hour_window_in_one_page(monkeypatch) -> None:
+def test_scanner_cold_loads_snapshot_and_forward_window_in_one_page(monkeypatch) -> None:
     class Response:
         def __init__(self, rows):
             self.rows = rows
@@ -303,7 +348,7 @@ def test_scanner_cold_loads_8_hour_window_in_one_page(monkeypatch) -> None:
             return self.rows
 
     now_seconds = int(time.time() // 60 * 60) + 5
-    window_start = (now_seconds - 8 * 60 * 60) // 60 * 60
+    window_start = (now_seconds - SCANNER_ANALYSIS_WINDOW_SECONDS) // 60 * 60
 
     class Client:
         calls = []
@@ -324,17 +369,16 @@ def test_scanner_cold_loads_8_hour_window_in_one_page(monkeypatch) -> None:
             rows = [[(start + index * 60) * 1000, "100", "101", "99", "100", "0", (start + index * 60) * 1000 + 59_999] for index in range(count)]
             return Response(rows)
 
-    def cheap_analysis(bars, config, profiling):
-        return {"tp_optimal_percent": 1.0, "average_duration_minutes": None, "operations": 0, "wins": 0, "losses": 0, "equity_final": config.initial_balance, "final_result_usdt": 0.0, "loss_limit_percent": 0.0, "last_bar_time": bars[-1]["time"], "bars": len(bars), "operation_details": []}
-
     monkeypatch.setattr(main.time, "time", lambda: now_seconds)
-    monkeypatch.setattr(main, "_scanner_cache", ScannerCache(refresh_seconds=0))
+    monkeypatch.setattr(main, "_scanner_cache", ScannerCache(max_bars=SCANNER_ANALYSIS_MAX_BARS, refresh_seconds=0))
     monkeypatch.setattr(main.httpx, "AsyncClient", Client)
-    monkeypatch.setattr(main, "analyze_tracker", cheap_analysis)
+    monkeypatch.setattr(main, "analyze_walk_forward", _fake_walk_forward)
 
     payload = asyncio.run(main.binance_scanner_analysis(symbols="BTCUSDT", limit=480, movement_averages="", identity=None))
     assert len(Client.calls) == 1
     assert Client.calls[0]["startTime"] == window_start * 1000
-    assert Client.calls[0]["limit"] == 480
-    assert payload["symbols"][0]["bars"] == 480
-    assert payload["window_seconds"] == 8 * 60 * 60
+    assert Client.calls[0]["limit"] == SCANNER_ANALYSIS_MAX_BARS
+    assert payload["symbols"][0]["bars"] == SCANNER_ANALYSIS_MAX_BARS
+    assert payload["symbols"][0]["snapshot_final_result_usdt"] == 3.5
+    assert payload["symbols"][0]["forward_final_result_usdt"] == 1.25
+    assert payload["window_seconds"] == SCANNER_ANALYSIS_WINDOW_SECONDS

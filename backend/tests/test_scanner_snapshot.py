@@ -24,7 +24,7 @@ def test_snapshot_is_fresh_for_three_minutes_and_keeps_one_payload():
     assert result["symbols"][0]["symbol"] == "BTCUSDT"
     assert result["symbols"][0]["active_parameters"]["target_percent"] == 2.2
     assert result["symbols"][0]["active_parameters"]["tracker_period"] == 8
-    assert result["window_seconds"] == 28_800
+    assert result["window_seconds"] == 57_600
 
 
 def test_old_snapshot_is_explicitly_stale():
@@ -173,7 +173,7 @@ def test_web_snapshot_uses_existing_scanner_parameters_and_saves_complete_rows(m
     assert analysis_calls[0]["initial_balance"] == 250
     assert analysis_calls[0]["risk_percent"] == 1.5
     assert analysis_calls[0]["leverage"] == 12
-    assert analysis_calls[0]["limit"] == 480
+    assert analysis_calls[0]["limit"] == 960
     assert saved["user_id"] == "owner"
     assert result["symbols"][0]["tp_optimal_percent"] == 2.4
     assert result["symbols"][0]["loss_limit_percent"] == 5.0
