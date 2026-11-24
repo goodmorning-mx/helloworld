@@ -36,6 +36,7 @@ def _simulate(
     config: ScannerAnalysisConfig,
     target_percent: float,
     signals: list[tuple[str, str] | None] | None = None,
+    start_index: int | None = None,
 ) -> list[dict[str, float | int | str]]:
     period = max(1, int(config.tracker_period))
     leverage = max(1.0, float(config.leverage))
@@ -53,7 +54,8 @@ def _simulate(
     def new_operation(side: str, entry: float, entry_time: int, notional: float, level: str, index: int) -> dict[str, float | int | str]:
         return {"side": side, "entry": entry, "entry_time": entry_time, "notional": notional, "min_roe": 0.0, "min_roe_time": entry_time, "min_roe_price": entry, "max_roe": 0.0, "max_roe_time": entry_time, "max_roe_price": entry, "real_min_roe": 0.0, "real_min_roe_time": entry_time, "real_min_roe_price": entry, "real_max_roe": 0.0, "real_max_roe_time": entry_time, "real_max_roe_price": entry, "body_average_percent_at_open": body_average_percent(index), "level": level}
 
-    for index in range(period, len(bars)):
+    first_index = max(period, int(start_index or 0))
+    for index in range(first_index, len(bars)):
         bar = bars[index]
         previous = bars[index - period:index]
         close = float(bar["close"])
@@ -139,8 +141,15 @@ def _effective_loss_limit(operations: list[dict[str, float | int | str]], config
     return max(_loss_limit(operations), floor_roe_percent)
 
 
-def _limited_operations(operations: list[dict[str, float | int | str]], config: ScannerAnalysisConfig) -> tuple[float, list[dict[str, float | int | str]]]:
-    limit = _effective_loss_limit(operations, config)
+def _limited_operations(
+    operations: list[dict[str, float | int | str]],
+    config: ScannerAnalysisConfig,
+    loss_limit_percent: float | None = None,
+) -> tuple[float, list[dict[str, float | int | str]]]:
+    limit = _effective_loss_limit(operations, config) if loss_limit_percent is None else max(
+        abs(float(config.loss_limit_floor_price_percent if config.loss_limit_floor_price_percent is not None else config.stop_percent)) * max(1.0, float(config.leverage)),
+        abs(float(loss_limit_percent)),
+    )
     equity = float(config.initial_balance)
     adjusted: list[dict[str, float | int | str]] = []
     for operation in operations:
@@ -260,6 +269,93 @@ def analyze_tracker_operations(
         "max_balance": max(balances),
         "min_balance": min(balances),
         "last_bar_time": clean[-1]["time"] if clean else None,
+        "bars": len(clean),
+    }
+
+
+def analyze_walk_forward(
+    bars: Iterable[dict[str, Any]],
+    config: ScannerAnalysisConfig | None = None,
+    snapshot_hours: int = 8,
+    evaluation_hours: int | None = None,
+    profiling: Profiling | None = None,
+) -> dict[str, Any]:
+    """Fit on a closed-candle snapshot, then evaluate frozen parameters forward.
+
+    The snapshot is the H hours immediately before the split. The forward
+    segment is the next H hours. Replay state and replay cursor are not inputs.
+    Tracker-period candles from the snapshot are retained only as signal
+    context; they cannot open or close forward operations.
+    """
+    config = config or ScannerAnalysisConfig()
+    hours = max(1, min(int(snapshot_hours), 24))
+    forward_hours = max(1, min(int(evaluation_hours if evaluation_hours is not None else hours), 24))
+    clean: list[dict[str, Any]] = []
+    for bar in bars:
+        try:
+            clean.append({"time": int(bar["time"]), "open": float(bar["open"]), "high": float(bar["high"]), "low": float(bar["low"]), "close": float(bar["close"])})
+        except (KeyError, TypeError, ValueError):
+            continue
+    clean.sort(key=lambda bar: bar["time"])
+    if not clean:
+        raise ValueError("No hay velas cerradas para analizar el snapshot y el forward.")
+
+    forward_bar_count = forward_hours * 60
+    split_index = max(0, len(clean) - forward_bar_count)
+    snapshot_bars = clean[:split_index]
+    forward_bars = clean[split_index:]
+    if len(snapshot_bars) < max(config.tracker_period + 1, hours * 60 - 1) or len(forward_bars) < forward_hours * 60 - 1:
+        raise ValueError(f"Se requieren aproximadamente {hours + forward_hours} horas de velas cerradas; hay {len(clean)} velas.")
+
+    if profiling:
+        profiling.mark("walk_forward_split", snapshot_bars=len(snapshot_bars), forward_bars=len(forward_bars), split_time=forward_bars[0]["time"])
+    with profiling.measure("walk_forward_snapshot_fit") if profiling else nullcontext():
+        snapshot = analyze_tracker(snapshot_bars, config, profiling)
+
+    # The optimizer already retains the selected TP's in-sample operations,
+    # so reuse them instead of simulating the snapshot a second time.
+    target_percent = float(snapshot["tp_optimal_percent"])
+    frozen_loss_limit = float(snapshot["loss_limit_percent"])
+    snapshot_result = snapshot
+
+    context_start = max(0, split_index - max(1, int(config.tracker_period)))
+    forward_context = clean[context_start:]
+    forward_start = split_index - context_start
+    signals = _build_tracker_signals(forward_context, max(1, int(config.tracker_period)))
+    with profiling.measure("walk_forward_forward_simulation") if profiling else nullcontext():
+        forward_raw_operations = _simulate(forward_context, config, target_percent, signals, start_index=forward_start)
+    forward_equity, forward_operations = _limited_operations(forward_raw_operations, config, frozen_loss_limit)
+    forward_wins = sum(operation["status"] == "WIN" for operation in forward_operations)
+    forward_losses = sum(operation["status"] == "FAIL" for operation in forward_operations)
+    forward_durations = [float(operation["duration_minutes"]) for operation in forward_operations]
+    forward_balances = [float(config.initial_balance), *(float(operation["balance_after"]) for operation in forward_operations)]
+    forward_result = {
+        "operation_details": forward_operations,
+        "operations": len(forward_operations),
+        "wins": forward_wins,
+        "losses": forward_losses,
+        "win_rate": forward_wins / (forward_wins + forward_losses) * 100 if forward_wins + forward_losses else 0.0,
+        "average_duration_minutes": sum(forward_durations) / len(forward_durations) if forward_durations else None,
+        "equity_final": forward_equity,
+        "final_result_usdt": forward_equity - float(config.initial_balance),
+        "max_balance": max(forward_balances),
+        "min_balance": min(forward_balances),
+        "loss_limit_percent": frozen_loss_limit,
+        "tp_optimal_percent": target_percent,
+        "tracker_period": config.tracker_period,
+        "stop_percent": config.stop_percent,
+        "last_bar_time": forward_bars[-1]["time"],
+        "start_time": forward_bars[0]["time"],
+        "bars": len(forward_bars),
+    }
+    snapshot_result.update({"tp_optimal_percent": target_percent, "tracker_period": config.tracker_period, "stop_percent": config.stop_percent, "start_time": snapshot_bars[0]["time"], "bars": len(snapshot_bars)})
+    return {
+        "snapshot": snapshot_result,
+        "forward": forward_result,
+        "split_time": forward_bars[0]["time"],
+        "snapshot_hours": hours,
+        "evaluation_hours": forward_hours,
+        "parameters": {"tp_optimal_percent": target_percent, "loss_limit_percent": frozen_loss_limit, "tracker_period": config.tracker_period, "stop_percent": config.stop_percent, "initial_balance": config.initial_balance, "risk_percent": config.risk_percent, "leverage": config.leverage},
         "bars": len(clean),
     }
 
