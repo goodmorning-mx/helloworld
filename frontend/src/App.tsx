@@ -391,7 +391,6 @@ type BinanceSizingMode = 'minimum' | 'maximum';
 type ViewportSnapshot = { bars: number; futureBars: number; yBelow: number; yAbove: number };
 type OhlcHover = { time: UTCTimestamp; open: number; high: number; low: number; close: number; x: number; y: number };
 type ReplayState = { active: boolean; running: boolean; cursor: number; total: number; start: number };
-type ReplayStartDrag = { canvas: 'entry' | 'context' } | null;
 const ENTRY_VIEWPORT_DEFAULTS: ViewportSnapshot = { bars: WALK_FORWARD_ENTRY_BARS, futureBars: 0, yBelow: 14, yAbove: 11 };
 function renderBars(bars: Array<{ time: UTCTimestamp; open: number; high: number; low: number; close: number }>, max: number) {
   return bars.slice(-max);
@@ -1239,8 +1238,6 @@ function Workspace() {
   const priceIndicatorSeriesRef = useRef({ entry: new IncrementalIndicatorSeries(), context: new IncrementalIndicatorSeries() });
   const replayAllBarsRef = useRef<Array<{ time: UTCTimestamp; open: number; high: number; low: number; close: number }>>([]);
   const replayRef = useRef<ReplayState>({ active: false, running: false, cursor: -1, total: 0, start: -1 });
-  const replayStartDragRef = useRef<ReplayStartDrag>(null);
-  const replayStartManualRef = useRef(false);
   const [replayState, setReplayState] = useState<ReplayState>({ active: false, running: false, cursor: -1, total: 0, start: -1 });
   const [replayStartTime, setReplayStartTime] = useState<number | null>(null);
   const [entryOhlcHover, setEntryOhlcHover] = useState<OhlcHover | null>(null);
@@ -1385,22 +1382,7 @@ function Workspace() {
     replayRef.current = next;
     setReplayState(next);
   };
-  const nearestReplayBarTime = (time: number, bars = candleBarsRef.current) => {
-    if (!bars.length) return null;
-    let low = 0;
-    let high = bars.length - 1;
-    while (low < high) {
-      const middle = Math.floor((low + high) / 2);
-      if (Number(bars[middle].time) < time) low = middle + 1;
-      else high = middle;
-    }
-    const next = bars[low];
-    const previous = bars[Math.max(0, low - 1)];
-    return Math.abs(Number(previous.time) - time) <= Math.abs(Number(next.time) - time)
-      ? Number(previous.time)
-      : Number(next.time);
-  };
-  const startReplayFromMarker = () => {
+  const startReplayFromBoundary = () => {
     const all = replayAllBarsRef.current.length ? replayAllBarsRef.current : candleBarsRef.current;
     if (!all.length) return;
     const requestedTime = replayStartTime ?? Number(all[all.length - 1].time);
@@ -1456,7 +1438,6 @@ function Workspace() {
     if (all.length === 0 || start < 0) return;
     replayAllBarsRef.current = [...all];
     const next = { active: true, running: false, cursor: start, total: all.length, start };
-    replayStartManualRef.current = true;
     setReplayStartTime(Number(all[start].time));
     setReplaySnapshot(next);
     renderReplayPrefix(start);
@@ -1921,13 +1902,11 @@ function Workspace() {
     setSymbolHistoryReady(false);
     setTrackerLossLimitEnabled(false);
     trackerOpenTargetRef.current = null;
-    replayStartDragRef.current = null;
-    replayStartManualRef.current = false;
     setReplayStartTime(null);
   }, [symbol, broker]);
 
   useEffect(() => {
-    if (!symbolHistoryReady || replayState.active || replayStartManualRef.current) return;
+    if (!symbolHistoryReady || replayState.active) return;
     const boundary = walkForwardBoundaryTime(candleBarsRef.current);
     if (boundary != null) setReplayStartTime(current => current === boundary ? current : boundary);
   }, [symbolHistoryReady, trackerRevision, replayState.active, symbol, broker]);
@@ -2502,7 +2481,7 @@ function Workspace() {
         requestAnimationFrame(() => { if (active) initializingViewport = false; });
         setTrackerRevision(value => value + 1);
         setViewportRevision(value => value + 1);
-        if (!replayStartManualRef.current) setReplayStartTime(walkForwardBoundaryTime(candleBarsRef.current));
+        setReplayStartTime(walkForwardBoundaryTime(candleBarsRef.current));
         setSymbolHistoryReady(true);
       })
       .catch(() => undefined);
@@ -3103,64 +3082,6 @@ function Workspace() {
     return <><g className="session-indicator">{events.map((event, index) => <g key={`${event.label}-${event.x}-${index}`}><line x1={event.x} y1="0" x2={event.x} y2={stageSize.height} stroke={event.color} className="session-line" /><text x={event.x + 4} y="18" fill={event.color} className="session-label"><tspan x={event.x + 4} dy="0">{event.label}</tspan><tspan x={event.x + 4} dy="26">{event.date}</tspan></text></g>)}</g>{renderChartEventMarkers('entry')}</>;
   }
 
-  function beginReplayStartDrag(event: PointerEvent<SVGGElement>, canvas: ChartCanvas) {
-    if (replayState.active) return;
-    event.preventDefault();
-    event.stopPropagation();
-    replayStartManualRef.current = true;
-    replayStartDragRef.current = { canvas };
-    const stage = canvas === 'entry' ? chartStage.current : overviewStage.current;
-    stage?.setPointerCapture(event.pointerId);
-  }
-
-  function renderReplayStartMarker(canvas: ChartCanvas) {
-    if (replayStartTime == null) return null;
-    const chart = canvas === 'entry' ? chartRef.current : overviewChartRef.current;
-    const bars = canvas === 'entry' ? candleBarsRef.current : overviewBarsRef.current;
-    const width = canvas === 'entry' ? stageSize.width : overviewSize.width;
-    const height = canvas === 'entry' ? stageSize.height : overviewSize.height;
-    if (!chart || !bars.length) return null;
-    const markerTime = canvas === 'entry' ? nearestReplayBarTime(replayStartTime) : nearestReplayBarTime(replayStartTime, bars);
-    if (markerTime == null) return null;
-    const x = chart.timeScale().timeToCoordinate(markerTime as UTCTimestamp);
-    if (x == null) return null;
-    const badgeWidth = Math.min(292, Math.max(180, width - 12));
-    const labelX = Math.min(Math.max(6, x - badgeWidth / 2), Math.max(6, width - badgeWidth - 6));
-    return <g className={`replay-start-marker ${replayState.active ? 'replay-start-marker-locked' : ''}`} onPointerDown={event => beginReplayStartDrag(event, canvas)}>
-      <line x1={x} y1="0" x2={x} y2={height} className="replay-start-line" pointerEvents={replayState.active ? 'none' : 'stroke'} />
-      {!replayState.active && <rect x={x - 8} y="0" width="16" height={height} fill="transparent" pointerEvents="all" />}
-      <rect x={labelX} y="72" width={badgeWidth} height="60" rx="5" className="replay-start-label-bg" pointerEvents="none" />
-      <text x={labelX + badgeWidth / 2} y="89" textAnchor="middle" className="replay-start-label-main" pointerEvents="none"><title>Arrastra este marcador para elegir dónde empieza el replay; el análisis snapshot/forward es independiente</title>INICIO DEL REPLAY</text>
-      <text x={labelX + badgeWidth / 2} y="107" textAnchor="middle" className="replay-start-label-detail" pointerEvents="none">MARCADO INDEPENDIENTEMENTE DEL ANÁLISIS</text>
-      <text x={labelX + badgeWidth / 2} y="123" textAnchor="middle" className="replay-start-label-time" pointerEvents="none">{chartTimeLabel(markerTime as UTCTimestamp, timezone, false)}</text>
-    </g>;
-  }
-
-  function renderWalkForwardBoundaryMarker(canvas: ChartCanvas) {
-    const boundary = walkForwardResult?.symbol === symbol ? walkForwardResult.split_time : walkForwardBoundaryTime(candleBarsRef.current);
-    if (boundary == null) return null;
-    const chart = canvas === 'entry' ? chartRef.current : overviewChartRef.current;
-    const bars = canvas === 'entry' ? candleBarsRef.current : overviewBarsRef.current;
-    const width = canvas === 'entry' ? stageSize.width : overviewSize.width;
-    const height = canvas === 'entry' ? stageSize.height : overviewSize.height;
-    if (!chart || !bars.length) return null;
-    const markerTime = nearestReplayBarTime(boundary, bars);
-    if (markerTime == null) return null;
-    const x = chart.timeScale().timeToCoordinate(markerTime as UTCTimestamp);
-    if (x == null) return null;
-    const badgeWidth = Math.min(300, Math.max(190, width - 12));
-    const labelX = Math.min(Math.max(6, x - badgeWidth / 2), Math.max(6, width - badgeWidth - 6));
-    return <g className="walk-forward-boundary-marker" aria-label="Corte fijo del análisis snapshot y forward">
-      <rect x={x} y="0" width={Math.max(0, width - x)} height={height} className="walk-forward-split-zone" pointerEvents="none" />
-      <line x1={x} y1="0" x2={x} y2={height} className="walk-forward-split-line" pointerEvents="none" />
-      <path d={`M ${x - 9} 12 L ${x + 9} 12 L ${x} 29 Z`} className="walk-forward-split-handle" pointerEvents="none" />
-      <rect x={labelX} y="139" width={badgeWidth} height="55" rx="5" className="walk-forward-split-label-bg" pointerEvents="none" />
-      <text x={labelX + badgeWidth / 2} y="157" textAnchor="middle" className="walk-forward-split-label-main" pointerEvents="none">CORTE SNAPSHOT / FORWARD</text>
-      <text x={labelX + badgeWidth / 2} y="174" textAnchor="middle" className="walk-forward-split-label-detail" pointerEvents="none">← SNAPSHOT {WALK_FORWARD_SNAPSHOT_HOURS}H · FORWARD {WALK_FORWARD_EVALUATION_HOURS}H →</text>
-      <text x={labelX + badgeWidth / 2} y="188" textAnchor="middle" className="walk-forward-split-label-detail" pointerEvents="none">{chartTimeLabel(markerTime as UTCTimestamp, timezone, false)}</text>
-    </g>;
-  }
-
   function renderPriceIndicators(canvas: ChartCanvas) {
     void viewportRevision;
     const chart = canvas === 'entry' ? chartRef.current : overviewChartRef.current;
@@ -3321,7 +3242,7 @@ function Workspace() {
   }
 
   function startDrawing(event: PointerEvent<HTMLElement>, canvas: ChartCanvas = 'entry') {
-    if ((event.target as HTMLElement).closest('.replay-start-marker, .price-line-hit-target, .price-line-hit-stop')) return;
+    if ((event.target as HTMLElement).closest('.price-line-hit-target, .price-line-hit-stop')) return;
     if ((event.target as HTMLElement).closest('button')) return;
     setDrawingCanvas(canvas);
     const point = pointFromEvent(event);
@@ -3391,15 +3312,6 @@ function Workspace() {
   }
 
   function updateDrawing(event: PointerEvent<HTMLElement>) {
-    if (replayStartDragRef.current) {
-      const canvas = replayStartDragRef.current.canvas;
-      const point = pointFromEvent(event);
-      const { chart } = chartContext(canvas);
-      const chartTime = chart?.timeScale().coordinateToTime(point.x);
-      const nearest = chartTime == null ? null : nearestReplayBarTime(Number(chartTime));
-      if (nearest != null) setReplayStartTime(nearest);
-      return;
-    }
     if (lassoStart) {
       setLassoEnd(pointFromEvent(event));
       return;
@@ -3483,11 +3395,6 @@ function Workspace() {
   }
 
   function finishDrawing(event: PointerEvent<HTMLElement>) {
-    if (replayStartDragRef.current) {
-      replayStartDragRef.current = null;
-      if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
-      return;
-    }
     if (lassoStart) {
       const end = pointFromEvent(event);
       const left = Math.min(lassoStart.x, end.x);
@@ -4399,9 +4306,9 @@ function Workspace() {
   });
   const trackerLayerDrawings = [...backtestVisualDrawings, ...manualTrackerDrawings];
   const renderOhlcOverlay = (hover: OhlcHover | null) => hover ? <div className="chart-ohlc-overlay" aria-label="Datos OHLC de la vela seleccionada"><span className="chart-ohlc-time">{chartTimeLabel(hover.time, timezone, true)}</span><span>O <b>{formatPaperPrice(hover.open)}</b></span><span>H <b className="chart-ohlc-high">{formatPaperPrice(hover.high)}</b></span><span>L <b className="chart-ohlc-low">{formatPaperPrice(hover.low)}</b></span><span>C <b>{formatPaperPrice(hover.close)}</b></span></div> : null;
-  const chartStageView = <div ref={chartStage} className={`chart-stage ${tool ? 'drawing-mode' : ''}`} onPointerDownCapture={startDrawing} onPointerMoveCapture={updateDrawing} onPointerUpCapture={event => finishDrawingAndCapture(event, 'entry')} onPointerCancelCapture={() => { replayStartDragRef.current = null; setDrawingStart(null); setDrawingEnd(null); setMoveStart(null); panStartRef.current = null; setResizeStart(null); setLassoStart(null); setLassoEnd(null); }}><div className="chart-viewport-snapshot" aria-label="Snapshot del viewport de entrada">X {entryViewportSnapshot.bars} · Futuro {entryViewportSnapshot.futureBars} · Y− {entryViewportSnapshot.yBelow}% · Y+ {entryViewportSnapshot.yAbove}%</div>
+  const chartStageView = <div ref={chartStage} className={`chart-stage ${tool ? 'drawing-mode' : ''}`} onPointerDownCapture={startDrawing} onPointerMoveCapture={updateDrawing} onPointerUpCapture={event => finishDrawingAndCapture(event, 'entry')} onPointerCancelCapture={() => { setDrawingStart(null); setDrawingEnd(null); setMoveStart(null); panStartRef.current = null; setResizeStart(null); setLassoStart(null); setLassoEnd(null); }}><div className="chart-viewport-snapshot" aria-label="Snapshot del viewport de entrada">X {entryViewportSnapshot.bars} · Futuro {entryViewportSnapshot.futureBars} · Y− {entryViewportSnapshot.yBelow}% · Y+ {entryViewportSnapshot.yAbove}%</div>
     {pendingBinanceTp && <div className="binance-tp-confirm" role="status"><span>Nuevo TP {pendingBinanceTp.symbol}: {formatPaperPrice(pendingBinanceTp.price)}</span><button type="button" onClick={() => void confirmBinanceTakeProfit()}>Confirmar TP</button><button type="button" onClick={() => { pendingBinanceTpRef.current = null; setPendingBinanceTp(null); }} aria-label="Cancelar cambio de TP">Cancelar</button></div>}{renderOhlcOverlay(entryOhlcHover)}
-    <div ref={chartContainer} className="candlestick-chart" /><svg className="drawing-overlay" viewBox={`0 0 ${stageSize.width} ${stageSize.height}`} preserveAspectRatio="none" aria-hidden="true">{renderSessionIndicator()}{renderWalkForwardBoundaryMarker('entry')}{renderReplayStartMarker('entry')}{renderInterestMarkers()}{renderPriceLineHitAreas('entry')}{[...drawings, ...productionDrawings, ...trackerLayerDrawings].map((drawing, index) => (!drawing.paper || !drawing.closed || drawing.id === visibleClosedId) && (!drawing.paper || !drawing.symbol || drawing.symbol === symbol) && (drawing.chart !== 'context' || drawing.paper) ? renderDrawing(drawing, index, 'entry') : null)}{tool && tool !== 'pan' && drawingStart && drawingEnd && drawingCanvas === 'entry' && renderDrawing({ type: tool, chart: 'entry', start: drawingStart, end: drawingEnd }, 'preview', 'entry')}{lassoStart && lassoEnd && drawingCanvas === 'entry' && <rect x={Math.min(lassoStart.x, lassoEnd.x)} y={Math.min(lassoStart.y, lassoEnd.y)} width={Math.abs(lassoStart.x - lassoEnd.x)} height={Math.abs(lassoStart.y - lassoEnd.y)} className="selection-lasso" />}</svg><div className="chart-bottom-controls"><span className="timezone-icon" aria-hidden="true">◷</span><select className="timezone-select" value={timezone} onChange={event => setTimezone(event.target.value)} aria-label="Zona horaria">{TIMEZONES.map(([label, value]) => <option key={value} value={value}>{label}</option>)}</select></div>
+    <div ref={chartContainer} className="candlestick-chart" /><svg className="drawing-overlay" viewBox={`0 0 ${stageSize.width} ${stageSize.height}`} preserveAspectRatio="none" aria-hidden="true">{renderSessionIndicator()}{renderInterestMarkers()}{renderPriceLineHitAreas('entry')}{[...drawings, ...productionDrawings, ...trackerLayerDrawings].map((drawing, index) => (!drawing.paper || !drawing.closed || drawing.id === visibleClosedId) && (!drawing.paper || !drawing.symbol || drawing.symbol === symbol) && (drawing.chart !== 'context' || drawing.paper) ? renderDrawing(drawing, index, 'entry') : null)}{tool && tool !== 'pan' && drawingStart && drawingEnd && drawingCanvas === 'entry' && renderDrawing({ type: tool, chart: 'entry', start: drawingStart, end: drawingEnd }, 'preview', 'entry')}{lassoStart && lassoEnd && drawingCanvas === 'entry' && <rect x={Math.min(lassoStart.x, lassoEnd.x)} y={Math.min(lassoStart.y, lassoEnd.y)} width={Math.abs(lassoStart.x - lassoEnd.x)} height={Math.abs(lassoStart.y - lassoEnd.y)} className="selection-lasso" />}</svg><div className="chart-bottom-controls"><span className="timezone-icon" aria-hidden="true">◷</span><select className="timezone-select" value={timezone} onChange={event => setTimezone(event.target.value)} aria-label="Zona horaria">{TIMEZONES.map(([label, value]) => <option key={value} value={value}>{label}</option>)}</select></div>
     <div className="floating-order-buttons" aria-label="Abrir operación simulada"><button className="open-long-button" disabled={!paperReady || (broker === 'binance' && scannerTargetPercent == null)} onClick={() => void openSimulatedPosition('long')}>▲ <span>Abrir Long</span><small>{binancePreview.find(preview => preview.side === 'LONG') ? `SL -${binanceStopPercent.toFixed(2)}% · TP +${binancePreview.find(preview => preview.side === 'LONG')!.targetPercent.toFixed(2)}% · N ${binancePreview.find(preview => preview.side === 'LONG')!.notional.toFixed(2)} · M ${binancePreview.find(preview => preview.side === 'LONG')!.margin.toFixed(4)} · ${binancePreview.find(preview => preview.side === 'LONG')!.leverage}x` : labRecommendations ? `${labRecommendations.long.label} · R:R ${labRecommendations.long.rr.toFixed(2)}:1` : 'Calculando recomendación…'}</small></button><button className="open-short-button" disabled={!paperReady || (broker === 'binance' && scannerTargetPercent == null)} onClick={() => void openSimulatedPosition('short')}>▼ <span>Abrir Short</span><small>{binancePreview.find(preview => preview.side === 'SHORT') ? `SL -${binanceStopPercent.toFixed(2)}% · TP +${binancePreview.find(preview => preview.side === 'SHORT')!.targetPercent.toFixed(2)}% · N ${binancePreview.find(preview => preview.side === 'SHORT')!.notional.toFixed(2)} · M ${binancePreview.find(preview => preview.side === 'SHORT')!.margin.toFixed(4)} · ${binancePreview.find(preview => preview.side === 'SHORT')!.leverage}x` : labRecommendations ? `${labRecommendations.short.label} · R:R ${labRecommendations.short.rr.toFixed(2)}:1` : 'Calculando recomendación…'}</small></button></div>
   </div>;
 
@@ -4547,11 +4454,11 @@ function Workspace() {
     : 'broker-not-ready';
   const replayEvaluationEnd = replayState.active ? Math.min(replayState.total - 1, replayState.start + WALK_FORWARD_EVALUATION_HOURS * 60) : -1;
   const replayControls = <div className={`replay-controls ${replayState.active ? 'replay-active' : ''}`} aria-label="Replay vela a vela">
-    <button type="button" onClick={() => replayState.active ? setReplaySnapshot({ ...replayState, running: !replayState.running }) : startReplayFromMarker()} disabled={replayState.active ? replayState.cursor >= replayEvaluationEnd : !symbolHistoryReady || !candleBarsRef.current.length} title={replayState.active ? 'Reproducir o pausar el replay' : 'Iniciar replay desde el marcador independiente'}>{replayState.running ? 'Ⅱ' : '▶'}</button>
+    <button type="button" onClick={() => replayState.active ? setReplaySnapshot({ ...replayState, running: !replayState.running }) : startReplayFromBoundary()} disabled={replayState.active ? replayState.cursor >= replayEvaluationEnd : !symbolHistoryReady || !candleBarsRef.current.length} title={replayState.active ? 'Reproducir o pausar el replay' : 'Iniciar replay desde el corte temporal de la ventana'}>{replayState.running ? 'Ⅱ' : '▶'}</button>
     <button type="button" onClick={() => advanceReplay(-1)} disabled={!replayState.active || replayState.cursor <= replayState.start} title="Vela anterior">‹</button>
     <button type="button" onClick={() => advanceReplay(1)} disabled={!replayState.active || replayState.cursor >= replayEvaluationEnd} title="Siguiente vela de evaluación">›</button>
     <button type="button" onClick={stopReplay} disabled={!replayState.active} title="Salir de la validación">×</button>
-    <small>{replayState.active ? `REPLAY ${replayState.cursor - replayState.start}/${replayEvaluationEnd - replayState.start} · 1M` : replayStartTime != null ? 'REPLAY · MARCADOR INDEPENDIENTE' : 'ARRASTRA MARCADOR · REPLAY'}</small>
+    <small>{replayState.active ? `REPLAY ${replayState.cursor - replayState.start}/${replayEvaluationEnd - replayState.start} · 1M` : replayStartTime != null ? 'REPLAY · DESDE INICIO DE VENTANA' : 'REPLAY · LISTO'}</small>
   </div>;
   const desktopHeader = <div className="symbol-bar"><select className={`broker-select ${broker === 'binance' ? binanceStatusClass : ''}`} value={broker} onChange={event => { const next = event.target.value as 'binance' | 'ctrader'; setBroker(next); setSymbol(next === 'ctrader' ? 'AUDUSD' : 'BTCUSDT'); }} aria-label="Broker"><option value="binance">Binance</option><option value="ctrader">cTrader</option></select><select className="symbol-select" value={symbol} onChange={event => setSymbol(event.target.value)} aria-label="Símbolo">
     {selectableSymbols.map(option => <option key={option}>{option}</option>)}
@@ -4793,7 +4700,7 @@ function Workspace() {
   </section> : null;
   const trackerFactorTable = showTracker && trackerRawSeries.length ? <section className="tracker-factor-table-panel" aria-label="Valores numéricos de volatilidad y TP"><div className="tracker-equity-title"><span>Valores numéricos · WIN</span><small>orden cronológico</small></div><div className="tracker-factor-table-scroll"><table className="tracker-factor-table"><thead><tr><th>#</th><th>Cierre</th><th>TP ROE %</th><th>LEV.</th><th>TP PRECIO %</th><th>N AP %</th><th>N CIERRE %</th><th>TP / N AP</th><th>N CIERRE / N AP</th></tr></thead><tbody>{trackerRawSeries.map((operation, index) => { const tpFactor = operation.bodyAveragePercentAtOpen > 0 ? operation.finalTargetPercent / operation.bodyAveragePercentAtOpen : 0; const volatilityRatio = operation.bodyAveragePercentAtOpen > 0 ? operation.bodyAveragePercentAtClose / operation.bodyAveragePercentAtOpen : 0; return <tr key={`factor-row-${operation.id}`}><td>{index + 1}</td><td>{new Date(Number(operation.end.time) * 1000).toLocaleString('es-MX', { timeZone: timezone, dateStyle: 'short', timeStyle: 'short' })}</td><td>{operation.finalTargetRoePercent.toFixed(3)}%</td><td>{operation.leverage.toFixed(1)}x</td><td>{operation.finalTargetPercent.toFixed(3)}%</td><td>{operation.bodyAveragePercentAtOpen.toFixed(3)}%</td><td>{operation.bodyAveragePercentAtClose.toFixed(3)}%</td><td>{tpFactor.toFixed(2)}x</td><td>{volatilityRatio.toFixed(2)}x</td></tr>; })}</tbody></table></div></section> : null;
   const trackerEquityPanel = showTracker ? <section className="tracker-stats-panel" aria-label="Estadísticas del indicador Tracker"><div className="tracker-stats-head"><div><span className="positions-kicker">TRACKER · {symbol} · 1M · 8H · SIMULACIÓN</span><div className="tracker-title-row"><h2>Estadísticas Tracker</h2></div><p>Últimas 8 horas · 480 velas cerradas de 1 minuto · balance inicial {paperInitialBalance.toFixed(2)} USDT</p><small className={`tracker-detail-status tracker-detail-${trackerDetailStatus}`} role="status" title={trackerDetailError || undefined}>{trackerDetailStatus === 'loading' ? 'Sincronizando análisis del scanner…' : trackerDetailStatus === 'error' ? `Error al sincronizar: ${trackerDetailError}` : trackerDetailStatus === 'ready' ? 'Análisis del scanner sincronizado' : ''}</small></div><div className="tracker-final-metrics"><div><small>Resultado final</small><strong className={trackerDisplayedPnl >= 0 ? 'tracker-equity-positive' : 'tracker-equity-negative'}>{trackerDisplayedPnl >= 0 ? '+' : ''}{trackerDisplayedPnl.toFixed(4)} USDT</strong></div><div><small>Balance máximo</small><strong>{trackerMaxBalance.toFixed(4)} USDT</strong></div><div><small>Balance mínimo</small><strong>{trackerMinBalance.toFixed(4)} USDT</strong></div><div className={trackerStepPercent == null ? '' : trackerStepPercent < 2 ? 'tracker-step-low' : trackerStepPercent > 4 ? 'tracker-step-high' : 'tracker-step-in-range'} title={"Suma de cambios absolutos entre cierres en las últimas " + trackerPeriod + " velas de 1 minuto. " + trackerStepStatus}><small>% Step · {trackerPeriod} × 1m</small><strong>{trackerStepPercent == null ? '—' : trackerStepPercent.toFixed(2) + '%'}</strong><small>{trackerStepStatus}</small></div></div></div>{workerLogPanel}<div className="tracker-stats-grid"><div><small>Total operaciones</small><strong>{trackerVirtualOperations.length}</strong></div><div><small>Wins</small><strong className="tracker-stat-win">{trackerWins}</strong></div><div><small>Losses</small><strong className="tracker-stat-loss">{trackerLosses}</strong></div><div><small>Win rate</small><strong>{trackerSettled ? `${trackerWinRate.toFixed(1)}%` : '—'}</strong></div><div><small>Avg win</small><strong className={trackerAverageWinValue >= 0 ? 'tracker-stat-win' : 'tracker-stat-loss'}>{trackerWins ? trackerAverageWin.toFixed(4) + " USDT" : "—"}</strong></div><div><small>Avg loss</small><strong className="tracker-stat-loss">{trackerLosses ? trackerAverageLoss.toFixed(4) + " USDT" : "—"}</strong></div><div><small>Equity final</small><strong>{trackerDisplayedEquity.toFixed(4)} USDT</strong></div></div><div className="tracker-equity-wrap"><div className="tracker-equity-title"><span>Curva de equity simulada</span><small>{trackerClosedOperations.length} operaciones liquidadas</small></div>{trackerClosedOperations.length ? <svg className="tracker-equity-chart" viewBox={`0 0 ${trackerChartWidth} ${trackerChartHeight}`} role="img" aria-label="Curva de equity simulada"><line x1={trackerChartPadding.left} y1={trackerChartPadding.top + (1 - (paperInitialBalance - trackerChartMin) / Math.max(.000001, trackerChartMax - trackerChartMin)) * (trackerChartHeight - trackerChartPadding.top - trackerChartPadding.bottom)} x2={trackerChartWidth - trackerChartPadding.right} y2={trackerChartPadding.top + (1 - (paperInitialBalance - trackerChartMin) / Math.max(.000001, trackerChartMax - trackerChartMin)) * (trackerChartHeight - trackerChartPadding.top - trackerChartPadding.bottom)} className="tracker-equity-baseline" /><polyline points={trackerEquityPointsSvg} className={trackerEquity >= paperInitialBalance ? 'tracker-equity-line tracker-equity-line-positive tracker-equity-line-positive' : 'tracker-equity-line tracker-equity-line-negative'} />{trackerEquityCoordinates.map((point, index) => index === 0 ? <circle key="tracker-equity-start" cx={point.x} cy={point.y} r="5" className="tracker-equity-dot" /> : <circle key={`tracker-equity-${point.time}-${index}`} cx={point.x} cy={point.y} r="7" className="tracker-equity-hover-point" onPointerEnter={() => setTrackerEquityHover({ x: point.x, y: point.y, equity: point.equity, time: point.time, side: point.side, status: point.status })} onPointerLeave={() => setTrackerEquityHover(null)}><title>{new Date(point.time * 1000).toLocaleString('es-MX', { timeZone: timezone })} · Balance {point.equity.toFixed(4)} USDT</title></circle>)}{trackerEquityHover && <g className="tracker-equity-tooltip" pointerEvents="none"><rect x={Math.max(6, Math.min(trackerChartWidth - 196, trackerEquityHover.x + 10))} y={Math.max(6, trackerEquityHover.y - 62)} width="190" height="52" rx="5" /><text x={Math.max(16, Math.min(trackerChartWidth - 186, trackerEquityHover.x + 20))} y={Math.max(21, trackerEquityHover.y - 43)}>Cierre {new Date(trackerEquityHover.time * 1000).toLocaleString('es-MX', { timeZone: timezone, dateStyle: 'short', timeStyle: 'short' })}</text><text x={Math.max(16, Math.min(trackerChartWidth - 186, trackerEquityHover.x + 20))} y={Math.max(38, trackerEquityHover.y - 26)}>Balance {trackerEquityHover.equity.toFixed(4)} USDT · {trackerEquityHover.side}</text><text x={Math.max(55, trackerEquityHover.y - 9)} y={Math.max(55, trackerEquityHover.y - 9)}>{trackerEquityHover.status}</text></g>}</svg> : <p className="tracker-equity-empty">Aún no hay operaciones cerradas para graficar.</p>}<div ref={trackerSummaryHost} /></div></section> : null;
-  const chartsRow = <div className="charts-row"><section ref={overviewStage} className={`secondary-chart ${tool ? 'drawing-mode' : ''}`} onPointerDownCapture={event => startDrawing(event, 'context')} onPointerMoveCapture={updateDrawing} onPointerUpCapture={event => finishDrawingAndCapture(event, 'context')} onPointerCancelCapture={() => { replayStartDragRef.current = null; setDrawingStart(null); setDrawingEnd(null); setMoveStart(null); panStartRef.current = null; setResizeStart(null); setLassoStart(null); setLassoEnd(null); }}><div className="chart-panel-label">{interval.toUpperCase()} · CONTEXTO · {symbol}</div><div className="chart-viewport-snapshot" aria-label="Snapshot del viewport de contexto">X {overviewViewportSnapshot.bars} · Futuro {overviewViewportSnapshot.futureBars} · Y− {overviewViewportSnapshot.yBelow}% · Y+ {overviewViewportSnapshot.yAbove}%</div><div ref={overviewChartContainer} className="overview-chart" />{renderOhlcOverlay(overviewOhlcHover)}<svg className="overview-overlay" viewBox={`0 0 ${overviewSize.width} ${overviewSize.height}`} preserveAspectRatio="none" aria-hidden="true">{renderOverviewSessions()}{renderWalkForwardBoundaryMarker('context')}{renderReplayStartMarker('context')}{renderOverviewInterestMarkers()}{renderPriceLineHitAreas('context')}{[...drawings, ...productionDrawings, ...trackerLayerDrawings].map((drawing, index) => (!drawing.paper || !drawing.closed || drawing.id === visibleClosedId) && (!drawing.paper || !drawing.symbol || drawing.symbol === symbol) && (drawing.chart === 'context' || drawing.paper) ? renderDrawing(drawing, index, 'context') : null)}{tool && tool !== 'pan' && drawingStart && drawingEnd && drawingCanvas === 'context' && renderDrawing({ type: tool, chart: 'context', start: drawingStart, end: drawingEnd }, 'preview', 'context')}{lassoStart && lassoEnd && drawingCanvas === 'context' && <rect x={Math.min(lassoStart.x, lassoEnd.x)} y={Math.min(lassoStart.y, lassoEnd.y)} width={Math.abs(lassoStart.x - lassoEnd.x)} height={Math.abs(lassoStart.y - lassoEnd.y)} className="selection-lasso" />}</svg></section><section className="primary-chart"><div className="chart-panel-label">{entryInterval.toUpperCase()} · AJUSTE DE ENTRADA</div>{chartStageView}</section></div>;
+  const chartsRow = <div className="charts-row"><section ref={overviewStage} className={`secondary-chart ${tool ? 'drawing-mode' : ''}`} onPointerDownCapture={event => startDrawing(event, 'context')} onPointerMoveCapture={updateDrawing} onPointerUpCapture={event => finishDrawingAndCapture(event, 'context')} onPointerCancelCapture={() => { setDrawingStart(null); setDrawingEnd(null); setMoveStart(null); panStartRef.current = null; setResizeStart(null); setLassoStart(null); setLassoEnd(null); }}><div className="chart-panel-label">{interval.toUpperCase()} · CONTEXTO · {symbol}</div><div className="chart-viewport-snapshot" aria-label="Snapshot del viewport de contexto">X {overviewViewportSnapshot.bars} · Futuro {overviewViewportSnapshot.futureBars} · Y− {overviewViewportSnapshot.yBelow}% · Y+ {overviewViewportSnapshot.yAbove}%</div><div ref={overviewChartContainer} className="overview-chart" />{renderOhlcOverlay(overviewOhlcHover)}<svg className="overview-overlay" viewBox={`0 0 ${overviewSize.width} ${overviewSize.height}`} preserveAspectRatio="none" aria-hidden="true">{renderOverviewSessions()}{renderOverviewInterestMarkers()}{renderPriceLineHitAreas('context')}{[...drawings, ...productionDrawings, ...trackerLayerDrawings].map((drawing, index) => (!drawing.paper || !drawing.closed || drawing.id === visibleClosedId) && (!drawing.paper || !drawing.symbol || drawing.symbol === symbol) && (drawing.chart === 'context' || drawing.paper) ? renderDrawing(drawing, index, 'context') : null)}{tool && tool !== 'pan' && drawingStart && drawingEnd && drawingCanvas === 'context' && renderDrawing({ type: tool, chart: 'context', start: drawingStart, end: drawingEnd }, 'preview', 'context')}{lassoStart && lassoEnd && drawingCanvas === 'context' && <rect x={Math.min(lassoStart.x, lassoEnd.x)} y={Math.min(lassoStart.y, lassoEnd.y)} width={Math.abs(lassoStart.x - lassoEnd.x)} height={Math.abs(lassoStart.y - lassoEnd.y)} className="selection-lasso" />}</svg></section><section className="primary-chart"><div className="chart-panel-label">{entryInterval.toUpperCase()} · AJUSTE DE ENTRADA</div>{chartStageView}</section></div>;
 
   return mobilePwa ? <main className="trading-shell pwa-shell">
     <header className="pwa-mobile-header"><div><span className="pwa-brand">helloworld</span><span className="pwa-market">{broker.toUpperCase()} · {entryInterval.toUpperCase()} ENTRADA · {interval.toUpperCase()} CONTEXTO</span></div><select className="pwa-symbol-select" value={broker} onChange={event => { const next = event.target.value as 'binance' | 'ctrader'; setBroker(next); setSymbol(next === 'ctrader' ? 'AUDUSD' : 'BTCUSDT'); }} aria-label="Broker"><option value="binance">Binance</option><option value="ctrader">cTrader</option></select><select className="pwa-symbol-select" value={symbol} onChange={event => setSymbol(event.target.value)} aria-label="Símbolo">{selectableSymbols.map(option => <option key={option}>{option}</option>)}</select>{profileButton}</header>
