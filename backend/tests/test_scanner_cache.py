@@ -133,6 +133,33 @@ def test_refresh_bars_skips_symbols_with_no_new_closed_bar() -> None:
     asyncio.run(scenario())
 
 
+def test_refresh_bars_backfills_when_requested_window_grows() -> None:
+    async def scenario() -> None:
+        cache = ScannerCache(refresh_seconds=60)
+        calls = 0
+
+        async def loader(existing):
+            nonlocal calls
+            calls += 1
+            if not existing:
+                return [{"time": 900, "close": 9.0}]
+            return [{"time": timestamp, "close": float(timestamp)} for timestamp in range(600, 961, 60)]
+
+        await cache.refresh_bars("BTCUSDT", loader)
+        bars, error, changed = await cache.refresh_bars(
+            "BTCUSDT", loader,
+            refresh_if=lambda current: not current or current[0]["time"] > 600,
+        )
+
+        assert calls == 2
+        assert error is None
+        assert changed is True
+        assert bars[0]["time"] == 600
+        assert bars[-1]["time"] == 960
+
+    asyncio.run(scenario())
+
+
 def test_bar_cache_evicts_least_recently_used_symbols() -> None:
     async def scenario() -> None:
         cache = ScannerCache(max_symbols=2, refresh_seconds=0)
@@ -266,8 +293,8 @@ def test_scanner_endpoint_fetches_only_new_closed_candles(monkeypatch) -> None:
             if len(self.calls) == 1:
                 latest = (now_ms // 60_000 - 2) * 60_000
                 rows = [
-                    [latest - (19 - index) * 60_000, "100", "102", "99", str(100 + index / 10), "0", latest - (19 - index) * 60_000 + 59_999]
-                    for index in range(20)
+                    [latest - (119 - index) * 60_000, "100", "102", "99", str(100 + index / 10), "0", latest - (119 - index) * 60_000 + 59_999]
+                    for index in range(120)
                 ]
                 # Include the currently forming candle; the scanner must ignore it.
                 rows.append([latest + 120_000, "102", "103", "101", "102", "0", latest + 179_999])
@@ -280,7 +307,7 @@ def test_scanner_endpoint_fetches_only_new_closed_candles(monkeypatch) -> None:
             return Response(self.second_rows)
 
     now_seconds = [int(time.time() // 60 * 60) + 5]
-    expected_window_start = ((now_seconds[0] - SCANNER_ANALYSIS_WINDOW_SECONDS) // 60 * 60) * 1000
+    expected_window_start = ((now_seconds[0] - 2 * 60 * 60) // 60 * 60) * 1000
     monkeypatch.setattr(main.time, "time", lambda: now_seconds[0])
     monkeypatch.setattr(main, "_scanner_cache", ScannerCache(max_bars=SCANNER_ANALYSIS_MAX_BARS, refresh_seconds=0))
     monkeypatch.setattr(main.httpx, "AsyncClient", Client)
@@ -289,16 +316,16 @@ def test_scanner_endpoint_fetches_only_new_closed_candles(monkeypatch) -> None:
     main._scanner_analysis_states.clear()
 
     async def scenario():
-        first = await main.binance_scanner_analysis(symbols="BTCUSDT", tracker_period=2, limit=100, movement_averages="0.5", identity=None)
-        second = await main.binance_scanner_analysis(symbols="BTCUSDT", tracker_period=2, limit=100, movement_averages="0.5", identity=None)
+        first = await main.binance_scanner_analysis(symbols="BTCUSDT", tracker_period=2, hours=1, limit=100, movement_averages="0.5", identity=None)
+        second = await main.binance_scanner_analysis(symbols="BTCUSDT", tracker_period=2, hours=1, limit=100, movement_averages="0.5", identity=None)
         now_seconds[0] += 60
-        third = await main.binance_scanner_analysis(symbols="BTCUSDT", tracker_period=2, limit=100, movement_averages="0.5", identity=None)
-        fourth = await main.binance_scanner_analysis(symbols="BTCUSDT", tracker_period=2, limit=100, movement_averages="0.5", identity=None)
+        third = await main.binance_scanner_analysis(symbols="BTCUSDT", tracker_period=2, hours=1, limit=100, movement_averages="0.5", identity=None)
+        fourth = await main.binance_scanner_analysis(symbols="BTCUSDT", tracker_period=2, hours=1, limit=100, movement_averages="0.5", identity=None)
         return first, second, third, fourth
 
     first, second, third, fourth = asyncio.run(scenario())
     assert len(Client.calls) == 4
-    assert Client.calls[0]["limit"] == SCANNER_ANALYSIS_MAX_BARS
+    assert Client.calls[0]["limit"] == 120
     assert Client.calls[0]["startTime"] == expected_window_start
     assert Client.calls[1]["startTime"] == int(first["symbols"][0]["last_bar_time"]) * 1000 - 60_000
     assert first["symbols"][0]["status"] == "VALID"
@@ -311,18 +338,18 @@ def test_scanner_endpoint_fetches_only_new_closed_candles(monkeypatch) -> None:
     assert "error" not in fourth["symbols"][0]
 
     detail = asyncio.run(main.binance_scanner_analysis(
-        symbols="BTCUSDT", tracker_period=2, limit=100, movement_averages="0.5",
+        symbols="BTCUSDT", tracker_period=2, hours=1, limit=100, movement_averages="0.5",
         leverage=10, include_operations=True, target_percent=2.75, identity=None,
     ))
     assert detail["config"]["leverage"] == 10
-    assert detail["window_seconds"] == 16 * 60 * 60
+    assert detail["window_seconds"] == 2 * 60 * 60
     assert detail["symbols"][0]["operations"] == len(detail["symbols"][0]["operation_details"])
     assert detail["symbols"][0]["tp_optimal_percent"] == 2.75
     detail_row = detail["symbols"][0]
     assert abs(sum(operation["pnl"] for operation in detail_row["operation_details"]) - detail_row["final_result_usdt"]) < 1e-8
 
     summary = asyncio.run(main.binance_scanner_analysis(
-        symbols="BTCUSDT", tracker_period=2, limit=100, movement_averages="0.5",
+        symbols="BTCUSDT", tracker_period=2, hours=1, limit=100, movement_averages="0.5",
         leverage=10, include_operations=False, target_percent=2.75, identity=None,
     ))["symbols"][0]
     assert summary["tp_optimal_percent"] == detail_row["tp_optimal_percent"]
@@ -382,3 +409,58 @@ def test_scanner_cold_loads_snapshot_and_forward_window_in_one_page(monkeypatch)
     assert payload["symbols"][0]["snapshot_final_result_usdt"] == 3.5
     assert payload["symbols"][0]["forward_final_result_usdt"] == 1.25
     assert payload["window_seconds"] == SCANNER_ANALYSIS_WINDOW_SECONDS
+
+
+def test_scanner_window_is_selectable_and_cache_backfills_when_hours_increase(monkeypatch) -> None:
+    now_seconds = int(time.time() // 60 * 60) + 5
+    calls = []
+
+    class Response:
+        def __init__(self, rows):
+            self.rows = rows
+
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return self.rows
+
+    class Client:
+        def __init__(self, timeout):
+            assert timeout == 15
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return None
+
+        async def get(self, _url, params):
+            calls.append(dict(params))
+            start_ms = int(params["startTime"])
+            count = int(params["limit"])
+            rows = [
+                [start_ms + index * 60_000, "100", "101", "99", "100", "0", start_ms + index * 60_000 + 59_999]
+                for index in range(count)
+            ]
+            return Response(rows)
+
+    monkeypatch.setattr(main.time, "time", lambda: now_seconds)
+    monkeypatch.setattr(main, "_scanner_cache", ScannerCache(max_bars=SCANNER_ANALYSIS_MAX_BARS, refresh_seconds=60))
+    monkeypatch.setattr(main.httpx, "AsyncClient", Client)
+    monkeypatch.setattr(main, "analyze_walk_forward", _fake_walk_forward)
+
+    async def scenario():
+        short = await main.binance_scanner_analysis(symbols="BTCUSDT", hours=1, movement_averages="", identity=None)
+        wide = await main.binance_scanner_analysis(symbols="BTCUSDT", hours=2, movement_averages="", identity=None)
+        return short, wide
+
+    short, wide = asyncio.run(scenario())
+    assert len(calls) == 2
+    assert calls[0]["limit"] == 120
+    assert calls[1]["limit"] == 240
+    assert calls[1]["startTime"] == ((now_seconds - 4 * 60 * 60) // 60 * 60) * 1000
+    assert short["snapshot_hours"] == short["evaluation_hours"] == 1
+    assert short["window_seconds"] == 2 * 60 * 60
+    assert wide["snapshot_hours"] == wide["evaluation_hours"] == 2
+    assert wide["window_seconds"] == 4 * 60 * 60
