@@ -19,7 +19,7 @@ def format_scanner_message(rows: list[dict[str, object]], *, updated_at: object 
     except (TypeError, ValueError, OverflowError, OSError):
         timestamp = "hora desconocida"
     freshness_label = "ACTUAL" if freshness == "FRESH" else "DESACTUALIZADO" if freshness == "STALE" else freshness
-    lines = [f"📊 Scan web · 1m/8h · {timestamp} · {freshness_label}"]
+    lines = [f"📊 Scan web · snapshot/forward 8h/8h · {timestamp} · {freshness_label}"]
     if not rows:
         lines.append("No hay resultados disponibles en este ciclo.")
     ranked_rows = sorted(
@@ -31,6 +31,8 @@ def format_scanner_message(rows: list[dict[str, object]], *, updated_at: object 
         symbol = str(row.get("symbol", "?"))
         state = str(row.get("status", "?"))
         result = row.get("final_result_usdt")
+        snapshot_result = row.get("snapshot_final_result_usdt")
+        forward_result = row.get("forward_final_result_usdt", result)
         active = row.get("active_parameters") if isinstance(row.get("active_parameters"), dict) else {}
         tp = active.get("target_percent", row.get("tp_optimal_percent"))
         stop = active.get("minroe_limit_percent", row.get("loss_limit_percent"))
@@ -45,6 +47,12 @@ def format_scanner_message(rows: list[dict[str, object]], *, updated_at: object 
             continue
         result_value = float(result)
         sign = "+" if result_value >= 0 else ""
+        if snapshot_result is not None:
+            snapshot_value = float(snapshot_result)
+            forward_value = float(forward_result if forward_result is not None else result_value)
+            result_label = f"SNAP {snapshot_value:+.2f} / FWD {forward_value:+.2f} USDT"
+        else:
+            result_label = f"{sign}{result_value:.2f} USDT"
         tp_label = "TP ACTIVO" if active.get("source") == "WORKER" else "TP"
         tp_text = f"{tp_label} {float(tp):.2f}%" if tp is not None else "TP —"
         if tracker_period is not None:
@@ -66,7 +74,7 @@ def format_scanner_message(rows: list[dict[str, object]], *, updated_at: object 
         duration = row.get("average_duration_minutes")
         duration_text = f" · ⌀ {float(duration):.1f}m" if duration is not None else ""
         lines.append(
-            f"{index}. {symbol} · {sign}{result_value:.2f} USDT · {tp_text}{risk_text} · "
+            f"{index}. {symbol} · {result_label} · {tp_text}{risk_text} · "
             f"Ops {ops} · W {wins}/L {losses}{win_rate_text}{duration_text} · {activity}"
         )
     return "\n".join(lines)[:3900]

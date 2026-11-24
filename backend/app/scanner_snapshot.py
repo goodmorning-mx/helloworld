@@ -18,6 +18,15 @@ scanner_latest_snapshots_table = table(
     column("started_at"), column("last_scanned_at"), column("updated_at"),
 )
 
+SCANNER_ANALYSIS_FIELDS = (
+    "tp_optimal_percent", "average_duration_minutes", "operations", "wins", "losses",
+    "win_rate", "equity_final", "final_result_usdt", "max_balance", "min_balance",
+    "loss_limit_percent", "last_bar_time", "bars", "snapshot", "forward",
+    "snapshot_final_result_usdt", "forward_final_result_usdt", "snapshot_operations",
+    "snapshot_wins", "snapshot_losses", "forward_operations", "forward_wins",
+    "forward_losses", "snapshot_hours", "evaluation_hours", "split_time", "parameters",
+)
+
 
 class ScannerSnapshotStore:
     """Replace one user-scoped snapshot atomically; never retain scan history."""
@@ -51,11 +60,7 @@ class ScannerSnapshotStore:
                 if isinstance(row, dict)
             }
             retained_symbols = []
-            analysis_fields = (
-                "tp_optimal_percent", "average_duration_minutes", "operations", "wins", "losses",
-                "win_rate", "equity_final", "final_result_usdt", "max_balance", "min_balance",
-                "loss_limit_percent", "last_bar_time", "bars",
-            )
+            analysis_fields = SCANNER_ANALYSIS_FIELDS
             for row in symbols:
                 symbol = str(row.get("symbol", "")).upper()
                 previous_row = previous_rows.get(symbol, {})
@@ -153,11 +158,7 @@ class ScannerSnapshotStore:
                     }
                     parameter_version = parameters.get("parameter_version")
                     if parameters.get("running", True) and item.get("analysis_parameter_version") != parameter_version:
-                        for key in (
-                            "tp_optimal_percent", "average_duration_minutes", "operations", "wins", "losses",
-                            "win_rate", "equity_final", "final_result_usdt", "max_balance", "min_balance",
-                            "loss_limit_percent", "last_bar_time", "bars",
-                        ):
+                        for key in SCANNER_ANALYSIS_FIELDS:
                             updated_item[key] = None
                         updated_item["status"] = "ANALYZING"
                         updated_item["error"] = "Recalculando resultado con los parámetros actuales del worker."
@@ -183,11 +184,7 @@ class ScannerSnapshotStore:
     ) -> bool:
         """Publish metrics calculated for the still-current active worker version."""
         normalized = symbol.upper()
-        analysis_fields = (
-            "tp_optimal_percent", "average_duration_minutes", "operations", "wins", "losses",
-            "win_rate", "equity_final", "final_result_usdt", "max_balance", "min_balance",
-            "loss_limit_percent", "last_bar_time", "bars",
-        )
+        analysis_fields = SCANNER_ANALYSIS_FIELDS
         with self._engine.begin() as connection:
             row = connection.execute(
                 select(scanner_latest_snapshots_table).where(
@@ -296,7 +293,7 @@ def public_snapshot(snapshot: dict[str, Any], *, now: datetime | None = None) ->
         "updated_at": updated_epoch,
         "age_seconds": age_seconds,
         "freshness": "FRESH" if age_seconds <= 180 else "STALE",
-        "window_seconds": 8 * 60 * 60,
+        "window_seconds": int((snapshot.get("config") or {}).get("window_seconds", 16 * 60 * 60)),
         "config": snapshot.get("config") or {},
         "universe": snapshot.get("universe") or [],
         "symbols": symbols,

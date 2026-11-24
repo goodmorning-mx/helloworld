@@ -107,6 +107,19 @@ def test_telegram_scan_displays_current_worker_parameters_from_shared_row():
     assert "R1.4% $4.20" in message
 
 
+def test_telegram_scan_reports_snapshot_and_forward_results_from_shared_snapshot():
+    message = format_scanner_message([{
+        "symbol": "BTCUSDT", "status": "VALID", "final_result_usdt": 4.25,
+        "snapshot_final_result_usdt": 8.5, "forward_final_result_usdt": 4.25,
+        "tp_optimal_percent": 2.0, "operations": 3, "wins": 2, "losses": 1,
+        "snapshot": {"final_result_usdt": 8.5},
+        "forward": {"final_result_usdt": 4.25},
+    }], updated_at=0)
+
+    assert "snapshot/forward 8h/8h" in message
+    assert "SNAP +8.50 / FWD +4.25 USDT" in message
+
+
 def test_status_contains_worker_runtime_metrics():
     workers = FakeWorkers()
     workers.workers = [{
