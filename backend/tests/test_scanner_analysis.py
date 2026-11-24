@@ -1,4 +1,4 @@
-from app.scanner_analysis import ScannerAnalysisConfig, _limited_operations, _simulate, activity_state, analyze_tracker, analyze_tracker_operations
+from app.scanner_analysis import ScannerAnalysisConfig, _limited_operations, _simulate, activity_state, analyze_tracker, analyze_tracker_operations, analyze_walk_forward
 from app.profiling import Profiling
 
 
@@ -116,3 +116,25 @@ def test_profiling_records_chronological_checkpoints() -> None:
     assert [mark["stage"] for mark in marks] == ["start", "end"]
     assert marks[0]["item"] == 1
     assert marks[0]["elapsed_ms"] <= marks[1]["elapsed_ms"]
+
+
+def test_walk_forward_freezes_snapshot_parameters_and_excludes_fit_operations() -> None:
+    bars = []
+    closes = [100.0, 100.0, 102.0, 101.9, 99.5, 99.6, 101.0, 100.9]
+    for index in range(240):
+        close = closes[index % len(closes)]
+        previous = closes[(index - 1) % len(closes)]
+        bars.append({"time": index * 60, "open": previous, "high": max(previous, close) * 1.001, "low": min(previous, close) * 0.999, "close": close})
+
+    result = analyze_walk_forward(
+        bars,
+        ScannerAnalysisConfig(tracker_period=2, min_tp_percent=.1, max_tp_percent=.1, tp_step_percent=.1),
+        snapshot_hours=1,
+    )
+
+    assert result["snapshot_hours"] == result["evaluation_hours"] == 1
+    assert result["snapshot"]["last_bar_time"] < result["split_time"]
+    assert result["forward"]["start_time"] == result["split_time"]
+    assert result["snapshot"]["tp_optimal_percent"] == result["forward"]["tp_optimal_percent"] == result["parameters"]["tp_optimal_percent"]
+    assert result["snapshot"]["loss_limit_percent"] == result["forward"]["loss_limit_percent"] == result["parameters"]["loss_limit_percent"]
+    assert all(operation["entry_time"] >= result["split_time"] for operation in result["forward"]["operation_details"])

@@ -45,7 +45,7 @@ from app.backtest_engine import MAX_BACKTEST_DAYS, fetch_binance_history, run_st
 from app.production_worker import ProductionWorkerConfigStore, ProductionWorkerManager
 from app.telegram_service import BackendEventBus, TelegramCommandService, TelegramSink, telegram_event_sink
 from app.telegram_control import TelegramControlService, format_scanner_message
-from app.scanner_analysis import ScannerAnalysisConfig, activity_state, analyze_tracker, analyze_tracker_operations
+from app.scanner_analysis import ScannerAnalysisConfig, activity_state, analyze_tracker, analyze_tracker_operations, analyze_walk_forward
 from app.scanner_cache import SCANNER_MAX_BARS, SCANNER_WINDOW_SECONDS, ScannerCache
 from app.scanner_snapshot import ScannerSnapshotStore, public_snapshot, worker_parameters_from_snapshot
 from app.profiling import Profiling
@@ -1353,6 +1353,56 @@ async def binance_candles(
             continue
     binance_market_gateway.put_bars(requested, interval, bars)
     return {"symbol": requested, "interval": interval, "bars": bars}
+
+
+@app.get("/market/binance/walk-forward-analysis")
+async def binance_walk_forward_analysis(
+    symbol: str = Query(..., pattern=r"^[A-Z0-9]{1,32}USDT$"),
+    hours: int = Query(8, ge=1, le=12, description="Snapshot y evaluación forward usan cada una esta cantidad de horas."),
+    tracker_period: int = Query(5, ge=1, le=50),
+    stop_percent: float = Query(0.2, gt=0, le=20),
+    initial_balance: float = Query(100, gt=0, le=1_000_000),
+    risk_percent: float = Query(1, gt=0, le=100),
+    leverage: float = Query(1, ge=1, le=125),
+    identity: AuthIdentity = Depends(identity_dependency(auth_service)),
+) -> dict[str, object]:
+    """Fit Tracker params on one closed-candle snapshot and report the next window separately."""
+    del identity
+    safe_symbol = symbol.upper()
+    requested_hours = max(1, min(int(hours), 12))
+    now_ms = int(time.time() * 1000)
+    params = {"symbol": safe_symbol, "interval": "1m", "limit": requested_hours * 120}
+    try:
+        async with httpx.AsyncClient(timeout=15) as client:
+            response = await client.get(f"{settings.binance_base_url.rstrip('/')}/fapi/v1/klines", params=params)
+            response.raise_for_status()
+            payload = response.json()
+    except (httpx.HTTPError, ValueError) as exc:
+        raise HTTPException(status_code=502, detail="No se pudieron cargar las velas para el análisis snapshot/forward.") from exc
+
+    bars: list[dict[str, float | int]] = []
+    for row in payload if isinstance(payload, list) else []:
+        if not isinstance(row, list) or len(row) < 7:
+            continue
+        try:
+            if int(row[6]) >= now_ms:
+                continue
+            bars.append({"time": int(float(row[0]) / 1000), "open": float(row[1]), "high": float(row[2]), "low": float(row[3]), "close": float(row[4])})
+        except (TypeError, ValueError):
+            continue
+    config = ScannerAnalysisConfig(
+        tracker_period=max(1, min(int(tracker_period), 50)),
+        stop_percent=max(0.01, min(abs(float(stop_percent)), 20)),
+        initial_balance=max(1.0, min(float(initial_balance), 1_000_000)),
+        risk_percent=max(0.01, min(float(risk_percent), 100)),
+        leverage=max(1.0, min(float(leverage), 125)),
+    )
+    profile = Profiling(f"walk_forward:{safe_symbol}")
+    try:
+        result = await asyncio.to_thread(analyze_walk_forward, bars, config, requested_hours, requested_hours, profile)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return {"symbol": safe_symbol, "status": "VALID", "updated_at": int(time.time()), **result, "profiling": profile.snapshot()}
 
 
 @app.get("/market/binance/scanner-analysis")
