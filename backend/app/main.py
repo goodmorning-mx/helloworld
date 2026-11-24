@@ -19,7 +19,7 @@ from fastapi.responses import StreamingResponse
 from fastapi.encoders import jsonable_encoder
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field, field_validator
-from typing import Literal
+from typing import Annotated, Literal
 from threading import Lock
 import httpx
 from openai import AsyncOpenAI
@@ -91,6 +91,9 @@ async def _shared_worker_parameters(user_id: str, symbol: str) -> dict[str, obje
 
 async def _refresh_shared_worker_analysis(user_id: str, symbol: str, parameters: dict[str, object]) -> None:
     try:
+        stored = await asyncio.to_thread(scanner_snapshot_store.get, user_id)
+        stored_config = stored.get("config", {}) if stored else {}
+        window_hours = max(1, min(int(stored_config.get("snapshot_hours", SCANNER_SNAPSHOT_HOURS)), 8))
         result = await binance_scanner_analysis(
             symbols=symbol,
             tracker_period=int(parameters.get("tracker_period", 5)),
@@ -99,6 +102,7 @@ async def _refresh_shared_worker_analysis(user_id: str, symbol: str, parameters:
             risk_percent=float(parameters.get("risk_percent", 1.0)),
             leverage=float(parameters.get("leverage", 1.0)),
             limit=SCANNER_ANALYSIS_MAX_BARS,
+            hours=window_hours,
             include_operations=False,
             target_percent=float(parameters["target_percent"]),
             identity=None,
@@ -455,6 +459,7 @@ class ScannerSnapshotSymbolInput(BaseModel):
 
 class ScannerSnapshotInput(BaseModel):
     symbols: list[ScannerSnapshotSymbolInput] = Field(max_length=30)
+    window_hours: int = Field(default=8, ge=1, le=8)
     tracker_period: int = Field(ge=1, le=50)
     stop_percent: float = Field(gt=0, le=20)
     initial_balance: float = Field(ge=1, le=1_000_000)
@@ -781,10 +786,10 @@ async def update_scanner_snapshot(payload: ScannerSnapshotInput, identity: AuthI
         "initial_balance": payload.initial_balance,
         "risk_percent": payload.risk_percent,
         "interval": "1m",
-        "window_seconds": SCANNER_ANALYSIS_WINDOW_SECONDS,
-        "snapshot_hours": SCANNER_SNAPSHOT_HOURS,
-        "evaluation_hours": SCANNER_EVALUATION_HOURS,
-        "max_bars": SCANNER_ANALYSIS_MAX_BARS,
+        "window_seconds": payload.window_hours * 2 * 60 * 60,
+        "snapshot_hours": payload.window_hours,
+        "evaluation_hours": payload.window_hours,
+        "max_bars": payload.window_hours * 120,
     }
     universe = [item.model_dump() for item in payload.symbols]
     rows: list[dict[str, object]] = []
@@ -820,7 +825,8 @@ async def update_scanner_snapshot(payload: ScannerSnapshotInput, identity: AuthI
                 initial_balance=analysis_initial_balance,
                 risk_percent=analysis_risk_percent,
                 leverage=analysis_leverage,
-                limit=SCANNER_ANALYSIS_MAX_BARS,
+                limit=payload.window_hours * 120,
+                hours=payload.window_hours,
                 movement_averages=str(candidate.variation_average_pct),
                 include_operations=False,
                 target_percent=analysis_target_percent,
@@ -870,7 +876,7 @@ async def update_scanner_snapshot(payload: ScannerSnapshotInput, identity: AuthI
             "risk_usdt": analysis_initial_balance * analysis_risk_percent / 100,
             "leverage": analysis_leverage,
             "variation_average_pct": candidate.variation_average_pct,
-            "window_seconds": SCANNER_ANALYSIS_WINDOW_SECONDS,
+            "window_seconds": payload.window_hours * 2 * 60 * 60,
         })
         if worker_parameters:
             row["analysis_parameter_version"] = worker_parameters.get("parameter_version")
@@ -1416,6 +1422,7 @@ async def binance_scanner_analysis(
     risk_percent: float = 1.0,
     leverage: float = 1.0,
     limit: int = SCANNER_ANALYSIS_MAX_BARS,
+    hours: Annotated[int, Query(ge=1, le=8, description="Horas por ventana Snapshot y Forward.")] = 8,
     movement_averages: str = Query("", description="Optional comma-separated 1m movement averages matching symbols."),
     include_operations: bool = False,
     target_percent: float | None = Query(None, gt=0, le=1_000, description="Use an already selected shared TP when reconstructing Tracker operations."),
@@ -1439,12 +1446,14 @@ async def binance_scanner_analysis(
         risk_percent=max(0.01, min(float(risk_percent), 100)),
         leverage=max(1.0, min(float(leverage), 125)),
     )
-    # The shared scanner always keeps the adjacent 8h fit and 8h evaluation
-    # windows; legacy callers passing 480 are transparently upgraded.
-    safe_limit = SCANNER_ANALYSIS_MAX_BARS
+    # Snapshot and Forward use adjacent windows of the same selected duration.
+    safe_hours = max(1, min(int(hours), 8))
+    window_seconds = safe_hours * 2 * 60 * 60
+    safe_limit = safe_hours * 120
+    requested_window_start = max(0, (int(time.time()) - window_seconds) // 60 * 60)
     semaphore = asyncio.Semaphore(5)
     request_profile = Profiling("scanner_analysis")
-    config_key = (*tuple(vars(config).items()), ("limit", safe_limit))
+    config_key = (*tuple(vars(config).items()), ("hours", safe_hours), ("limit", safe_limit))
 
     def scanner_row_from_walk_forward(result: dict[str, object], *, bars_count: int, last_bar_time: int) -> dict[str, object]:
         snapshot = dict(result["snapshot"])
@@ -1483,9 +1492,9 @@ async def binance_scanner_analysis(
                 profile.mark("fetch_klines_start", cached_bars=len(existing), limit=safe_limit)
                 # Keep adjacent 8h snapshot + 8h forward windows. A cold cache
                 # fits in one Binance page; a warm cache appends only new bars.
-                now_seconds = int(time.time())
-                window_start = max(0, (now_seconds - SCANNER_ANALYSIS_WINDOW_SECONDS) // 60 * 60)
-                cursor: int | None = max(window_start, int(existing[-1]["time"]) - 60) if existing else window_start
+                window_start = requested_window_start
+                has_full_window = bool(existing) and int(existing[0]["time"]) <= window_start
+                cursor: int | None = max(window_start, int(existing[-1]["time"]) - 60) if has_full_window else window_start
                 now_ms = int(time.time() * 1000)
                 bars: list[dict[str, object]] = []
                 rows_received = 0
@@ -1526,7 +1535,11 @@ async def binance_scanner_analysis(
             bars, fetch_error, changed = await _scanner_cache.refresh_bars(
                 symbol,
                 load_new_bars,
-                refresh_if=lambda existing: not existing or int(existing[-1]["time"]) < expected_latest_closed_bar,
+                refresh_if=lambda existing: (
+                    not existing
+                    or int(existing[0]["time"]) > requested_window_start
+                    or int(existing[-1]["time"]) < expected_latest_closed_bar
+                ),
             )
             profile.mark("scanner_bars_ready", bars=len(bars), changed=changed, stale=fetch_error is not None)
             last_bar_time = int(bars[-1]["time"]) if bars else 0
@@ -1546,8 +1559,8 @@ async def binance_scanner_analysis(
                             analyze_walk_forward,
                             bars,
                             config,
-                            SCANNER_SNAPSHOT_HOURS,
-                            SCANNER_EVALUATION_HOURS,
+                            safe_hours,
+                            safe_hours,
                             profile,
                             selected_target,
                             False,
@@ -1570,8 +1583,8 @@ async def binance_scanner_analysis(
                                 analyze_walk_forward,
                                 bars,
                                 config,
-                                SCANNER_SNAPSHOT_HOURS,
-                                SCANNER_EVALUATION_HOURS,
+                                safe_hours,
+                                safe_hours,
                                 profile,
                                 None,
                                 False,
@@ -1628,7 +1641,7 @@ async def binance_scanner_analysis(
     request_profile.mark("activity_classification_end", changed_states=sum(1 for row in rows if row.get("activity_state")))
     if not include_operations:
         rows = [{key: value for key, value in row.items() if key != "operation_details"} for row in rows]
-    return {"symbols": rows, "updated_at": int(time.time()), "cache_ttl_seconds": 5, "window_seconds": SCANNER_ANALYSIS_WINDOW_SECONDS, "snapshot_hours": SCANNER_SNAPSHOT_HOURS, "evaluation_hours": SCANNER_EVALUATION_HOURS, "config": {"tracker_period": config.tracker_period, "stop_percent": config.stop_percent, "initial_balance": config.initial_balance, "risk_percent": config.risk_percent, "leverage": config.leverage}, "profiling": request_profile.snapshot()}
+    return {"symbols": rows, "updated_at": int(time.time()), "cache_ttl_seconds": 5, "window_seconds": window_seconds, "snapshot_hours": safe_hours, "evaluation_hours": safe_hours, "config": {"tracker_period": config.tracker_period, "stop_percent": config.stop_percent, "initial_balance": config.initial_balance, "risk_percent": config.risk_percent, "leverage": config.leverage}, "profiling": request_profile.snapshot()}
 
 
 @app.websocket("/market/binance/stream/{symbol}")

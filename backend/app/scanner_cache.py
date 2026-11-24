@@ -65,10 +65,11 @@ class ScannerCache:
             self._evict_expired_analyses(now)
             current = self._bars.get(key, [])
             refreshed_at = self._bars_refreshed_at.get(key, 0.0)
-            if current and now - refreshed_at < self.refresh_seconds:
+            should_refresh = refresh_if(list(current)) if refresh_if is not None else True
+            if current and now - refreshed_at < self.refresh_seconds and not should_refresh:
                 self._bars.move_to_end(key)
                 return list(current), None, False
-            if refresh_if is not None and not refresh_if(list(current)):
+            if not should_refresh:
                 self._bars.move_to_end(key)
                 return list(current), None, False
             task = self._bar_tasks.get(key)

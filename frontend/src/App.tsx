@@ -851,10 +851,10 @@ function MobileSheet({ title, onClose, children }: { title: string; onClose: () 
 }
 
 function IndicatorSettingsModal({
-  showSessions, showSevenAmMarkers, showRsi, showSsl, showTracker, showManualTracker, showWickExtensions, rsiPeriod, rsiLowBand, rsiHighBand, sslPeriod, trackerPeriod, wickPeriod, wickDisplayPeriod, wickMultiplier, onClose, onSessions, onSevenAmMarkers, onRsi, onSsl, onTracker, onManualTracker, onWickExtensions, onRsiPeriod, onRsiLowBand, onRsiHighBand, onSslPeriod, onTrackerPeriod, onWickPeriod, onWickDisplayPeriod, onWickMultiplier,
-}: { showSessions: boolean; showSevenAmMarkers: boolean; showRsi: boolean; showSsl: boolean; showTracker: boolean; showManualTracker: boolean; showWickExtensions: boolean; rsiPeriod: number; rsiLowBand: number; rsiHighBand: number; sslPeriod: number; trackerPeriod: number; wickPeriod: number; wickDisplayPeriod: number; wickMultiplier: number; onClose: () => void; onSessions: () => void; onSevenAmMarkers: () => void; onRsi: () => void; onSsl: () => void; onTracker: () => void; onManualTracker: () => void; onWickExtensions: () => void; onRsiPeriod: (value: number) => void; onRsiLowBand: (value: number) => void; onRsiHighBand: (value: number) => void; onSslPeriod: (value: number) => void; onTrackerPeriod: (value: number) => void; onWickPeriod: (value: number) => void; onWickDisplayPeriod: (value: number) => void; onWickMultiplier: (value: number) => void }) {
+  showSessions, showSevenAmMarkers, showRsi, showSsl, showTracker, showManualTracker, showWickExtensions, showMaeMfeStudy, rsiPeriod, rsiLowBand, rsiHighBand, sslPeriod, trackerPeriod, wickPeriod, wickDisplayPeriod, wickMultiplier, onClose, onSessions, onSevenAmMarkers, onRsi, onSsl, onTracker, onManualTracker, onWickExtensions, onMaeMfeStudy, onRsiPeriod, onRsiLowBand, onRsiHighBand, onSslPeriod, onTrackerPeriod, onWickPeriod, onWickDisplayPeriod, onWickMultiplier,
+}: { showSessions: boolean; showSevenAmMarkers: boolean; showRsi: boolean; showSsl: boolean; showTracker: boolean; showManualTracker: boolean; showWickExtensions: boolean; showMaeMfeStudy: boolean; rsiPeriod: number; rsiLowBand: number; rsiHighBand: number; sslPeriod: number; trackerPeriod: number; wickPeriod: number; wickDisplayPeriod: number; wickMultiplier: number; onClose: () => void; onSessions: () => void; onSevenAmMarkers: () => void; onRsi: () => void; onSsl: () => void; onTracker: () => void; onManualTracker: () => void; onWickExtensions: () => void; onMaeMfeStudy: () => void; onRsiPeriod: (value: number) => void; onRsiLowBand: (value: number) => void; onRsiHighBand: (value: number) => void; onSslPeriod: (value: number) => void; onTrackerPeriod: (value: number) => void; onWickPeriod: (value: number) => void; onWickDisplayPeriod: (value: number) => void; onWickMultiplier: (value: number) => void }) {
   const row = (label: string, description: string, active: boolean, toggle: () => void, period?: number, setPeriod?: (value: number) => void) => <>{<div className="indicator-setting-row"><button className={`indicator-toggle ${active ? 'indicator-toggle-active' : ''}`} onClick={toggle} aria-pressed={active}><span className="indicator-check">{active ? '✓' : ''}</span><span><b>{label}</b><small>{description}</small></span></button>{period !== undefined && setPeriod && <label className="indicator-period">Periodo<input type="number" min="2" max="200" value={period} onChange={event => setPeriod(Math.max(2, Math.min(200, Number(event.target.value) || 2)))} /></label>}</div>}{label === 'Sesiones de mercado' && <div className="indicator-setting-row"><button className={`indicator-toggle ${showSevenAmMarkers ? 'indicator-toggle-active' : ''}`} onClick={onSevenAmMarkers} aria-pressed={showSevenAmMarkers}><span className="indicator-check">{showSevenAmMarkers ? '✓' : ''}</span><span><b>Marcadores 7 AM</b><small>Ventana diaria 07:20–07:35 · Cancún</small></span></button></div>}</>;
-  return <div className="indicator-modal-backdrop" role="presentation" onClick={onClose}><section className="indicator-modal" role="dialog" aria-modal="true" aria-label="Indicadores" onClick={event => event.stopPropagation()}><div className="indicator-modal-head"><div><span className="eyebrow">CHART · INDICATORS</span><h2>Indicadores</h2></div><button onClick={onClose} aria-label="Cerrar">×</button></div><p className="indicator-modal-help">Activa los indicadores que se dibujan directamente sobre el precio. La configuración se conserva por usuario.</p>{row('Sesiones de mercado', 'Tokyo, Londres, Nueva York y Sydney', showSessions, onSessions)}{row('RSI', 'Solo marca valores fuera de las bandas', showRsi, onRsi, rsiPeriod, onRsiPeriod)}{showRsi && <div className="indicator-band-row"><label>Low band<input type="number" min="1" max="49" value={rsiLowBand} onChange={event => onRsiLowBand(Math.max(1, Math.min(49, Number(event.target.value) || 1)))} /></label><label>High band<input type="number" min="51" max="99" value={rsiHighBand} onChange={event => onRsiHighBand(Math.max(51, Math.min(99, Number(event.target.value) || 99)))} /></label></div>}{row('SSL Channel', 'Canal dinámico sobre el precio', showSsl, onSsl, sslPeriod, onSslPeriod)}{row('Tracker', 'Price lines H2 · H1 · L1 · L2', showTracker, onTracker)}{showTracker && <div className="indicator-band-row"><label>Periodo (N velas)<input type="number" min="4" max="20" value={trackerPeriod} onChange={event => onTrackerPeriod(Math.max(4, Math.min(20, Number(event.target.value) || 4)))} /></label><span className="indicator-modal-help">Cada vela fija sus niveles usando las N anteriores</span></div>}{row('Tracker Manual', 'Simulación aislada con N y TP configurables', showManualTracker, onManualTracker)}{row('Extensiones de mechazo', 'Puntos Long/Short según las mechas contrarias', showWickExtensions, onWickExtensions, wickPeriod, onWickPeriod)}{showWickExtensions && <div className="indicator-band-row"><label>Velas visibles<input type="number" min="1" max="300" value={wickDisplayPeriod} onChange={event => onWickDisplayPeriod(Math.max(1, Math.min(300, Number(event.target.value) || 1)))} /></label><label>Multiplicador<input type="number" min="0" max="10" step="0.1" value={wickMultiplier} onChange={event => onWickMultiplier(Math.max(0, Math.min(10, Number(event.target.value) || 0)))} /></label><span className="indicator-modal-help">Muestra los puntos de las velas más recientes</span></div>}<button className="indicator-modal-done" onClick={onClose}>Listo</button></section></div>;
+  return <div className="indicator-modal-backdrop" role="presentation" onClick={onClose}><section className="indicator-modal" role="dialog" aria-modal="true" aria-label="Indicadores" onClick={event => event.stopPropagation()}><div className="indicator-modal-head"><div><span className="eyebrow">CHART · INDICATORS</span><h2>Indicadores</h2></div><button onClick={onClose} aria-label="Cerrar">×</button></div><p className="indicator-modal-help">Activa o desactiva bloques visuales. La configuración se conserva por usuario.</p><div className="indicator-setting-group"><h3>CONTEXTO</h3>{row('Sesiones de mercado', 'Tokyo, Londres, Nueva York y Sydney', showSessions, onSessions)}</div><div className="indicator-setting-group"><h3>PRECIO</h3>{row('RSI', 'Solo marca valores fuera de las bandas', showRsi, onRsi, rsiPeriod, onRsiPeriod)}{showRsi && <div className="indicator-band-row"><label>Low band<input type="number" min="1" max="49" value={rsiLowBand} onChange={event => onRsiLowBand(Math.max(1, Math.min(49, Number(event.target.value) || 1)))} /></label><label>High band<input type="number" min="51" max="99" value={rsiHighBand} onChange={event => onRsiHighBand(Math.max(51, Math.min(99, Number(event.target.value) || 99)))} /></label></div>}{row('SSL Channel', 'Canal dinámico sobre el precio', showSsl, onSsl, sslPeriod, onSslPeriod)}{row('Extensiones de mechazo', 'Puntos Long/Short según las mechas contrarias', showWickExtensions, onWickExtensions, wickPeriod, onWickPeriod)}{showWickExtensions && <div className="indicator-band-row"><label>Velas visibles<input type="number" min="1" max="300" value={wickDisplayPeriod} onChange={event => onWickDisplayPeriod(Math.max(1, Math.min(300, Number(event.target.value) || 1)))} /></label><label>Multiplicador<input type="number" min="0" max="10" step="0.1" value={wickMultiplier} onChange={event => onWickMultiplier(Math.max(0, Math.min(10, Number(event.target.value) || 0)))} /></label><span className="indicator-modal-help">Muestra los puntos de las velas más recientes</span></div>}</div><div className="indicator-setting-group"><h3>TRACKER · UNO ACTIVO A LA VEZ</h3>{row('Tracker', 'Price lines H2 · H1 · L1 · L2', showTracker, onTracker)}{showTracker && <div className="indicator-band-row"><label>Periodo (N velas)<input type="number" min="4" max="20" value={trackerPeriod} onChange={event => onTrackerPeriod(Math.max(4, Math.min(20, Number(event.target.value) || 4)))} /></label><span className="indicator-modal-help">Cada vela fija sus niveles usando las N anteriores</span></div>}{row('Tracker Manual', 'Simulación aislada con N y TP configurables', showManualTracker, onManualTracker)}</div><div className="indicator-setting-group"><h3>RESEARCH</h3>{row('Estudio MAE · MFE', 'Lab, gráficas, tabla comparativa y asistente en vivo', showMaeMfeStudy, onMaeMfeStudy)}</div><button className="indicator-modal-done" onClick={onClose}>Listo</button></section></div>;
 }
 
 function RiskEngineModal({ onClose }: { onClose: () => void }) {
@@ -1314,6 +1314,7 @@ function Workspace() {
     : manualTrackerTarget;
   const [showTrackerFails, setShowTrackerFails] = useState(() => localStorage.getItem('helloworld-tracker-show-fails') === 'true');
   const [showWickExtensions, setShowWickExtensions] = useState(() => localStorage.getItem('helloworld-indicator-wick-extensions') === 'true');
+  const [showMaeMfeStudy, setShowMaeMfeStudy] = useState(() => localStorage.getItem('helloworld-indicator-mae-mfe-study') !== 'false');
   const [trackerVirtualOperations, setTrackerVirtualOperations] = useState<TrackerVirtualOperation[]>([]);
   const trackerOpenTargetRef = useRef<{ symbol: string; operationId: string; targetPercent: number } | null>(null);
   const [trackerLivePriceOverride, setTrackerLivePriceOverride] = useState<{ symbol: string; operationId: string; targetPrice?: number; stopPrice?: number } | null>(null);
@@ -1495,6 +1496,7 @@ function Workspace() {
   const chartEventScanRef = useRef<{ key: string; lastTime: number } | null>(null);
   const [chartEventsPaused, setChartEventsPaused] = useState(() => localStorage.getItem('helloworld-chart-events-paused') === 'true');
   useEffect(() => { localStorage.setItem('helloworld-chart-events-paused', String(chartEventsPaused)); }, [chartEventsPaused]);
+  useEffect(() => { localStorage.setItem('helloworld-indicator-mae-mfe-study', String(showMaeMfeStudy)); }, [showMaeMfeStudy]);
   useEffect(() => { localStorage.setItem('helloworld-chart-event-rules', JSON.stringify(chartEventRules)); }, [chartEventRules]);
   useEffect(() => { localStorage.setItem('helloworld-chart-event-occurrences', JSON.stringify(chartEventOccurrences.slice(-200))); }, [chartEventOccurrences]);
   useEffect(() => {
@@ -1576,9 +1578,12 @@ function Workspace() {
   const [scannerAnalysisProgress, setScannerAnalysisProgress] = useState({ completed: 0, total: 0 });
   const [scannerLastScannedAt, setScannerLastScannedAt] = useState<number | null>(null);
   const [scannerSnapshotFreshness, setScannerSnapshotFreshness] = useState<'EMPTY' | 'FRESH' | 'STALE'>('EMPTY');
+  const [scannerWindowHours, setScannerWindowHours] = useState(() => {
+    const stored = Number(localStorage.getItem('helloworld-scanner-window-hours') ?? WALK_FORWARD_SNAPSHOT_HOURS);
+    return Number.isFinite(stored) ? Math.max(1, Math.min(8, Math.round(stored))) : WALK_FORWARD_SNAPSHOT_HOURS;
+  });
   const [scannerRefreshRequest, setScannerRefreshRequest] = useState(0);
   const scannerLastScannedAtRef = useRef<number | null>(null);
-  const scannerLatestLoadedRef = useRef(false);
   const [activeMarketLoading, setActiveMarketLoading] = useState(false);
   const [activeMarketError, setActiveMarketError] = useState('');
   const [productionWorkerError, setProductionWorkerError] = useState('');
@@ -1596,272 +1601,51 @@ function Workspace() {
   useEffect(() => scannerProfilerRef.current.subscribe(setScannerProfiling), []);
 
   useEffect(() => {
-    if (broker !== 'binance') { setBinanceProductionAvailable(false); setExecutionMode('paper'); return; }
-    let active = true;
-    const loadRuntime = () => fetch(`${apiUrl}/trading/binance/runtime`, { headers: auth.accessToken ? { Authorization: `Bearer ${auth.accessToken}` } : undefined, credentials: 'include' })
-      .then(response => response.ok ? response.json() as Promise<{ real_trading_enabled?: boolean; production_worker_live_enabled?: boolean; production_worker_live_validated?: boolean }> : Promise.reject(new Error()))
-      .then(runtime => { if (active) { const liveAvailable = runtime.real_trading_enabled === true && runtime.production_worker_live_enabled === true && runtime.production_worker_live_validated === true; setBinanceProductionAvailable(liveAvailable); if (!liveAvailable) setExecutionMode('paper'); } })
-      .catch(() => { if (active) { setBinanceProductionAvailable(false); setExecutionMode('paper'); } });
-    void loadRuntime();
-    const timer = window.setInterval(loadRuntime, 15_000);
-    return () => { active = false; window.clearInterval(timer); };
-  }, [auth.accessToken, broker]);
+    localStorage.setItem('helloworld-scanner-window-hours', String(scannerWindowHours));
+  }, [scannerWindowHours]);
 
+  // Hydrate the last shared scan on page load without starting a new scan.
   useEffect(() => {
-    if (broker !== 'binance' || !auth.accessToken) { setBinanceExecutionIntents([]); return; }
     let active = true;
-    const loadInitial = () => fetch(`${apiUrl}/trading/binance/execution-intents`, { headers: { Authorization: `Bearer ${auth.accessToken}` }, credentials: 'include' })
-      .then(response => response.ok ? response.json() as Promise<typeof binanceExecutionIntents> : Promise.reject(new Error('intents unavailable')))
-      .then(intents => { if (active) setBinanceExecutionIntents(Array.isArray(intents) ? intents : []); })
-      .catch(() => { if (active) setBinanceExecutionIntents([]); });
-    void loadInitial();
-    return () => { active = false; };
-  }, [auth.accessToken, broker]);
-
-  useEffect(() => {
-    localStorage.setItem('helloworld-selected-symbol', symbol);
-  }, [symbol]);
-
-  useEffect(() => {
-    if (broker !== 'binance' || !auth.accessToken) { setProductionWorkerRunning(false); setProductionWorkerStatus(null); return; }
-    let active = true;
-    const syncPaperMirror = (operation?: WorkerOperationView | null) => {
-      if (!operation?.id || operation.source !== 'realtime-engine') return;
-      const status = operation.status ?? 'OPEN';
-      const mirror = {
-        id: operation.id,
-        symbol: operation.symbol,
-        type: String(operation.side ?? 'long').toLowerCase() as 'long' | 'short',
-        paper: true,
-        engineOwned: true,
-        chart: operation.chart === 'context' ? 'context' as const : 'entry' as const,
-        start: { time: Number(operation.entry_time ?? operation.current_time ?? 0) as UTCTimestamp, price: Number(operation.entry_price ?? operation.current_price ?? 0) },
-        end: { time: Number(operation.current_time ?? operation.entry_time ?? 0) as UTCTimestamp, price: Number(operation.current_price ?? operation.entry_price ?? 0) },
-        stop: { time: Number(operation.stop_time ?? operation.current_time ?? 0) as UTCTimestamp, price: Number(operation.stop_price ?? operation.entry_price ?? 0) },
-        target: { time: Number(operation.target_time ?? operation.current_time ?? 0) as UTCTimestamp, price: Number(operation.target_price ?? operation.entry_price ?? 0) },
-        closed: status !== 'OPEN',
-        status: status as Drawing['status'],
-        closeReason: operation.close_reason ?? undefined,
-        notional: operation.notional,
-        margin: operation.margin,
-        pnl: operation.unrealized_pnl ?? operation.pnl ?? 0,
-      } satisfies Drawing;
-      setDrawings(current => current.some(drawing => drawing.id === mirror.id)
-        ? current.map(drawing => drawing.id === mirror.id ? { ...drawing, ...mirror } : drawing)
-        : [...current, mirror]);
-    };
-    const refreshWorker = () => fetch(`${apiUrl}/trading/production/workers`, { headers: { Authorization: `Bearer ${auth.accessToken}` }, credentials: 'include' })
-      .then(response => response.ok ? response.json() as Promise<ProductionWorkerView[]> : Promise.reject(new Error('worker status unavailable')))
-      .then(workers => {
+    const loadSavedScannerSnapshot = async () => {
+      try {
+        const latest = await fetchJson<ScannerSnapshot>(`${apiUrl}/market/binance/scanner-snapshot`, {
+          headers: auth.accessToken ? { Authorization: `Bearer ${auth.accessToken}` } : undefined,
+          credentials: 'include',
+        });
         if (!active) return;
-        const session = workers.find(worker => worker.running);
-        setProductionWorkerRunning(Boolean(session));
-        setProductionWorkerStatus(session ?? null);
-        setExecutionMode(session?.mode === 'live' ? 'production' : 'paper');
-        syncPaperMirror(session?.operation);
-        return fetch(`${apiUrl}/trading/production/workers/logs?limit=50`, { headers: { Authorization: `Bearer ${auth.accessToken}` }, credentials: 'include' })
-          .then(response => response.ok ? response.json() as Promise<{ logs?: WorkerLogEntry[] }> : Promise.reject(new Error('worker logs unavailable')))
-          .then(payload => { if (active) setProductionWorkerLogs(payload.logs ?? []); })
-          .catch(() => undefined);
-      })
-      .catch(() => { if (active) { setProductionWorkerRunning(false); setProductionWorkerStatus(null); } });
-    void refreshWorker();
-    const timer = window.setInterval(refreshWorker, 10_000);
-    const controller = new AbortController();
-    const streamEvents = async () => {
-      while (active) {
-        try {
-          const response = await fetch(`${apiUrl}/trading/production/workers/events`, { headers: { Authorization: `Bearer ${auth.accessToken}` }, credentials: 'include', signal: controller.signal });
-          if (!response.ok || !response.body) throw new Error('worker event stream unavailable');
-          const reader = response.body.getReader();
-          const decoder = new TextDecoder();
-          let buffer = '';
-          while (active) {
-            const chunk = await reader.read();
-            if (chunk.done) break;
-            buffer += decoder.decode(chunk.value, { stream: true });
-            const frames = buffer.split('\n\n');
-            buffer = frames.pop() ?? '';
-            for (const frame of frames) {
-              const data = frame.split('\n').find(line => line.startsWith('data: '))?.slice(6);
-              if (!data) continue;
-              try {
-                const event = JSON.parse(data) as { type?: string; workers?: ProductionWorkerView[]; symbol?: string; side?: string; level?: string; price?: number; time?: number; server_time?: number; source?: string; bar_time?: number; parameter_version?: number; tracker_operation?: WorkerOperationView | null; operation?: WorkerOperationView | null; log?: WorkerLogEntry };
-                if (event.type === 'WORKER_SNAPSHOT' && event.workers) {
-                  const session = event.workers.find(worker => worker.running);
-                  setProductionWorkerRunning(Boolean(session));
-                  setProductionWorkerStatus(session ?? null);
-                  setExecutionMode(session?.mode === 'live' ? 'production' : 'paper');
-                  setLastWorkerSignal(current => session && current?.symbol === session.symbol ? current : null);
-                  syncPaperMirror(session?.operation);
-                } else {
-                  if (event.type === 'WORKER_LOG' && event.log) {
-                    const log = { ...event.log, symbol: event.log.symbol ?? event.symbol };
-                    setProductionWorkerLogs(current => [log, ...current.filter(entry => entry.id !== log.id)].slice(0, 50));
-                  }
-                  if (event.type === 'TRACKER_SIGNAL' && event.symbol && event.side && event.level && event.price != null && event.bar_time != null) {
-                    setLastWorkerSignal({ symbol: event.symbol, side: event.side, level: event.level, price: event.price, bar_time: event.bar_time, parameter_version: event.parameter_version ?? 0 });
-                  }
-                  if (event.type === 'WORKER_MARK_UPDATE' && event.symbol) {
-                    setProductionWorkerStatus(current => current && current.symbol === event.symbol ? { ...current, latest_price: event.price ?? current.latest_price, latest_price_time: event.time ?? current.latest_price_time, latest_price_source: event.source ?? current.latest_price_source, latest_price_age_ms: 0, operation: Object.prototype.hasOwnProperty.call(event, 'operation') ? event.operation : current.operation, tracker_operation: Object.prototype.hasOwnProperty.call(event, 'tracker_operation') ? event.tracker_operation : current.tracker_operation } : current);
-                    syncPaperMirror(event.operation);
-                  } else if (event.type === 'PAPER_ENTRY' || event.type === 'PAPER_EXIT') {
-                    syncPaperMirror(event.operation);
-                  } else if (event.type === 'TRACKER_OPERATION_CLOSED' && event.symbol === symbol) {
-                    setProductionWorkerStatus(current => current && current.symbol === event.symbol ? { ...current, tracker_operation: null } : current);
-                  } else if (event.type === 'TRACKER_SIGNAL' && event.symbol === symbol) {
-                    void refreshWorker();
-                  }
-                  if (event.type === 'WORKER_STOPPED') setLastWorkerSignal(null);
-                  if (event.type !== 'WORKER_MARK_UPDATE' && event.type !== 'WORKER_LOG' && event.type !== 'PAPER_ENTRY' && event.type !== 'PAPER_EXIT') void refreshWorker();
-                }
-              } catch { /* Ignore malformed frames and keep the stream alive. */ }
-            }
-          }
-        } catch {
-          if (!active || controller.signal.aborted) return;
-        }
-        if (active) await new Promise(resolve => window.setTimeout(resolve, 1500));
+        const savedUniverse = Array.isArray(latest.universe) ? latest.universe : [];
+        const savedRows = Array.isArray(latest.symbols) ? latest.symbols : [];
+        setActiveMarketSymbols(savedUniverse);
+        setScannerAnalysisBySymbol(Object.fromEntries(savedRows.map(row => [row.symbol, row])));
+        const lastScannedAt = latest.last_scanned_at ?? latest.updated_at ?? null;
+        scannerLastScannedAtRef.current = lastScannedAt;
+        setScannerLastScannedAt(lastScannedAt);
+        setScannerSnapshotFreshness(latest.freshness);
+        setScannerAnalysisProgress({ completed: savedRows.length, total: savedRows.length });
+        const savedHours = Number(latest.config?.snapshot_hours);
+        if (Number.isFinite(savedHours) && savedHours >= 1 && savedHours <= 8) setScannerWindowHours(Math.round(savedHours));
+      } catch (error) {
+        if (active) setActiveMarketError(error instanceof Error ? error.message : 'No se pudo cargar el último scan guardado.');
       }
     };
-    void streamEvents();
-    return () => { active = false; controller.abort(); window.clearInterval(timer); };
-  }, [auth.accessToken, broker, apiUrl, symbol]);
-
-  useEffect(() => {
-    if (broker !== 'binance') { setBinanceRules(null); return; }
-    let active = true;
-    fetch(`${apiUrl}/market/binance/symbol-info/${encodeURIComponent(symbol)}`, { headers: auth.accessToken ? { Authorization: `Bearer ${auth.accessToken}` } : undefined, credentials: 'include' })
-      .then(response => response.ok ? response.json() as Promise<BinanceSymbolRules & { symbol: string }> : Promise.reject(new Error('No se pudieron cargar las reglas del símbolo.')))
-      .then(rules => { if (active) setBinanceRules(rules); })
-      .catch(() => { if (active) setBinanceRules(null); });
+    void loadSavedScannerSnapshot();
     return () => { active = false; };
-  }, [auth.accessToken, broker, symbol]);
+  }, [apiUrl, auth.accessToken]);
 
+  // The full universe scan runs only after an explicit click on SCAN.
   useEffect(() => {
-    if (broker !== 'binance' || !auth.accessToken) { setBinanceLiveAccount(null); return; }
+    if (scannerRefreshRequest === 0 || broker !== 'binance') return;
     let active = true;
-    const closeStream = createBinanceAccountStream(auth.accessToken, account => {
-      if (active) setBinanceLiveAccount(current => acceptBinanceAccount(current, account));
-    }, intents => {
-      if (active && Array.isArray(intents)) setBinanceExecutionIntents(intents as BinanceExecutionIntent[]);
-    });
-    return () => { active = false; closeStream(); };
-  }, [auth.accessToken, broker]);
-
-  const applyBinanceLeverage = async () => {
-    const leverage = Number(binanceLeverageDraft);
-    if (broker !== 'binance' || binanceLeverageBusy || !Number.isInteger(leverage) || leverage < 1 || leverage > 125) return;
-    setBinanceLeverageBusy(true);
-    setBinanceLeverageError('');
-    try {
-      const response = await fetch(`${apiUrl}/trading/binance/symbol-config/${encodeURIComponent(symbol)}/leverage`, { method: 'POST', headers: { ...(auth.accessToken ? { Authorization: `Bearer ${auth.accessToken}` } : {}), 'Content-Type': 'application/json' }, credentials: 'include', body: JSON.stringify({ leverage }) });
-      const payload = await response.json() as BinanceSymbolConfig & { detail?: string };
-      if (!response.ok) throw new Error(payload.detail ?? 'Binance no pudo cambiar el leverage.');
-      setBinanceSymbolConfig(payload);
-      setBinanceLeverageDraft(payload.leverage != null ? String(payload.leverage) : '');
-    } catch (reason) {
-      setBinanceLeverageError(reason instanceof Error ? reason.message : 'No se pudo cambiar el leverage en Binance.');
-    } finally {
-      setBinanceLeverageBusy(false);
-    }
-  };
-
-  useEffect(() => {
-    if (broker !== 'binance') { setBinanceSymbolConfig(null); setBinanceLeverageDraft(''); return; }
-    let active = true;
-    let applyingIsolated = false;
-    const load = () => fetch(`${apiUrl}/trading/binance/symbol-config/${encodeURIComponent(symbol)}`, { headers: auth.accessToken ? { Authorization: `Bearer ${auth.accessToken}` } : undefined, credentials: 'include' })
-      .then(response => response.ok ? response.json() as Promise<BinanceSymbolConfig> : Promise.reject(new Error('No se pudo cargar la configuración del símbolo.')))
-      .then(async config => {
-        if (active) { setBinanceSymbolConfig(config); setBinanceLeverageDraft(config.leverage != null ? String(config.leverage) : ''); }
-        if (!active || applyingIsolated || !config.configured || config.margin_type !== 'CROSSED') return;
-        applyingIsolated = true;
-        try {
-          const updated = await fetchJson<BinanceSymbolConfig>(`${apiUrl}/trading/binance/symbol-config/${encodeURIComponent(symbol)}/margin-type`, { method: 'POST', headers: { ...(auth.accessToken ? { Authorization: `Bearer ${auth.accessToken}` } : {}), 'Content-Type': 'application/json' }, credentials: 'include', body: JSON.stringify({ margin_type: 'ISOLATED' }) });
-          if (active) setBinanceSymbolConfig(updated);
-        } catch (error) {
-          console.warn('No se pudo activar margen aislado para el símbolo', symbol, error);
-        } finally { applyingIsolated = false; }
-      })
-      .catch(() => { if (active) setBinanceSymbolConfig(null); });
-    void load();
-    const timer = window.setInterval(load, 15_000);
-    return () => { active = false; window.clearInterval(timer); };
-  }, [auth.accessToken, broker, symbol]);
-
-  useEffect(() => {
-    localStorage.setItem('helloworld-indicator-rsi', String(showRsi));
-    localStorage.setItem('helloworld-indicator-seven-am', String(showSevenAmMarkers));
-    localStorage.setItem('helloworld-indicator-ssl', String(showSsl));
-    localStorage.setItem('helloworld-indicator-tracker', String(showTracker));
-    localStorage.setItem('helloworld-indicator-wick-extensions', String(showWickExtensions));
-    localStorage.setItem('helloworld-heikin-ashi', String(showHeikinAshi));
-    localStorage.setItem('helloworld-rsi-period', String(rsiPeriod));
-    localStorage.setItem('helloworld-rsi-low-band', String(rsiLowBand));
-    localStorage.setItem('helloworld-rsi-high-band', String(rsiHighBand));
-    localStorage.setItem('helloworld-ssl-period', String(sslPeriod));
-    localStorage.setItem('helloworld-ssl-regime-window', String(sslRegimeWindow));
-    localStorage.setItem('helloworld-tracker-period', String(trackerPeriod));
-    setTrackerPeriodDraft(String(trackerPeriod));
-    localStorage.setItem('helloworld-wick-period', String(wickPeriod));
-    localStorage.setItem('helloworld-wick-display-period', String(wickDisplayPeriod));
-    localStorage.setItem('helloworld-wick-multiplier', String(wickMultiplier));
-    setViewportRevision(value => value + 1);
-    setOverviewRevision(value => value + 1);
-  }, [showRsi, showSevenAmMarkers, showSsl, showTracker, showWickExtensions, showHeikinAshi, rsiPeriod, rsiLowBand, rsiHighBand, sslPeriod, sslRegimeWindow, trackerPeriod, wickPeriod, wickDisplayPeriod, wickMultiplier]);
-
-  useEffect(() => {
-    localStorage.setItem('helloworld-indicator-manual-tracker', String(showManualTracker));
-    localStorage.setItem('helloworld-manual-tracker-period', String(manualTrackerPeriod));
-    localStorage.setItem('helloworld-manual-tracker-target', String(manualTrackerTarget));
-  }, [showManualTracker, manualTrackerPeriod, manualTrackerTarget]);
-
-  useEffect(() => {
-    localStorage.setItem('helloworld-tracker-show-fails', String(showTrackerFails));
-  }, [showTrackerFails]);
-
-  useEffect(() => {
-    const syncAssist = () => {
-      const balance = Number(localStorage.getItem('helloworld-paper-balance') ?? 100);
-      const raw = JSON.parse(localStorage.getItem('helloworld-paper-assist') ?? '{}') as { riskPercent?: number };
-      if (Number.isFinite(balance) && balance >= 1) setPaperInitialBalance(balance);
-      if (Number.isFinite(raw.riskPercent) && (raw.riskPercent ?? 0) > 0) setPaperRiskPercent(raw.riskPercent as number);
-    };
-    window.addEventListener('helloworld-paper-assist-updated', syncAssist);
-    return () => window.removeEventListener('helloworld-paper-assist-updated', syncAssist);
-  }, []);
-
-  useEffect(() => {
-    if (broker !== 'binance') {
-      setActiveMarketSymbols([]);
-      setActiveMarketError('');
-      setScannerAnalysisProgress({ completed: 0, total: 0 });
-      return;
-    }
-    let active = true;
-    const loadActiveMarkets = async () => {
+    const runManualScanner = async () => {
       setActiveMarketLoading(true);
+      setActiveMarketError('');
       scannerProfilerRef.current.reset();
       try {
-        if (!scannerLatestLoadedRef.current) {
-          try {
-            const latest = await fetchJson<ScannerSnapshot>(`${apiUrl}/market/binance/scanner-snapshot`, { headers: auth.accessToken ? { Authorization: `Bearer ${auth.accessToken}` } : undefined, credentials: 'include' });
-            scannerLatestLoadedRef.current = true;
-            if (active && latest.freshness !== 'EMPTY') {
-              setActiveMarketSymbols(latest.universe ?? []);
-              setScannerAnalysisBySymbol(Object.fromEntries((latest.symbols ?? []).map(row => [row.symbol, row])));
-              const lastScannedAt = latest.last_scanned_at ?? latest.updated_at ?? null;
-              scannerLastScannedAtRef.current = lastScannedAt;
-              setScannerLastScannedAt(lastScannedAt);
-              setScannerSnapshotFreshness(latest.freshness);
-              setScannerAnalysisProgress({ completed: latest.symbols.length, total: latest.symbols.length });
-            }
-          } catch {
-            // Keep the scanner live path available if the saved snapshot cannot be read.
-          }
-        }
-        const payload = await scannerProfilerRef.current.measure('scanner.active_markets', () => fetchJson<{ symbols?: ActiveMarketSymbol[] }>(`${apiUrl}/market/binance/active-symbols?limit=20&min_movement_pct=0.5&horizon=10&interval=5m`, { headers: auth.accessToken ? { Authorization: `Bearer ${auth.accessToken}` } : undefined, credentials: 'include' }));
+        const payload = await scannerProfilerRef.current.measure('scanner.active_markets', () => fetchJson<{ symbols?: ActiveMarketSymbol[] }>(`${apiUrl}/market/binance/active-symbols?limit=20&min_movement_pct=0.5&horizon=10&interval=5m`, {
+          headers: auth.accessToken ? { Authorization: `Bearer ${auth.accessToken}` } : undefined,
+          credentials: 'include',
+        }));
         const markets = Array.isArray(payload.symbols) ? payload.symbols : [];
         if (!active) return;
         const validMarkets = markets.filter(candidate => /^[A-Z0-9]{1,32}USDT$/.test(String(candidate.symbol ?? '').trim().toUpperCase()));
@@ -1876,7 +1660,7 @@ function Workspace() {
           method: 'POST',
           headers: { 'Content-Type': 'application/json', ...(auth.accessToken ? { Authorization: `Bearer ${auth.accessToken}` } : {}) },
           credentials: 'include',
-          body: JSON.stringify({ symbols: universe, tracker_period: trackerPeriod, stop_percent: binanceStopPercent, initial_balance: paperInitialBalance, risk_percent: paperRiskPercent }),
+          body: JSON.stringify({ symbols: universe, window_hours: scannerWindowHours, tracker_period: trackerPeriod, stop_percent: binanceStopPercent, initial_balance: paperInitialBalance, risk_percent: paperRiskPercent }),
         }));
         if (!active) return;
         const savedUniverse = Array.isArray(snapshot.universe) ? snapshot.universe : universe;
@@ -1893,7 +1677,7 @@ function Workspace() {
           : snapshot.freshness === 'STALE' ? 'El snapshot compartido está desactualizado.' : '');
       } catch (error) {
         if (active) {
-          const message = error instanceof Error ? error.message : 'No se pudo cargar el ranking de mercado.';
+          const message = error instanceof Error ? error.message : 'No se pudo completar el scan.';
           const lastSnapshot = scannerLastScannedAtRef.current;
           if (lastSnapshot != null && Date.now() / 1000 - lastSnapshot > 180) setScannerSnapshotFreshness('STALE');
           setActiveMarketError(message);
@@ -1902,10 +1686,9 @@ function Workspace() {
         if (active) setActiveMarketLoading(false);
       }
     };
-    void loadActiveMarkets();
-    const timer = window.setInterval(() => void loadActiveMarkets(), 60_000);
-    return () => { active = false; window.clearInterval(timer); };
-  }, [auth.accessToken, broker, trackerPeriod, binanceStopPercent, paperInitialBalance, paperRiskPercent, scannerTheoreticalLeverage, scannerRefreshRequest]);
+    void runManualScanner();
+    return () => { active = false; };
+  }, [scannerRefreshRequest]);
 
   useEffect(() => {
     setSymbolHistoryReady(false);
@@ -1951,6 +1734,7 @@ function Workspace() {
           initial_balance: String(workerParameters?.initial_balance ?? cachedSummary?.initial_balance ?? paperInitialBalance),
           risk_percent: String(workerParameters?.risk_percent ?? cachedSummary?.risk_percent ?? paperRiskPercent),
           leverage: String(workerParameters?.leverage ?? cachedSummary?.leverage ?? scannerSelectedLeverage),
+          hours: String(cachedSummary?.snapshot_hours ?? WALK_FORWARD_SNAPSHOT_HOURS),
           limit: '480',
           include_operations: 'true',
           ...(workerParameters?.target_percent != null ? { target_percent: String(workerParameters.target_percent) } : {}),
@@ -1995,8 +1779,7 @@ function Workspace() {
       }
     };
     void refreshSelectedTracker();
-    const timer = window.setInterval(() => void refreshSelectedTracker(), 60_000);
-    return () => { active = false; window.clearInterval(timer); };
+    return () => { active = false; };
   }, [apiUrl, auth.accessToken, binanceStopPercent, broker, paperInitialBalance, paperRiskPercent, productionWorkerRunning, productionWorkerStatus?.adaptive_parameters?.parameter_version, replayState.active, scannerSelectedLeverage, scannerLastScannedAt, showTracker, symbol, trackerPeriod]);
 
   useEffect(() => {
@@ -3870,6 +3653,7 @@ function Workspace() {
   const paperStatsPanel = <section className="paper-stats-panel" aria-label="Estadísticas Paper de trading"><div className="paper-stats-head"><div><span className="positions-kicker">PAPER · TRADING STATS</span><h2>Estadísticas Paper de Trading</h2><p>Solo operaciones Paper cerradas · usa estos datos para validar la estrategia antes de aumentar el risk %.</p></div><div className="paper-stats-filters"><label>Símbolo<select value={paperStatsSymbol} onChange={event => setPaperStatsSymbol(event.target.value)}><option value="ALL">Todos</option>{paperStatsSymbols.map(option => <option key={option}>{option}</option>)}</select></label><label>Desde<input type="date" value={paperStatsFrom} onChange={event => setPaperStatsFrom(event.target.value)} /></label><label>Hasta<input type="date" value={paperStatsTo} onChange={event => setPaperStatsTo(event.target.value)} /></label><button type="button" onClick={() => { setPaperStatsSymbol('ALL'); setPaperStatsFrom(''); setPaperStatsTo(''); }}>Limpiar</button></div></div><div className="paper-stats-period"><div><small>Inicio del backtesting</small><strong>{paperStatsDate(paperStatsStart)}</strong></div><div><small>Final del backtesting</small><strong>{paperStatsDate(paperStatsEnd)}</strong></div></div><div className="paper-stats-grid"><div><small>Operaciones</small><strong>{paperStatsPositions.length}</strong></div><div><small>Win rate</small><strong className={paperStatsWins.length ? 'value-positive' : ''}>{paperStatsPositions.length ? `${(paperStatsWins.length / paperStatsPositions.length * 100).toFixed(1)}%` : '—'}</strong></div><div><small>PNL neto</small><strong className={paperStatsNet >= 0 ? 'value-positive' : 'value-negative'}>{paperStatsPositions.length ? formatStatsPnl(paperStatsNet) : '—'}</strong></div><div><small>Profit factor</small><strong>{paperStatsPositions.length ? (Number.isFinite(paperStatsProfitFactor) ? paperStatsProfitFactor.toFixed(2) : '∞') : '—'}</strong></div><div><small>Prom. ganadora</small><strong className="value-positive">{paperStatsWins.length ? formatStatsPnl(paperStatsAverageWin) : '—'}</strong></div><div><small>Prom. perdedora</small><strong className="value-negative">{paperStatsLosses.length ? formatStatsPnl(paperStatsAverageLoss) : '—'}</strong></div><div><small>Expectativa</small><strong className={paperStatsExpectancy >= 0 ? 'value-positive' : 'value-negative'}>{paperStatsPositions.length ? formatStatsPnl(paperStatsExpectancy) : '—'}</strong></div><div><small>Drawdown máx.</small><strong className="value-negative">{paperStatsPositions.length ? `-${paperStatsDrawdown.toFixed(2)} USDT` : '—'}</strong></div></div></section>;
   const wickBacktestPanel = <BacktestPanel activeSymbol={symbol} apiUrl={apiUrl} accessToken={auth.accessToken} getBars={() => candleBarsRef.current} scannerSymbols={activeMarketSymbols.map(candidate => candidate.symbol)} wickPeriod={wickPeriod} wickMultiplier={wickMultiplier} stopPercent={binanceStopPercent} targetPercent={binanceTargetPercent} initialBalance={paperInitialBalance} riskPercent={paperRiskPercent} leverage={paperLeverage} broker={broker} sslPeriod={sslPeriod} regimeWindow={sslRegimeWindow} displayBars={wickDisplayPeriod} barRevision={trackerRevision} />;
   const labAssistPanel = labRecommendations && <section className="live-lab-assist" aria-label="Recomendaciones MAE MFE en tiempo real"><div className="live-lab-assist-head"><div><span className="positions-kicker">MAE·MFE LIVE ASSIST</span><h2>Recomendación de la vela actual</h2><p className="live-lab-meta">Horizonte: {labRecommendations.horizon} velas · Vela actual: {labRecommendations.long.label} · Intervalo: {labRecommendations.resolution}m</p></div><div className="live-lab-controls"><button type="button" className={labResolution === 1 ? 'live-lab-time-active' : ''} onClick={() => setLabResolution(1)}>1m</button><button type="button" className={labResolution === 5 ? 'live-lab-time-active' : ''} onClick={() => setLabResolution(5)}>5m</button></div></div><div className="live-lab-direction-grid">{(['long', 'short'] as const).map(type => { const recommendation = labRecommendations[type]; return <article key={type} className={`live-lab-direction ${type}`}><h3>{type === 'long' ? 'LONG' : 'SHORT'}</h3><div className="live-lab-assist-grid"><div><small>MAE</small><strong className="value-negative">-{recommendation.mae.toFixed(4)}%</strong></div><div><small>MFE</small><strong className="value-positive">+{recommendation.mfe.toFixed(4)}%</strong></div><div><small>R:R</small><strong>{recommendation.rr.toFixed(2)}:1</strong></div><div><small>Leverage sugerido</small><strong>{recommendation.leverage.toFixed(1)}x</strong></div><div><small>Riesgo máximo</small><strong>{recommendation.riskAmount.toFixed(2)} USD</strong></div><div><small>Notional sugerido</small><strong>{recommendation.notional.toFixed(2)} USD</strong></div><div><small>Margen teórico</small><strong>{recommendation.margin.toFixed(2)} USD</strong></div><div><small>TP esperado</small><strong className="value-positive">+{recommendation.expectedProfit.toFixed(2)} USD</strong></div></div></article>; })}</div></section>;
+  const labStudyPanel = showMaeMfeStudy ? <section className="mae-mfe-study-block" aria-label="Estudio MAE y MFE"><header className="chart-study-block-header"><strong>ESTUDIO MAE · MFE</strong><span>Asistente, gráficas y comparación</span></header>{labAssistPanel}</section> : null;
   const positionsTable = <section className="positions-panel" aria-label="Posiciones abiertas">
     <div className="positions-panel-head"><div><span className="positions-kicker">TRADING</span><h2>Paper operations</h2></div><div className="paper-actions"><span className="paper-risk-indicator">Riesgo {paperRiskPercent.toFixed(2)}%</span><button type="button" className="paper-settings-button" onClick={() => setShowPaperSettings(true)} aria-label="Ajustar Paper">⚙</button><span className="paper-badge">PAPER</span></div></div>{paperSyncError && <p className="paper-sync-error" role="status">{paperSyncError}</p>}<div className="paper-tabs" role="tablist" aria-label="Operaciones"><button role="tab" aria-selected={paperTab === 'open'} className={paperTab === 'open' ? 'paper-tab-active' : ''} onClick={() => setPaperTab('open')}>Abiertas <b>{paperPositions.filter(position => !position.closed).length + displayedBinancePositions.length}</b></button><button role="tab" aria-selected={paperTab === 'closed'} className={paperTab === 'closed' ? 'paper-tab-active' : ''} onClick={() => setPaperTab('closed')}>Cerradas <b>{paperPositions.filter(position => position.closed).length}</b></button></div>
     <div className="paper-balance-grid"><div><small>Balance paper</small><strong>{paperEquity.toFixed(2)} USD</strong></div><div><small>Leverage máximo · {symbol}</small><strong>{brokerMaxLeverage.toFixed(0)}x</strong></div><div><small>Leverage paper efectivo</small><strong>{paperLeverage.toFixed(1)}x</strong></div><div><small>Costos comisión + slippage</small><strong>{paperCosts.toFixed(2)} USD</strong></div><div><small>PNL realizado</small><strong>{realizedPnl.toFixed(2)} USD</strong></div><div><small>PNL abierto</small><strong>{unrealizedPnl.toFixed(2)} USD</strong></div></div>
@@ -4322,7 +4106,7 @@ function Workspace() {
   </div>;
 
   const avatarLabel = (auth.identity?.name ?? auth.identity?.email ?? 'U').slice(0, 1).toUpperCase();
-  const profileButton = <><button className="profile-avatar" onClick={() => setShowProfile(true)} aria-label="Abrir perfil" title="Perfil">{avatarLabel}</button>{showIndicatorSettings && <IndicatorSettingsModal showSessions={showSessions} showSevenAmMarkers={showSevenAmMarkers} showRsi={showRsi} showSsl={showSsl} showTracker={showTracker} showManualTracker={showManualTracker} showWickExtensions={showWickExtensions} rsiPeriod={rsiPeriod} rsiLowBand={rsiLowBand} rsiHighBand={rsiHighBand} sslPeriod={sslPeriod} trackerPeriod={trackerPeriod} wickPeriod={wickPeriod} wickDisplayPeriod={wickDisplayPeriod} wickMultiplier={wickMultiplier} onClose={() => setShowIndicatorSettings(false)} onSessions={() => setShowSessions(value => !value)} onSevenAmMarkers={() => setShowSevenAmMarkers(value => !value)} onRsi={() => setShowRsi(value => !value)} onSsl={() => setShowSsl(value => !value)} onTracker={() => toggleTrackerMode('normal')} onManualTracker={() => toggleTrackerMode('manual')} onWickExtensions={() => setShowWickExtensions(value => !value)} onRsiPeriod={setRsiPeriod} onRsiLowBand={setRsiLowBand} onRsiHighBand={setRsiHighBand} onSslPeriod={setSslPeriod} onTrackerPeriod={setTrackerPeriod} onWickPeriod={setWickPeriod} onWickDisplayPeriod={setWickDisplayPeriod} onWickMultiplier={setWickMultiplier} />}</>;
+  const profileButton = <><button className="profile-avatar" onClick={() => setShowProfile(true)} aria-label="Abrir perfil" title="Perfil">{avatarLabel}</button>{showIndicatorSettings && <IndicatorSettingsModal showSessions={showSessions} showSevenAmMarkers={showSevenAmMarkers} showRsi={showRsi} showSsl={showSsl} showTracker={showTracker} showManualTracker={showManualTracker} showWickExtensions={showWickExtensions} showMaeMfeStudy={showMaeMfeStudy} rsiPeriod={rsiPeriod} rsiLowBand={rsiLowBand} rsiHighBand={rsiHighBand} sslPeriod={sslPeriod} trackerPeriod={trackerPeriod} wickPeriod={wickPeriod} wickDisplayPeriod={wickDisplayPeriod} wickMultiplier={wickMultiplier} onClose={() => setShowIndicatorSettings(false)} onSessions={() => setShowSessions(value => !value)} onSevenAmMarkers={() => setShowSevenAmMarkers(value => !value)} onRsi={() => setShowRsi(value => !value)} onSsl={() => setShowSsl(value => !value)} onTracker={() => toggleTrackerMode('normal')} onManualTracker={() => toggleTrackerMode('manual')} onWickExtensions={() => setShowWickExtensions(value => !value)} onMaeMfeStudy={() => setShowMaeMfeStudy(value => !value)} onRsiPeriod={setRsiPeriod} onRsiLowBand={setRsiLowBand} onRsiHighBand={setRsiHighBand} onSslPeriod={setSslPeriod} onTrackerPeriod={setTrackerPeriod} onWickPeriod={setWickPeriod} onWickDisplayPeriod={setWickDisplayPeriod} onWickMultiplier={setWickMultiplier} />}</>;
   const labButton = <button className="indicator-bar-button" onClick={() => setShowIndicatorSettings(true)} aria-label="Configurar indicadores" title="Indicadores">◌</button>;
   const riskEngineButton = <button className="indicator-bar-button" onClick={() => setShowRiskEngine(true)} aria-label="Abrir Risk Engine" title="Risk Engine">⚖</button>;
   const pnlCalendarButton = <button className="indicator-bar-button" onClick={() => setShowPnlCalendar(true)} aria-label="Abrir calendario PNL" title="Calendario PNL">▦</button>;
@@ -4427,6 +4211,9 @@ function Workspace() {
     const difference = (leftValue - rightValue) * (scannerSort.direction === 'desc' ? -1 : 1);
     return difference || left.candidate.symbol.localeCompare(right.candidate.symbol);
   });
+  const appliedScannerAnalysis = scannerRowsForTable.find(row => row.analysis?.snapshot_hours != null)?.analysis;
+  const scannerTableSnapshotHours = appliedScannerAnalysis?.snapshot_hours ?? scannerWindowHours;
+  const scannerTableEvaluationHours = appliedScannerAnalysis?.evaluation_hours ?? scannerWindowHours;
   const scannerTotals = scannerRowsForTable.reduce((totals, row) => {
     if (row.analysis?.last_bar_time == null) return totals;
     totals.operations += row.analysis.operations;
@@ -4454,8 +4241,8 @@ function Workspace() {
     if (rightResult == null) return -1;
     return rightResult - leftResult || left.symbol.localeCompare(right.symbol);
   });
-  const scannerResultsTable = broker === 'binance' ? <details className="scanner-results-panel"><summary>Scan compartido · SNAPSHOT {WALK_FORWARD_SNAPSHOT_HOURS}H / FORWARD {WALK_FORWARD_EVALUATION_HOURS}H · {scannerSnapshotFreshness} · {scannerSnapshotTimeLabel} · {scannerRowsForTable.length} símbolos · FWD {scannerTotals.operations} ops / {scannerTotals.wins} wins / {scannerTotals.losses} losses</summary><div className="scanner-results-scroll"><table className="scanner-results-table"><thead><tr><th>Símbolo</th><th>Estado</th><th>{scannerSortButton('TP snapshot', 'tp_optimal_percent')}</th><th>{scannerSortButton('Ops snapshot', 'operations')}</th><th>{scannerSortButton('USD snapshot', 'snapshot_final_result_usdt')}</th><th>{scannerSortButton('Ops forward', 'forward_operations' as ScannerSortKey)}</th><th>W / L forward</th><th>{scannerSortButton('USD forward', 'final_result_usdt')}</th></tr></thead><tbody>{scannerRowsForTable.map(({ candidate, analysis }) => { const snapshotPnl = analysis?.snapshot_final_result_usdt ?? analysis?.snapshot?.final_result_usdt; const forwardPnl = analysis?.forward_final_result_usdt ?? analysis?.final_result_usdt; return <tr key={candidate.symbol} className={candidate.symbol === symbol ? 'scanner-table-active' : ''}><td><button type="button" className="scanner-table-symbol" onClick={() => { setLabRecommendations(null); setSymbol(candidate.symbol); }}>{candidate.symbol}</button></td><td>{analysis?.status ?? (candidate.symbol === runningWorkerSymbol ? 'WORKER ACTIVO' : 'ANALYZING')}</td><td>{analysis?.tp_optimal_percent != null ? `${analysis.tp_optimal_percent.toFixed(2)}%` : '—'}</td><td>{analysis?.snapshot?.operations ?? analysis?.snapshot_operations ?? '—'}</td><td className={snapshotPnl != null ? snapshotPnl >= 0 ? 'scanner-table-positive' : 'scanner-table-negative' : ''}>{snapshotPnl != null ? `${snapshotPnl >= 0 ? '+' : ''}${snapshotPnl.toFixed(2)}` : '—'}</td><td>{analysis?.forward?.operations ?? analysis?.forward_operations ?? analysis?.operations ?? '—'}</td><td>{analysis?.forward ? `${analysis.forward.wins} / ${analysis.forward.losses}` : `${analysis?.wins ?? '—'} / ${analysis?.losses ?? '—'}`}</td><td className={forwardPnl != null ? forwardPnl >= 0 ? 'scanner-table-positive' : 'scanner-table-negative' : ''}>{forwardPnl != null ? `${forwardPnl >= 0 ? '+' : ''}${forwardPnl.toFixed(2)}` : '—'}</td></tr>; })}</tbody><tfoot><tr><th colSpan={2}>Totales</th><td colSpan={2}>Snapshot · {scannerNetResult.symbols} símbolos</td><td className={scannerNetResult.snapshot >= 0 ? 'scanner-table-positive' : 'scanner-table-negative'}>{scannerNetResult.symbols ? `${scannerNetResult.snapshot >= 0 ? '+' : ''}${scannerNetResult.snapshot.toFixed(2)}` : '—'}</td><td colSpan={2}>{activeMarketLoading ? 'Actualizando las ventanas…' : `${scannerAnalysisProgress.completed}/${scannerAnalysisProgress.total} analizados`}</td><td className={scannerNetResult.value >= 0 ? 'scanner-table-positive' : 'scanner-table-negative'}>{scannerNetResult.symbols ? `${scannerNetResult.value >= 0 ? '+' : ''}${scannerNetResult.value.toFixed(2)}` : '—'}</td></tr></tfoot></table></div></details> : null;
-  const scannerStatusBar = broker === 'binance' ? <div className="header-market-scanner" aria-label="Market scanner Binance"><div className="scanner-topline"><small className="scanner-profiling" title={`Tiempo total del ciclo: ${scannerProfiling.totalMs.toFixed(0)}ms`}>{scannerProfilingLabel}</small><button type="button" className="scanner-refresh-button" disabled={activeMarketLoading} aria-label="Volver a ejecutar el scan compartido" title="Vuelve a escanear el snapshot y su forward; se publica para Telegram" onClick={() => setScannerRefreshRequest(value => value + 1)}>{activeMarketLoading ? "ANALIZANDO" : "↻ SCAN"}</button><small className="scanner-last-scan" title={scannerLastScanTitle}>ÚLTIMO SCAN · {scannerSnapshotTimeLabel}</small>{runningWorkerSymbol && <small className="scanner-running-symbol" title={`Worker ${productionWorkerStatus?.mode ?? 'paper'} · ${productionWorkerStatus?.status ?? 'RUNNING'}`}>▶ WORKER · {runningWorkerSymbol}</small>}</div><article className={`scanner-total-card ${scannerNetResult.value >= 0 ? 'scanner-total-positive' : 'scanner-total-negative'}`} aria-label={`Resultado de snapshot y forward para ${scannerNetResult.symbols} símbolos`} title="Suma neta de resultados históricos; Snapshot es ajuste y Forward es evaluación con parámetros congelados. Excluye PNL flotante del worker"><small>SNAPSHOT · TOTAL</small><strong className={scannerNetResult.snapshot >= 0 ? 'scanner-metric-positive' : 'scanner-metric-negative'}>{scannerNetResult.symbols ? `${scannerNetResult.snapshot >= 0 ? '+' : ''}${scannerNetResult.snapshot.toFixed(2)}` : '—'} USDT</strong><small>FORWARD · TOTAL</small><strong className={scannerNetResult.value >= 0 ? 'scanner-metric-positive' : 'scanner-metric-negative'}>{scannerNetResult.symbols ? `${scannerNetResult.value >= 0 ? '+' : ''}${scannerNetResult.value.toFixed(2)}` : '—'} USDT</strong><em>{scannerNetResult.symbols}/{scannerRowsForTable.length} símbolos</em></article>{scannerCardsByResult.map(candidate => { const analysis = scannerAnalysisBySymbol[candidate.symbol]; const workerOnSymbol = runningWorkerSymbol === candidate.symbol.toUpperCase(); const activeParameters = workerOnSymbol && productionWorkerStatus?.adaptive_parameters ? { ...productionWorkerStatus.adaptive_parameters, source: 'WORKER' } : analysis?.active_parameters; const snapshotResult = analysis?.snapshot_final_result_usdt ?? analysis?.snapshot?.final_result_usdt ?? null; const forwardResult = analysis?.forward_final_result_usdt ?? analysis?.final_result_usdt ?? null; const resultClass = forwardResult == null ? '' : forwardResult > 0 ? 'scanner-result-positive' : forwardResult < 0 ? 'scanner-result-negative' : ''; const scannerTitle = analysis?.status === 'ERROR' ? `ERROR del scanner: no se pudo completar el análisis. Se reintentará en el próximo ciclo. ${analysis.error ?? ''}` : `SNAPSHOT ${snapshotResult == null ? '—' : `${snapshotResult >= 0 ? '+' : ''}${snapshotResult.toFixed(2)} USDT`} · FORWARD ${forwardResult == null ? '—' : `${forwardResult >= 0 ? '+' : ''}${forwardResult.toFixed(2)} USDT`} · TP ${analysis?.tp_optimal_percent?.toFixed(2) ?? '—'}% · MINROE ${analysis?.loss_limit_percent?.toFixed(2) ?? '—'}% · N ${activeParameters?.tracker_period ?? analysis?.tracker_period ?? trackerPeriod}${workerOnSymbol ? ` · WORKER ${activeParameters?.source ?? 'ACTIVO'} · v${activeParameters?.parameter_version ?? 0}` : ''}`; const windowMinutes = analysis?.bars ? Math.min((WALK_FORWARD_SNAPSHOT_HOURS + WALK_FORWARD_EVALUATION_HOURS) * 60, analysis.bars) : null; const windowLabel = windowMinutes == null ? '—' : `${Math.floor(windowMinutes / 60) ? `${Math.floor(windowMinutes / 60)}h` : ''}${windowMinutes % 60 ? `${windowMinutes % 60}m` : ''}` || '1m'; const windowTitle = `Ventanas contiguas: snapshot ${analysis?.snapshot_hours ?? WALK_FORWARD_SNAPSHOT_HOURS}h + forward ${analysis?.evaluation_hours ?? WALK_FORWARD_EVALUATION_HOURS}h`; return <article key={candidate.symbol} className={`header-market-item ${candidate.symbol === symbol ? 'active' : ''} ${resultClass} ${workerOnSymbol ? 'scanner-worker-active' : ''}`}><button type="button" className="header-market-main" title={scannerTitle} onClick={() => { setLabRecommendations(null); setSymbol(candidate.symbol); }}><b>{candidate.symbol}</b>{workerOnSymbol && <em className="scanner-worker-badge" aria-label="Worker ejecutando para este símbolo" title="Este símbolo tiene el worker activo">▶ RUNNING</em>}<small className="scanner-metrics"><i className={snapshotResult == null ? '' : snapshotResult >= 0 ? 'scanner-metric-positive' : 'scanner-metric-negative'} title="Resultado neto de la ventana de ajuste">SNAP {snapshotResult != null ? `${snapshotResult >= 0 ? '+' : ''}${snapshotResult.toFixed(2)}` : '—'} USD</i><i className={forwardResult == null ? '' : forwardResult >= 0 ? 'scanner-metric-positive' : 'scanner-metric-negative'} title="Resultado neto de evaluación con TP y SL limitado congelados">FWD {forwardResult != null ? `${forwardResult >= 0 ? '+' : ''}${forwardResult.toFixed(2)}` : '—'} USD</i><i title="Operaciones cerradas en el forward">FWD OPS {analysis?.forward?.operations ?? analysis?.forward_operations ?? analysis?.operations ?? '—'} · {analysis?.forward?.wins ?? analysis?.forward_wins ?? analysis?.wins ?? 0}W/{analysis?.forward?.losses ?? analysis?.forward_losses ?? analysis?.losses ?? 0}L</i><i title="Duración promedio de las operaciones forward">⌀ FWD {analysis?.forward?.average_duration_minutes != null ? `${analysis.forward.average_duration_minutes.toFixed(1)}m` : analysis?.average_duration_minutes != null ? `${analysis.average_duration_minutes.toFixed(1)}m` : '—'}</i><i title={windowTitle}>HISTORIAL {windowLabel}</i><i title="Balance máximo del forward">MAX BAL {analysis?.forward?.max_balance != null ? `${analysis.forward.max_balance.toFixed(2)} USDT` : analysis?.max_balance != null ? `${analysis.max_balance.toFixed(2)} USDT` : '—'}</i><i title="Balance mínimo del forward">MIN BAL {analysis?.forward?.min_balance != null ? `${analysis.forward.min_balance.toFixed(2)} USDT` : analysis?.min_balance != null ? `${analysis.min_balance.toFixed(2)} USDT` : '—'}</i></small></button></article>; })}</div> : null;
+  const scannerResultsTable = broker === 'binance' ? <details className="scanner-results-panel"><summary>Scan compartido · SNAPSHOT {scannerTableSnapshotHours}H / FORWARD {scannerTableEvaluationHours}H · {scannerSnapshotFreshness} · {scannerSnapshotTimeLabel} · {scannerRowsForTable.length} símbolos · FWD {scannerTotals.operations} ops / {scannerTotals.wins} wins / {scannerTotals.losses} losses</summary><div className="scanner-results-scroll"><table className="scanner-results-table"><thead><tr><th>Símbolo</th><th>Estado</th><th>{scannerSortButton('TP snapshot', 'tp_optimal_percent')}</th><th>{scannerSortButton('Ops snapshot', 'operations')}</th><th>{scannerSortButton('USD snapshot', 'snapshot_final_result_usdt')}</th><th>{scannerSortButton('Ops forward', 'forward_operations' as ScannerSortKey)}</th><th>W / L forward</th><th>{scannerSortButton('USD forward', 'final_result_usdt')}</th></tr></thead><tbody>{scannerRowsForTable.map(({ candidate, analysis }) => { const snapshotPnl = analysis?.snapshot_final_result_usdt ?? analysis?.snapshot?.final_result_usdt; const forwardPnl = analysis?.forward_final_result_usdt ?? analysis?.final_result_usdt; return <tr key={candidate.symbol} className={candidate.symbol === symbol ? 'scanner-table-active' : ''}><td><button type="button" className="scanner-table-symbol" onClick={() => { setLabRecommendations(null); setSymbol(candidate.symbol); }}>{candidate.symbol}</button></td><td>{analysis?.status ?? (candidate.symbol === runningWorkerSymbol ? 'WORKER ACTIVO' : 'ANALYZING')}</td><td>{analysis?.tp_optimal_percent != null ? `${analysis.tp_optimal_percent.toFixed(2)}%` : '—'}</td><td>{analysis?.snapshot?.operations ?? analysis?.snapshot_operations ?? '—'}</td><td className={snapshotPnl != null ? snapshotPnl >= 0 ? 'scanner-table-positive' : 'scanner-table-negative' : ''}>{snapshotPnl != null ? `${snapshotPnl >= 0 ? '+' : ''}${snapshotPnl.toFixed(2)}` : '—'}</td><td>{analysis?.forward?.operations ?? analysis?.forward_operations ?? analysis?.operations ?? '—'}</td><td>{analysis?.forward ? `${analysis.forward.wins} / ${analysis.forward.losses}` : `${analysis?.wins ?? '—'} / ${analysis?.losses ?? '—'}`}</td><td className={forwardPnl != null ? forwardPnl >= 0 ? 'scanner-table-positive' : 'scanner-table-negative' : ''}>{forwardPnl != null ? `${forwardPnl >= 0 ? '+' : ''}${forwardPnl.toFixed(2)}` : '—'}</td></tr>; })}</tbody><tfoot><tr><th colSpan={2}>Totales</th><td colSpan={2}>Snapshot · {scannerNetResult.symbols} símbolos</td><td className={scannerNetResult.snapshot >= 0 ? 'scanner-table-positive' : 'scanner-table-negative'}>{scannerNetResult.symbols ? `${scannerNetResult.snapshot >= 0 ? '+' : ''}${scannerNetResult.snapshot.toFixed(2)}` : '—'}</td><td colSpan={2}>{activeMarketLoading ? 'Actualizando las ventanas…' : `${scannerAnalysisProgress.completed}/${scannerAnalysisProgress.total} analizados`}</td><td className={scannerNetResult.value >= 0 ? 'scanner-table-positive' : 'scanner-table-negative'}>{scannerNetResult.symbols ? `${scannerNetResult.value >= 0 ? '+' : ''}${scannerNetResult.value.toFixed(2)}` : '—'}</td></tr></tfoot></table></div></details> : null;
+  const scannerStatusBar = broker === 'binance' ? <div className="header-market-scanner" aria-label="Market scanner Binance"><div className="scanner-topline"><small className="scanner-profiling" title={`Tiempo total del ciclo: ${scannerProfiling.totalMs.toFixed(0)}ms`}>{scannerProfilingLabel}</small><label className="scanner-window-control"><span>VENTANA</span><select aria-label="Horas de cada ventana del scanner" value={scannerWindowHours} disabled={activeMarketLoading} onChange={event => setScannerWindowHours(Math.max(1, Math.min(8, Number(event.target.value) || 8)))}>{Array.from({ length: 8 }, (_, index) => index + 1).map(hours => <option key={hours} value={hours}>{hours}h</option>)}</select></label><button type="button" className="scanner-refresh-button" disabled={activeMarketLoading} aria-label="Volver a ejecutar el scan compartido" title="Ejecuta manualmente el snapshot y el forward; se publica para Telegram" onClick={() => setScannerRefreshRequest(value => value + 1)}>{activeMarketLoading ? "ANALIZANDO" : "↻ SCAN"}</button><small className="scanner-last-scan" title={scannerLastScanTitle}>ÚLTIMO SCAN · {scannerSnapshotTimeLabel}</small>{runningWorkerSymbol && <small className="scanner-running-symbol" title={`Worker ${productionWorkerStatus?.mode ?? 'paper'} · ${productionWorkerStatus?.status ?? 'RUNNING'}`}>▶ WORKER · {runningWorkerSymbol}</small>}</div><article className={`scanner-total-card ${scannerNetResult.value >= 0 ? 'scanner-total-positive' : 'scanner-total-negative'}`} aria-label={`Resultado de snapshot y forward para ${scannerNetResult.symbols} símbolos`} title="Suma neta de resultados históricos; Snapshot es ajuste y Forward es evaluación con parámetros congelados. Excluye PNL flotante del worker"><small>SNAPSHOT · TOTAL</small><strong className={scannerNetResult.snapshot >= 0 ? 'scanner-metric-positive' : 'scanner-metric-negative'}>{scannerNetResult.symbols ? `${scannerNetResult.snapshot >= 0 ? '+' : ''}${scannerNetResult.snapshot.toFixed(2)}` : '—'} USDT</strong><small>FORWARD · TOTAL</small><strong className={scannerNetResult.value >= 0 ? 'scanner-metric-positive' : 'scanner-metric-negative'}>{scannerNetResult.symbols ? `${scannerNetResult.value >= 0 ? '+' : ''}${scannerNetResult.value.toFixed(2)}` : '—'} USDT</strong><em>{scannerNetResult.symbols}/{scannerRowsForTable.length} símbolos</em></article>{scannerCardsByResult.map(candidate => { const analysis = scannerAnalysisBySymbol[candidate.symbol]; const workerOnSymbol = runningWorkerSymbol === candidate.symbol.toUpperCase(); const activeParameters = workerOnSymbol && productionWorkerStatus?.adaptive_parameters ? { ...productionWorkerStatus.adaptive_parameters, source: 'WORKER' } : analysis?.active_parameters; const snapshotResult = analysis?.snapshot_final_result_usdt ?? analysis?.snapshot?.final_result_usdt ?? null; const forwardResult = analysis?.forward_final_result_usdt ?? analysis?.final_result_usdt ?? null; const resultClass = forwardResult == null ? '' : forwardResult > 0 ? 'scanner-result-positive' : forwardResult < 0 ? 'scanner-result-negative' : ''; const scannerTitle = analysis?.status === 'ERROR' ? `ERROR del scanner: no se pudo completar el análisis. Se reintentará en el próximo ciclo. ${analysis.error ?? ''}` : `SNAPSHOT ${snapshotResult == null ? '—' : `${snapshotResult >= 0 ? '+' : ''}${snapshotResult.toFixed(2)} USDT`} · FORWARD ${forwardResult == null ? '—' : `${forwardResult >= 0 ? '+' : ''}${forwardResult.toFixed(2)} USDT`} · TP ${analysis?.tp_optimal_percent?.toFixed(2) ?? '—'}% · MINROE ${analysis?.loss_limit_percent?.toFixed(2) ?? '—'}% · N ${activeParameters?.tracker_period ?? analysis?.tracker_period ?? trackerPeriod}${workerOnSymbol ? ` · WORKER ${activeParameters?.source ?? 'ACTIVO'} · v${activeParameters?.parameter_version ?? 0}` : ''}`; const windowMinutes = analysis?.bars ? Math.min(((analysis.snapshot_hours ?? WALK_FORWARD_SNAPSHOT_HOURS) + (analysis.evaluation_hours ?? WALK_FORWARD_EVALUATION_HOURS)) * 60, analysis.bars) : null; const windowLabel = windowMinutes == null ? '—' : `${Math.floor(windowMinutes / 60) ? `${Math.floor(windowMinutes / 60)}h` : ''}${windowMinutes % 60 ? `${windowMinutes % 60}m` : ''}` || '1m'; const windowTitle = `Ventanas contiguas: snapshot ${analysis?.snapshot_hours ?? WALK_FORWARD_SNAPSHOT_HOURS}h + forward ${analysis?.evaluation_hours ?? WALK_FORWARD_EVALUATION_HOURS}h`; return <article key={candidate.symbol} className={`header-market-item ${candidate.symbol === symbol ? 'active' : ''} ${resultClass} ${workerOnSymbol ? 'scanner-worker-active' : ''}`}><button type="button" className="header-market-main" title={scannerTitle} onClick={() => { setLabRecommendations(null); setSymbol(candidate.symbol); }}><b>{candidate.symbol}</b>{workerOnSymbol && <em className="scanner-worker-badge" aria-label="Worker ejecutando para este símbolo" title="Este símbolo tiene el worker activo">▶ RUNNING</em>}<small className="scanner-metrics"><i className={snapshotResult == null ? '' : snapshotResult >= 0 ? 'scanner-metric-positive' : 'scanner-metric-negative'} title="Resultado neto de la ventana de ajuste">SNAP {snapshotResult != null ? `${snapshotResult >= 0 ? '+' : ''}${snapshotResult.toFixed(2)}` : '—'} USD</i><i className={forwardResult == null ? '' : forwardResult >= 0 ? 'scanner-metric-positive' : 'scanner-metric-negative'} title="Resultado neto de evaluación con TP y SL limitado congelados">FWD {forwardResult != null ? `${forwardResult >= 0 ? '+' : ''}${forwardResult.toFixed(2)}` : '—'} USD</i><i title="Operaciones cerradas en el forward">FWD OPS {analysis?.forward?.operations ?? analysis?.forward_operations ?? analysis?.operations ?? '—'} · {analysis?.forward?.wins ?? analysis?.forward_wins ?? analysis?.wins ?? 0}W/{analysis?.forward?.losses ?? analysis?.forward_losses ?? analysis?.losses ?? 0}L</i><i title="Duración promedio de las operaciones forward">⌀ FWD {analysis?.forward?.average_duration_minutes != null ? `${analysis.forward.average_duration_minutes.toFixed(1)}m` : analysis?.average_duration_minutes != null ? `${analysis.average_duration_minutes.toFixed(1)}m` : '—'}</i><i title={windowTitle}>HISTORIAL {windowLabel}</i><i title="Balance máximo del forward">MAX BAL {analysis?.forward?.max_balance != null ? `${analysis.forward.max_balance.toFixed(2)} USDT` : analysis?.max_balance != null ? `${analysis.max_balance.toFixed(2)} USDT` : '—'}</i><i title="Balance mínimo del forward">MIN BAL {analysis?.forward?.min_balance != null ? `${analysis.forward.min_balance.toFixed(2)} USDT` : analysis?.min_balance != null ? `${analysis.min_balance.toFixed(2)} USDT` : '—'}</i></small></button></article>; })}</div> : null;
   const statusBarMessage = paperSyncError || binanceLeverageError || activeMarketError || productionWorkerError;
   const binanceReady = binanceOnline;
   const binanceStatusClass = binanceReady
@@ -4518,7 +4305,7 @@ function Workspace() {
   </aside>;
   const walkForwardCutLabel = walkForwardResult?.split_time != null ? new Date(walkForwardResult.split_time * 1000).toLocaleString('es-MX', { timeZone: timezone, hour: '2-digit', minute: '2-digit', day: '2-digit', month: 'short' }) : '—';
   const walkForwardCard = <section className="walk-forward-results" aria-label={`Resultados snapshot y forward de ${symbol}`}>
-    <header><strong>VALIDACIÓN RETROSPECTIVA · {WALK_FORWARD_SNAPSHOT_HOURS}H + {WALK_FORWARD_EVALUATION_HOURS}H</strong><span>{walkForwardResult ? `CORTE ${walkForwardCutLabel} · ACTUALIZA CADA 5 MIN` : 'SNAPSHOT Y FORWARD INDEPENDIENTES DEL REPLAY'}</span></header>
+    <header><strong>VALIDACIÓN RETROSPECTIVA · {walkForwardResult?.snapshot_hours ?? scannerWindowHours}H + {walkForwardResult?.evaluation_hours ?? scannerWindowHours}H</strong><span>{walkForwardResult ? `CORTE ${walkForwardCutLabel} · ACTUALIZA AL PULSAR SCAN` : 'SNAPSHOT Y FORWARD INDEPENDIENTES DEL REPLAY'}</span></header>
     <div className="walk-forward-segments">
       {(['snapshot', 'forward'] as const).map(segmentKey => {
         const segment = walkForwardResult?.[segmentKey];
@@ -4722,12 +4509,12 @@ function Workspace() {
 
   return mobilePwa ? <main className="trading-shell pwa-shell">
     <header className="pwa-mobile-header"><div><span className="pwa-brand">helloworld</span><span className="pwa-market">{broker.toUpperCase()} · {entryInterval.toUpperCase()} ENTRADA · {interval.toUpperCase()} CONTEXTO</span></div><select className="pwa-symbol-select" value={broker} onChange={event => { const next = event.target.value as 'binance' | 'ctrader'; setBroker(next); setSymbol(next === 'ctrader' ? 'AUDUSD' : 'BTCUSDT'); }} aria-label="Broker"><option value="binance">Binance</option><option value="ctrader">cTrader</option></select><select className="pwa-symbol-select" value={symbol} onChange={event => setSymbol(event.target.value)} aria-label="Símbolo">{selectableSymbols.map(option => <option key={option}>{option}</option>)}</select>{profileButton}</header>
-    <section className="pwa-chart-wrap">{chartStageView}</section>{scannerResultsTable}{normalTrackerGroup}{manualTrackerGroup}{positionsTable}{wickBacktestPanel}{paperStatsPanel}{recentClosedPanel}{labAssistPanel}<BalanceSummary paperBalance={paperEquity} revision={profileRevision} /><BinanceAccountPanel revision={profileRevision} /><CTraderAccountPanel revision={profileRevision} />{tradingAgent}
+    <section className="pwa-chart-wrap">{chartStageView}</section>{scannerResultsTable}{normalTrackerGroup}{manualTrackerGroup}{positionsTable}{wickBacktestPanel}{paperStatsPanel}{recentClosedPanel}{labStudyPanel}<BalanceSummary paperBalance={paperEquity} revision={profileRevision} /><BinanceAccountPanel revision={profileRevision} /><CTraderAccountPanel revision={profileRevision} />{tradingAgent}
     <nav className="pwa-bottom-nav" aria-label="Controles PWA"><button onClick={() => setTool(null)} className={!tool ? 'pwa-nav-active' : ''}>↖<span>Seleccionar</span></button><button onClick={() => setMobileSheet('indicators')} className={showSessions ? 'pwa-nav-active' : ''}>◉<span>Indicadores</span></button><button onClick={() => setShowHeikinAshi(value => !value)} className={showHeikinAshi ? 'pwa-nav-active' : ''}>HA<span>Heikin Ashi</span></button><button onClick={() => setMobileSheet('tools')} className={tool ? 'pwa-nav-active' : ''}>⌁<span>Herramientas</span></button><button onClick={() => void auth.logout()}>⇥<span>Salir</span></button></nav>
-    {mobileSheet === 'indicators' && <MobileSheet title="Indicadores" onClose={() => setMobileSheet(null)}><button className={`mobile-option ${showSessions ? 'option-active' : ''}`} onClick={() => setShowSessions(value => !value)}><span><b>Sesiones de mercado</b><small>Tokyo, Londres, Nueva York y Sydney</small></span><i>{showSessions ? '✓' : ''}</i></button><button className={`mobile-option ${showTracker ? 'option-active' : ''}`} onClick={() => toggleTrackerMode('normal')}><span><b>Tracker normal · producción</b><small>Indicador, parámetros, worker y resultados</small></span><i>{showTracker ? '✓' : ''}</i></button><button className={`mobile-option ${showManualTracker ? 'option-active' : ''}`} onClick={() => toggleTrackerMode('manual')}><span><b>Tracker Manual</b><small>Simulación separada · N {manualTrackerEffectivePeriod} · TP {manualTrackerEffectiveTarget.toFixed(2)}%</small></span><i>{showManualTracker ? '✓' : ''}</i></button><label className="mobile-field">Intervalo<select value={interval} onChange={event => setInterval(event.target.value as typeof interval)}>{(['1s', '1m', '3m', '5m', '15m'] as const).map(value => <option key={value}>{value}</option>)}</select></label><label className="mobile-field">Zona horaria<select value={timezone} onChange={event => setTimezone(event.target.value)}>{TIMEZONES.map(([label, value]) => <option key={value} value={value}>{label}</option>)}</select></label></MobileSheet>}
+    {mobileSheet === 'indicators' && <MobileSheet title="Indicadores" onClose={() => setMobileSheet(null)}><button className={`mobile-option ${showSessions ? 'option-active' : ''}`} onClick={() => setShowSessions(value => !value)}><span><b>Sesiones de mercado</b><small>Tokyo, Londres, Nueva York y Sydney</small></span><i>{showSessions ? '✓' : ''}</i></button><button className={`mobile-option ${showTracker ? 'option-active' : ''}`} onClick={() => toggleTrackerMode('normal')}><span><b>Tracker normal · producción</b><small>Indicador, parámetros, worker y resultados</small></span><i>{showTracker ? '✓' : ''}</i></button><button className={`mobile-option ${showManualTracker ? 'option-active' : ''}`} onClick={() => toggleTrackerMode('manual')}><span><b>Tracker Manual</b><small>Simulación separada · N {manualTrackerEffectivePeriod} · TP {manualTrackerEffectiveTarget.toFixed(2)}%</small></span><i>{showManualTracker ? '✓' : ''}</i></button><button className={`mobile-option ${showMaeMfeStudy ? 'option-active' : ''}`} onClick={() => setShowMaeMfeStudy(value => !value)}><span><b>Estudio MAE · MFE</b><small>Lab, tablas, gráficas y asistente</small></span><i>{showMaeMfeStudy ? '✓' : ''}</i></button><label className="mobile-field">Intervalo<select value={interval} onChange={event => setInterval(event.target.value as typeof interval)}>{(['1s', '1m', '3m', '5m', '15m'] as const).map(value => <option key={value}>{value}</option>)}</select></label><label className="mobile-field">Zona horaria<select value={timezone} onChange={event => setTimezone(event.target.value)}>{TIMEZONES.map(([label, value]) => <option key={value} value={value}>{label}</option>)}</select></label></MobileSheet>}
     {mobileSheet === 'tools' && <MobileSheet title="Herramientas" onClose={() => setMobileSheet(null)}><div className="mobile-tool-grid"><button className={!tool ? 'option-active' : ''} onClick={() => { setTool(null); setMobileSheet(null); }}>↖<span>Seleccionar</span></button>{toolOptions.map(([key, icon, label]) => <button key={key} className={tool === key ? 'option-active' : ''} onClick={() => { chooseTool(key); setMobileSheet(null); }}>{icon}<span>{label}</span></button>)}<button onClick={() => { setDrawings(current => current.filter(drawing => drawing.paper)); activePositionIndexRef.current = null; setActivePositionIndex(null); }}>×<span>Borrar dibujos</span></button></div></MobileSheet>}
     {showProfile && <ProfileModal onClose={() => setShowProfile(false)} onSaved={() => setProfileRevision(value => value + 1)} />}{pnlCalendarModal}
-  </main> : <main className="trading-shell">{desktopHeader}{chartsRow}{scannerResultsTable}{marketScanner}{normalTrackerGroup}{manualTrackerGroup}{positionsTable}{wickBacktestPanel}{paperStatsPanel}{recentClosedPanel}{labAssistPanel}<BalanceSummary paperBalance={paperEquity} revision={profileRevision} /><BinanceAccountPanel revision={profileRevision} /><CTraderAccountPanel revision={profileRevision} /><section ref={labSection} className="lab-layout-section"><LabWindow key={`${broker}:${symbol}`} activeSymbol={symbol} broker={broker} apiUrl={apiUrl} accessToken={auth.accessToken} initialBars={candleBarsRef.current} paperBalance={paperEquity} resolutionOverride={labResolution} onRecommendation={value => { setLabRecommendations(value); if (value) setLabResolution(value.resolution); }} /></section>{showProfile && <ProfileModal onClose={() => setShowProfile(false)} onSaved={() => setProfileRevision(value => value + 1)} />}{pnlCalendarModal}{tradingAgent}</main>;
+  </main> : <main className="trading-shell">{desktopHeader}{chartsRow}{scannerResultsTable}{marketScanner}{normalTrackerGroup}{manualTrackerGroup}{positionsTable}{wickBacktestPanel}{paperStatsPanel}{recentClosedPanel}{labStudyPanel}<BalanceSummary paperBalance={paperEquity} revision={profileRevision} /><BinanceAccountPanel revision={profileRevision} /><CTraderAccountPanel revision={profileRevision} />{showProfile && <ProfileModal onClose={() => setShowProfile(false)} onSaved={() => setProfileRevision(value => value + 1)} />}{pnlCalendarModal}{tradingAgent}</main>;
 }
 
 function App() {

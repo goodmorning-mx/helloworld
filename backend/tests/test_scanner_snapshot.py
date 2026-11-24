@@ -162,7 +162,7 @@ def test_web_snapshot_uses_existing_scanner_parameters_and_saves_complete_rows(m
     monkeypatch.setattr(main, "scanner_snapshot_store", FakeStore())
     payload = main.ScannerSnapshotInput(
         symbols=[{"symbol": "BTCUSDT", "variation_average_pct": 0.7, "leverage": 12}],
-        tracker_period=8, stop_percent=0.35, initial_balance=250, risk_percent=1.5,
+        window_hours=2, tracker_period=8, stop_percent=0.35, initial_balance=250, risk_percent=1.5,
     )
 
     result = asyncio.run(main.update_scanner_snapshot(payload, SimpleNamespace(user_id="owner")))
@@ -173,8 +173,12 @@ def test_web_snapshot_uses_existing_scanner_parameters_and_saves_complete_rows(m
     assert analysis_calls[0]["initial_balance"] == 250
     assert analysis_calls[0]["risk_percent"] == 1.5
     assert analysis_calls[0]["leverage"] == 12
-    assert analysis_calls[0]["limit"] == 960
+    assert analysis_calls[0]["limit"] == 240
+    assert analysis_calls[0]["hours"] == 2
     assert saved["user_id"] == "owner"
+    assert saved["config"]["snapshot_hours"] == 2
+    assert saved["config"]["evaluation_hours"] == 2
+    assert saved["config"]["window_seconds"] == 4 * 60 * 60
     assert result["symbols"][0]["tp_optimal_percent"] == 2.4
     assert result["symbols"][0]["loss_limit_percent"] == 5.0
     assert result["symbols"][0]["tracker_period"] == 8
@@ -247,6 +251,9 @@ def test_worker_parameter_publication_refreshes_shared_result_asynchronously(mon
     analyzed = []
 
     class FakeStore:
+        def get(self, _user_id):
+            return {"config": {"snapshot_hours": 3}}
+
         def publish_worker_parameters(self, user_id, symbol, parameters):
             published.append(("parameters", user_id, symbol, dict(parameters)))
 
@@ -278,6 +285,7 @@ def test_worker_parameter_publication_refreshes_shared_result_asynchronously(mon
 
     assert len(analyzed) == 1
     assert analyzed[0]["target_percent"] == 2.4
+    assert analyzed[0]["hours"] == 3
     assert analyzed[0]["tracker_period"] == 8
     assert published[-1][0] == "analysis"
     assert published[-1][-1] == 5
