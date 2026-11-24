@@ -398,9 +398,12 @@
 .replay-controls small { margin-left: .2rem; letter-spacing: .04em; }
 .replay-start-marker { cursor: ew-resize; pointer-events: all; touch-action: none; }
 .replay-start-marker-locked { cursor: default; pointer-events: none; }
-.replay-start-line { stroke: #f5c45e; stroke-width: 2; stroke-dasharray: 5 3; vector-effect: non-scaling-stroke; }
-.replay-start-label-bg { fill: #241d0e; stroke: #f5b84b; stroke-width: 1; vector-effect: non-scaling-stroke; }
-.replay-start-label { fill: #ffe29a; font: 600 9px 'DM Mono', monospace; pointer-events: none; }
+.forward-validation-zone { fill: #00e58a08; pointer-events: none; }
+.replay-start-line { stroke: #ffc247; stroke-width: 4; stroke-dasharray: 8 4; vector-effect: non-scaling-stroke; filter: drop-shadow(0 0 4px #ffb21a); }
+.replay-start-label-bg { fill: #241d0e; stroke: #ffc247; stroke-width: 2; vector-effect: non-scaling-stroke; filter: drop-shadow(0 2px 8px #000c); }
+.replay-start-label-main { fill: #ffe29a; font: 900 13px 'DM Mono', monospace; letter-spacing: .08em; pointer-events: none; }
+.replay-start-label-detail { fill: #d1d8df; font: 700 8px 'DM Mono', monospace; letter-spacing: .025em; pointer-events: none; }
+.replay-start-label-time { fill: #ffc247; font: 700 9px 'DM Mono', monospace; pointer-events: none; }
 .tracker-live-volatility-label { fill: #f5c45e; font: 800 11px 'DM Mono', monospace; paint-order: stroke; stroke: #080a0d; stroke-width: 3px; stroke-linejoin: round; pointer-events: none; }
 
 /* Keep the scanner compact while its symbols are analyzed progressively. */
