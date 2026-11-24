@@ -114,8 +114,27 @@ async function fetchJson<T>(input: RequestInfo | URL, init?: RequestInit, retrie
 // Keep the complete loaded 1m history in the series. Trimming it back to 240
 // bars after loading older data invalidates the logical range and resets zoom.
 const MAX_ENTRY_RENDER_BARS = 10080;
-const MAX_CONTEXT_RENDER_BARS = 180;
+const MAX_CONTEXT_RENDER_BARS = 1000;
 const INITIAL_ENTRY_BARS = 240;
+const WALK_FORWARD_SNAPSHOT_HOURS = 8;
+const WALK_FORWARD_EVALUATION_HOURS = 8;
+const WALK_FORWARD_TOTAL_HOURS = WALK_FORWARD_SNAPSHOT_HOURS + WALK_FORWARD_EVALUATION_HOURS;
+const WALK_FORWARD_ENTRY_BARS = WALK_FORWARD_TOTAL_HOURS * 60;
+const WALK_FORWARD_FETCH_BARS = 1000;
+function walkForwardBarsForInterval(interval: string) {
+  const match = /^(\d+)([smhd])$/.exec(interval);
+  const size = Number(match?.[1] ?? 1);
+  const unit = match?.[2] ?? 'm';
+  const secondsPerUnit = unit === 's' ? 1 : unit === 'm' ? 60 : unit === 'h' ? 3600 : 86400;
+  return Math.min(WALK_FORWARD_FETCH_BARS, Math.ceil(WALK_FORWARD_TOTAL_HOURS * 3600 / Math.max(60, size * secondsPerUnit)));
+}
+function walkForwardBoundaryTime(bars: Array<{ time: number }>) {
+  if (!bars.length) return null;
+  const lastClosedBar = bars.length > 1 ? bars[bars.length - 2] : bars[bars.length - 1];
+  // T is the close of the most recent completed 1m candle minus the
+  // evaluation horizon. Candles to the right of T are the forward segment.
+  return Number(lastClosedBar.time) + 60 - WALK_FORWARD_EVALUATION_HOURS * 3600;
+}
 
 async function fetchRecentApiBars(apiUrl: string, symbol: string, interval: string, limit: number, accessToken: string | null, cachedBars: MarketBar[] = []): Promise<MarketBar[]> {
   const intervalMatch = /^(\d+)([mhd])$/.exec(interval);
@@ -372,7 +391,7 @@ type ViewportSnapshot = { bars: number; futureBars: number; yBelow: number; yAbo
 type OhlcHover = { time: UTCTimestamp; open: number; high: number; low: number; close: number; x: number; y: number };
 type ReplayState = { active: boolean; running: boolean; cursor: number; total: number; start: number };
 type ReplayStartDrag = { canvas: 'entry' | 'context' } | null;
-const ENTRY_VIEWPORT_DEFAULTS: ViewportSnapshot = { bars: 100, futureBars: 0, yBelow: 14, yAbove: 11 };
+const ENTRY_VIEWPORT_DEFAULTS: ViewportSnapshot = { bars: WALK_FORWARD_ENTRY_BARS, futureBars: 0, yBelow: 14, yAbove: 11 };
 function renderBars(bars: Array<{ time: UTCTimestamp; open: number; high: number; low: number; close: number }>, max: number) {
   return bars.slice(-max);
 }
@@ -1220,6 +1239,7 @@ function Workspace() {
   const replayAllBarsRef = useRef<Array<{ time: UTCTimestamp; open: number; high: number; low: number; close: number }>>([]);
   const replayRef = useRef<ReplayState>({ active: false, running: false, cursor: -1, total: 0, start: -1 });
   const replayStartDragRef = useRef<ReplayStartDrag>(null);
+  const replayStartManualRef = useRef(false);
   const [replayState, setReplayState] = useState<ReplayState>({ active: false, running: false, cursor: -1, total: 0, start: -1 });
   const [replayStartTime, setReplayStartTime] = useState<number | null>(null);
   const [entryOhlcHover, setEntryOhlcHover] = useState<OhlcHover | null>(null);
@@ -1252,13 +1272,13 @@ function Workspace() {
   const [binanceExecutionIntents, setBinanceExecutionIntents] = useState<BinanceExecutionIntent[]>([]);
   const [broker, setBroker] = useState<'binance' | 'ctrader'>('binance');
   const [interval, setInterval] = useState<'1s' | '1m' | '3m' | '5m' | '15m'>('5m');
-  // Default snapshot for the 5m workspace viewport.
-  const [viewportBars, setViewportBars] = useState(37);
-  const [viewportFutureBars, setViewportFutureBars] = useState(12);
+  // The context chart opens with the same 8h + 8h validation window.
+  const [viewportBars, setViewportBars] = useState(walkForwardBarsForInterval('5m'));
+  const [viewportFutureBars, setViewportFutureBars] = useState(0);
   const [viewportYBelow, setViewportYBelow] = useState(22);
   const [viewportYAbove, setViewportYAbove] = useState(3);
   const [entryViewportSnapshot, setEntryViewportSnapshot] = useState<ViewportSnapshot>(ENTRY_VIEWPORT_DEFAULTS);
-  const [overviewViewportSnapshot, setOverviewViewportSnapshot] = useState<ViewportSnapshot>({ bars: 37, futureBars: 12, yBelow: 22, yAbove: 3 });
+  const [overviewViewportSnapshot, setOverviewViewportSnapshot] = useState<ViewportSnapshot>({ bars: walkForwardBarsForInterval('5m'), futureBars: 0, yBelow: 22, yAbove: 3 });
   const syncViewportSnapshot = (chart: ReturnType<typeof createChart>, data: Array<{ close: number }>, setSnapshot: React.Dispatch<React.SetStateAction<ViewportSnapshot>>) => {
     const snapshot = getChartViewportSnapshot(chart, data);
     if (!snapshot) return;
@@ -1398,7 +1418,14 @@ function Workspace() {
     // setData may let lightweight-charts recalculate the viewport. Keep the
     // user's zoom instead: the replay cursor becomes the new right edge while
     // preserving the previous number of visible bars, future space and Y range.
-    if (chart && visible.length && logicalSpan != null) {
+    if (chart && visible.length && replayRef.current.active) {
+      const splitIndex = replayRef.current.start;
+      chart.timeScale().setVisibleLogicalRange({
+        from: Math.max(0, splitIndex - WALK_FORWARD_SNAPSHOT_HOURS * 60),
+        to: splitIndex + WALK_FORWARD_EVALUATION_HOURS * 60,
+      });
+      if (previousPriceRange) chart.priceScale('right').setVisibleRange(previousPriceRange);
+    } else if (chart && visible.length && logicalSpan != null) {
       const nextLastIndex = visible.length - 1;
       chart.timeScale().setVisibleLogicalRange({
         from: Math.max(0, nextLastIndex + futureBars - logicalSpan),
@@ -1415,6 +1442,7 @@ function Workspace() {
     if (all.length === 0 || start < 0) return;
     replayAllBarsRef.current = [...all];
     const next = { active: true, running: false, cursor: start, total: all.length, start };
+    replayStartManualRef.current = true;
     setReplayStartTime(Number(all[start].time));
     setReplaySnapshot(next);
     renderReplayPrefix(start);
@@ -1422,8 +1450,9 @@ function Workspace() {
   const advanceReplay = (delta = 1) => {
     const current = replayRef.current;
     if (!current.active) return;
-    const nextCursor = Math.max(current.start, Math.min(current.total - 1, current.cursor + delta));
-    const next = { ...current, cursor: nextCursor, running: delta > 0 && nextCursor < current.total - 1 ? current.running : false };
+    const evaluationEnd = Math.min(current.total - 1, current.start + WALK_FORWARD_EVALUATION_HOURS * 60);
+    const nextCursor = Math.max(current.start, Math.min(evaluationEnd, current.cursor + delta));
+    const next = { ...current, cursor: nextCursor, running: delta > 0 && nextCursor < evaluationEnd ? current.running : false };
     setReplaySnapshot(next);
     renderReplayPrefix(nextCursor);
   };
@@ -1868,8 +1897,15 @@ function Workspace() {
     setTrackerLossLimitEnabled(false);
     trackerOpenTargetRef.current = null;
     replayStartDragRef.current = null;
+    replayStartManualRef.current = false;
     setReplayStartTime(null);
   }, [symbol, broker]);
+
+  useEffect(() => {
+    if (!symbolHistoryReady || replayState.active || replayStartManualRef.current) return;
+    const boundary = walkForwardBoundaryTime(candleBarsRef.current);
+    if (boundary != null) setReplayStartTime(current => current === boundary ? current : boundary);
+  }, [symbolHistoryReady, trackerRevision, replayState.active, symbol, broker]);
 
   useEffect(() => {
     setTrackerScannerDetail(null);
@@ -2365,14 +2401,23 @@ function Workspace() {
       setViewportRevision(value => value + 1);
     }).catch(() => undefined);
     void requestRecentBars(symbol, entryInterval, cached => fetchRecentApiBars(apiUrl, symbol, entryInterval, INITIAL_ENTRY_BARS, auth.accessToken, cached))
+      .then(async recent => {
+        if (recent.length >= WALK_FORWARD_ENTRY_BARS) return recent;
+        const completeWindow = await fetchRecentApiBars(apiUrl, symbol, entryInterval, WALK_FORWARD_FETCH_BARS, auth.accessToken, []);
+        return mergeBars(
+          recent.map(bar => ({ ...bar, time: Number(bar.time) as UTCTimestamp })),
+          completeWindow.map(bar => ({ ...bar, time: Number(bar.time) as UTCTimestamp })),
+        );
+      })
       .then(parsedRows => {
         if (!active) return;
         const parsed = parsedRows.map(row => ({ time: Number(row.time) as UTCTimestamp, open: Number(row.open), high: Number(row.high), low: Number(row.low), close: Number(row.close) }));
         if (parsed.length === 0) return;
         const hadLiveBars = candleBarsRef.current.length > 0;
+        const needsWalkForwardFit = candleBarsRef.current.length < WALK_FORWARD_ENTRY_BARS;
         candleBarsRef.current = hadLiveBars ? mergeBars(candleBarsRef.current, parsed) : parsed;
         trimRollingBars(candleBarsRef.current);
-        void cacheBars(symbol, entryInterval, parsed);
+        void cacheBars(symbol, entryInterval, candleBarsRef.current);
         candleDataRef.current = candleBarsRef.current.map(({ time, close }) => ({ time, close }));
         const visibleBars = renderBars(candleBarsRef.current, MAX_ENTRY_RENDER_BARS);
         initializingViewport = true;
@@ -2380,12 +2425,12 @@ function Workspace() {
           entryHeikinAshiBarsRef.current = calculateHeikinAshi(visibleBars) as LiveBar[];
           setDataPreservingRange(entryHeikinAshiBarsRef.current);
         } else setDataPreservingRange(visibleBars);
-        if (!hadLiveBars || !chart.timeScale().getVisibleLogicalRange()) applyDefaultChartViewport(chart, visibleBars, ENTRY_VIEWPORT_DEFAULTS.bars, ENTRY_VIEWPORT_DEFAULTS.futureBars, ENTRY_VIEWPORT_DEFAULTS.yBelow, ENTRY_VIEWPORT_DEFAULTS.yAbove);
+        if (needsWalkForwardFit || !chart.timeScale().getVisibleLogicalRange()) applyDefaultChartViewport(chart, visibleBars, ENTRY_VIEWPORT_DEFAULTS.bars, ENTRY_VIEWPORT_DEFAULTS.futureBars, ENTRY_VIEWPORT_DEFAULTS.yBelow, ENTRY_VIEWPORT_DEFAULTS.yAbove);
         syncViewportSnapshot(chart, visibleBars, setEntryViewportSnapshot);
         requestAnimationFrame(() => { if (active) initializingViewport = false; });
         setTrackerRevision(value => value + 1);
         setViewportRevision(value => value + 1);
-        if (!hadLiveBars) setReplayStartTime(Number(candleBarsRef.current[candleBarsRef.current.length - 1]?.time) || null);
+        if (!replayStartManualRef.current) setReplayStartTime(walkForwardBoundaryTime(candleBarsRef.current));
         setSymbolHistoryReady(true);
       })
       .catch(() => undefined);
@@ -2540,8 +2585,8 @@ function Workspace() {
 
   useEffect(() => {
     const defaults = interval === '1m'
-      ? { bars: 100, futureBars: 0, yBelow: 14, yAbove: 11 }
-      : { bars: 37, futureBars: 12, yBelow: 22, yAbove: 3 };
+      ? { bars: walkForwardBarsForInterval(interval), futureBars: 0, yBelow: 14, yAbove: 11 }
+      : { bars: walkForwardBarsForInterval(interval === '1s' ? '1m' : interval), futureBars: 0, yBelow: 22, yAbove: 3 };
     setViewportBars(defaults.bars);
     setViewportFutureBars(defaults.futureBars);
     setViewportYBelow(defaults.yBelow);
@@ -2714,15 +2759,25 @@ function Workspace() {
       setTrackerRevision(value => value + 1);
       setOverviewRevision(value => value + 1);
     }).catch(() => undefined);
+    const walkForwardContextBars = walkForwardBarsForInterval(gatewayInterval);
     void requestRecentBars(symbol, gatewayInterval, cached => fetchRecentApiBars(apiUrl, symbol, gatewayInterval, INITIAL_CONTEXT_BARS, auth.accessToken, cached))
+      .then(async recent => {
+        if (recent.length >= walkForwardContextBars) return recent;
+        const completeWindow = await fetchRecentApiBars(apiUrl, symbol, gatewayInterval, walkForwardContextBars, auth.accessToken, []);
+        return mergeBars(
+          recent.map(bar => ({ ...bar, time: Number(bar.time) as UTCTimestamp })),
+          completeWindow.map(bar => ({ ...bar, time: Number(bar.time) as UTCTimestamp })),
+        );
+      })
       .then(parsedRows => {
         if (!active) return;
         const parsed = parsedRows.map(row => ({ time: Number(row.time) as UTCTimestamp, open: Number(row.open), high: Number(row.high), low: Number(row.low), close: Number(row.close) }));
         if (parsed.length === 0) return;
         const hadLiveBars = overviewBarsRef.current.length > 0;
+        const needsWalkForwardFit = overviewBarsRef.current.length < walkForwardContextBars;
         overviewBarsRef.current = hadLiveBars ? mergeBars(overviewBarsRef.current, parsed) : parsed;
         trimRollingBars(overviewBarsRef.current);
-        void cacheBars(symbol, gatewayInterval, parsed);
+        void cacheBars(symbol, gatewayInterval, overviewBarsRef.current);
         overviewCandleDataRef.current = overviewBarsRef.current.map(({ time, close }) => ({ time, close }));
         const visibleBars = renderBars(overviewBarsRef.current, MAX_CONTEXT_RENDER_BARS);
         initializingViewport = true;
@@ -2730,7 +2785,7 @@ function Workspace() {
           overviewHeikinAshiBarsRef.current = calculateHeikinAshi(overviewBarsRef.current) as LiveBar[];
           setDataPreservingRange(renderBars(overviewHeikinAshiBarsRef.current, MAX_CONTEXT_RENDER_BARS));
         } else setDataPreservingRange(visibleBars);
-        if (!hadLiveBars || !chart.timeScale().getVisibleLogicalRange()) applyDefaultChartViewport(chart, visibleBars, viewportBars, viewportFutureBars, viewportYBelow, viewportYAbove);
+        if (needsWalkForwardFit || !chart.timeScale().getVisibleLogicalRange()) applyDefaultChartViewport(chart, visibleBars, viewportBars, viewportFutureBars, viewportYBelow, viewportYAbove);
         syncViewportSnapshot(chart, visibleBars, setOverviewViewportSnapshot);
         requestAnimationFrame(() => { if (active) initializingViewport = false; });
         setTrackerRevision(value => value + 1);
@@ -2980,6 +3035,7 @@ function Workspace() {
     if (replayState.active) return;
     event.preventDefault();
     event.stopPropagation();
+    replayStartManualRef.current = true;
     replayStartDragRef.current = { canvas };
     const stage = canvas === 'entry' ? chartStage.current : overviewStage.current;
     stage?.setPointerCapture(event.pointerId);
@@ -2996,12 +3052,16 @@ function Workspace() {
     if (markerTime == null) return null;
     const x = chart.timeScale().timeToCoordinate(markerTime as UTCTimestamp);
     if (x == null) return null;
-    const labelX = Math.min(Math.max(4, x + 5), Math.max(4, width - 112));
+    const badgeWidth = Math.min(292, Math.max(180, width - 12));
+    const labelX = Math.min(Math.max(6, x - badgeWidth / 2), Math.max(6, width - badgeWidth - 6));
     return <g className={`replay-start-marker ${replayState.active ? 'replay-start-marker-locked' : ''}`} onPointerDown={event => beginReplayStartDrag(event, canvas)}>
+      <rect x={x} y="0" width={Math.max(0, width - x)} height={height} className="forward-validation-zone" pointerEvents="none" />
       <line x1={x} y1="0" x2={x} y2={height} className="replay-start-line" pointerEvents={replayState.active ? 'none' : 'stroke'} />
       {!replayState.active && <rect x={x - 8} y="0" width="16" height={height} fill="transparent" pointerEvents="all" />}
-      <rect x={labelX} y="28" width="108" height="17" rx="3" className="replay-start-label-bg" pointerEvents="none" />
-      <text x={labelX + 5} y="40" className="replay-start-label" pointerEvents="none"><title>Arrastra para elegir desde qué vela comienza el replay</title>REPLAY · {chartTimeLabel(markerTime as UTCTimestamp, timezone, false)}</text>
+      <rect x={labelX} y="72" width={badgeWidth} height="60" rx="5" className="replay-start-label-bg" pointerEvents="none" />
+      <text x={labelX + badgeWidth / 2} y="89" textAnchor="middle" className="replay-start-label-main" pointerEvents="none"><title>Arrastra para elegir T; el replay reproduce las velas que siguen a este punto</title>INICIO DEL FORWARD</text>
+      <text x={labelX + badgeWidth / 2} y="107" textAnchor="middle" className="replay-start-label-detail" pointerEvents="none">TOTAL 16H · SNAPSHOT 8H ← · → FORWARD 8H</text>
+      <text x={labelX + badgeWidth / 2} y="123" textAnchor="middle" className="replay-start-label-time" pointerEvents="none">{chartTimeLabel(markerTime as UTCTimestamp, timezone, false)}</text>
     </g>;
   }
 
@@ -4328,7 +4388,14 @@ function Workspace() {
   const binanceStatusClass = binanceReady
     ? executionMode === 'production' ? 'broker-production-connected' : 'broker-paper-ready'
     : 'broker-not-ready';
-  const replayControls = <div className={`replay-controls ${replayState.active ? 'replay-active' : ''}`} aria-label="Repetición vela a vela"><button type="button" onClick={() => replayState.active ? setReplaySnapshot({ ...replayState, running: !replayState.running }) : startReplayFromMarker()} disabled={!replayState.active && (!symbolHistoryReady || !candleBarsRef.current.length)} title={replayState.active ? 'Reproducir o pausar la repetición' : 'Iniciar replay desde la línea vertical'}>{replayState.running ? 'Ⅱ' : '▶'}</button><button type="button" onClick={() => advanceReplay(-1)} disabled={!replayState.active || replayState.cursor <= replayState.start} title="Vela anterior">‹</button><button type="button" onClick={() => advanceReplay(1)} disabled={!replayState.active || replayState.cursor >= replayState.total - 1} title="Siguiente vela">›</button><button type="button" onClick={stopReplay} disabled={!replayState.active} title="Salir de repetición">×</button><small>{replayState.active ? `REPLAY ${replayState.cursor + 1}/${replayState.total}` : replayStartTime != null ? `DESDE ${chartTimeLabel(replayStartTime as UTCTimestamp, timezone, false)}` : 'ARRASTRA LÍNEA · REPLAY'}</small></div>;
+  const replayEvaluationEnd = replayState.active ? Math.min(replayState.total - 1, replayState.start + WALK_FORWARD_EVALUATION_HOURS * 60) : -1;
+  const replayControls = <div className={`replay-controls ${replayState.active ? 'replay-active' : ''}`} aria-label="Validación Walk-Forward vela a vela">
+    <button type="button" onClick={() => replayState.active ? setReplaySnapshot({ ...replayState, running: !replayState.running }) : startReplayFromMarker()} disabled={replayState.active ? replayState.cursor >= replayEvaluationEnd : !symbolHistoryReady || !candleBarsRef.current.length} title={replayState.active ? 'Reproducir o pausar las 8 horas de evaluación' : 'Iniciar validación desde el marcador'}>{replayState.running ? 'Ⅱ' : '▶'}</button>
+    <button type="button" onClick={() => advanceReplay(-1)} disabled={!replayState.active || replayState.cursor <= replayState.start} title="Vela anterior">‹</button>
+    <button type="button" onClick={() => advanceReplay(1)} disabled={!replayState.active || replayState.cursor >= replayEvaluationEnd} title="Siguiente vela de evaluación">›</button>
+    <button type="button" onClick={stopReplay} disabled={!replayState.active} title="Salir de la validación">×</button>
+    <small>{replayState.active ? `FORWARD ${replayState.cursor - replayState.start}/${replayEvaluationEnd - replayState.start} · 1M` : replayStartTime != null ? `SNAPSHOT ${WALK_FORWARD_SNAPSHOT_HOURS}H + FORWARD ${WALK_FORWARD_EVALUATION_HOURS}H` : 'ARRASTRA MARCADOR · REPLAY'}</small>
+  </div>;
   const desktopHeader = <div className="symbol-bar"><select className={`broker-select ${broker === 'binance' ? binanceStatusClass : ''}`} value={broker} onChange={event => { const next = event.target.value as 'binance' | 'ctrader'; setBroker(next); setSymbol(next === 'ctrader' ? 'AUDUSD' : 'BTCUSDT'); }} aria-label="Broker"><option value="binance">Binance</option><option value="ctrader">cTrader</option></select><select className="symbol-select" value={symbol} onChange={event => setSymbol(event.target.value)} aria-label="Símbolo">
     {selectableSymbols.map(option => <option key={option}>{option}</option>)}
   </select><select className="interval-select" value={interval} onChange={event => setInterval(event.target.value as typeof interval)} aria-label="Intervalo de contexto">{(['1s', '1m', '3m', '5m', '15m'] as const).map(value => <option key={value} value={value}>{value}</option>)}</select>{scannerStatusBar}{broker === 'binance' && <>{productionPositionLabel && <span className={`production-position-summary ${productionPositions.some(position => Number(position.unrealized_pnl ?? 0) >= 0) ? 'production-profit' : 'production-loss'}`}>{productionPositionLabel}</span>}</>}{statusBarMessage && <span className="header-status-error" role="status" title={statusBarMessage}>⚠ {statusBarMessage}</span>}<div className="chart-tools" aria-label="Herramientas del gráfico">
