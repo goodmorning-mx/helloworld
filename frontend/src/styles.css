@@ -413,3 +413,9 @@
   .trading-shell:not(.pwa-shell) > .tracker-mode-manual { order: 5; }
 }
 @media (max-width: 760px) { .manual-tracker-header { flex-direction: column; }.manual-tracker-controls { justify-content: flex-start; }.manual-tracker-summary { grid-template-columns: repeat(2, minmax(0, 1fr)); }.manual-tracker-summary > div:last-child { grid-column: 1 / -1; } }
+.manual-tracker-statusbar { display: flex; flex: 0 0 auto; align-items: center; gap: .55rem; min-height: 36px; padding: .25rem .45rem; border: 1px solid #7656b7; border-radius: 7px; background: #171328; color: #e9ddff; font: 700 .52rem 'DM Mono', monospace; white-space: nowrap; }
+.manual-tracker-statusbar > strong { color: #c4b5fd; }
+.manual-tracker-statusbar label { display: flex; align-items: center; gap: .35rem; color: #c7b6ed; }
+.manual-tracker-statusbar input { width: 3.3rem; min-height: 27px; padding: .2rem .3rem; border: 1px solid #725aa7; border-radius: 4px; color: #f4ecff; background: #100d1a; font: 800 .68rem 'DM Mono', monospace; text-align: center; }
+.manual-tracker-statusbar > small { color: #bdadd5; }
+@media (max-width: 650px) { .manual-tracker-statusbar { gap: .35rem; padding: .2rem .35rem; } .manual-tracker-statusbar > strong { display: none; } }
