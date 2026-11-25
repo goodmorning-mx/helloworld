@@ -419,3 +419,21 @@
 .manual-tracker-statusbar input { width: 3.3rem; min-height: 27px; padding: .2rem .3rem; border: 1px solid #725aa7; border-radius: 4px; color: #f4ecff; background: #100d1a; font: 800 .68rem 'DM Mono', monospace; text-align: center; }
 .manual-tracker-statusbar > small { color: #bdadd5; }
 @media (max-width: 650px) { .manual-tracker-statusbar { gap: .35rem; padding: .2rem .35rem; } .manual-tracker-statusbar > strong { display: none; } }
+.manual-scanner-strip { margin: .25rem 0 .65rem; padding: .5rem .6rem; border: 1px solid #344554; border-radius: 9px; background: #0d151d; }
+.manual-scanner-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: .4rem; margin-bottom: .45rem; color: #a8c2d5; font: 700 .52rem 'DM Mono', monospace; }
+.manual-scanner-toolbar > strong { margin-right: auto; color: #80d9f0; letter-spacing: .06em; }
+.manual-scanner-toolbar label { display: inline-flex; align-items: center; gap: .3rem; color: #8ea6b9; }
+.manual-scanner-toolbar select { min-height: 27px; padding: .2rem .35rem; border: 1px solid #354554; border-radius: 5px; background: #101923; color: #d8e6f2; font: 700 .55rem 'DM Mono', monospace; }
+.manual-scanner-toolbar > small { color: #8196a8; font: 500 .5rem 'DM Mono', monospace; }
+.manual-scanner-chips { display: flex; flex-wrap: wrap; gap: .3rem; }
+.manual-scanner-chip { display: inline-flex; align-items: center; gap: .45rem; min-height: 28px; padding: .25rem .45rem; border: 1px solid #334452; border-radius: 999px; background: #111b24; color: #c8d7e2; cursor: pointer; font: 600 .53rem 'DM Mono', monospace; }
+.manual-scanner-chip b { color: #e8f0f7; font-weight: 800; }
+.manual-scanner-chip span { color: #a6b3bf; }
+.manual-scanner-chip-positive { border-color: #287653; background: #10251e; }
+.manual-scanner-chip-positive span { color: #54e19a; }
+.manual-scanner-chip-negative { border-color: #8b4147; background: #2a171b; }
+.manual-scanner-chip-negative span { color: #ff8588; }
+.manual-scanner-chip:hover, .manual-scanner-chip-active { border-color: #b08aff; box-shadow: 0 0 0 1px #b08aff50; }
+.manual-scanner-chip-active b { color: #d3bbff; }
+.manual-scanner-empty { padding: .35rem; color: #8294a3; font: .55rem 'DM Mono', monospace; }
+@media (max-width: 650px) { .manual-scanner-toolbar > strong { flex-basis: 100%; } .manual-scanner-chip { min-height: 32px; } }
