@@ -416,6 +416,10 @@
 .manual-mode-indicator { display: inline-grid; flex: 0 0 22px; place-items: center; width: 22px; height: 22px; border: 1px solid #a78bfa; border-radius: 50%; background: #2a2140; color: #e9ddff; font: 900 .62rem 'DM Mono', monospace; }
 .manual-target-indicator, .manual-stop-indicator { display: inline-flex; flex: 0 0 auto; align-items: center; min-height: 25px; padding: .2rem .35rem; border: 1px solid; border-radius: 5px; font: 800 .58rem 'DM Mono', monospace; }
 .manual-target-indicator { border-color: #287653; background: #10251e; color: #55e1a0; }
+.manual-target-control { display: inline-flex; flex: 0 0 auto; align-items: center; gap: .12rem; }
+.manual-target-control button { display: inline-grid; place-items: center; width: 20px; height: 25px; padding: 0; border: 1px solid #315b43; border-radius: 4px; background: #111b17; color: #69dda1; cursor: pointer; font: 800 .72rem 'DM Mono', monospace; }
+.manual-target-control button:hover:not(:disabled) { border-color: #69dda1; background: #173223; }
+.manual-target-control button:disabled { cursor: default; opacity: .35; }
 .manual-stop-indicator { border-color: #8b4147; background: #2a171b; color: #ff8588; }
 .manual-leverage-indicator { display: inline-flex; flex: 0 0 auto; align-items: center; min-height: 25px; padding: .2rem .35rem; border: 1px solid #286779; border-radius: 5px; background: #102027; color: #67dcf4; font: 800 .58rem 'DM Mono', monospace; }
 .manual-period-indicator { width: 2.45rem; min-height: 25px; padding: .15rem .25rem; border: 1px solid #725aa7; border-radius: 5px; color: #f4ecff; background: #100d1a; font: 800 .65rem 'DM Mono', monospace; text-align: center; }
