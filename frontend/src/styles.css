@@ -417,8 +417,12 @@
 .manual-target-indicator, .manual-stop-indicator { display: inline-flex; flex: 0 0 auto; align-items: center; min-height: 25px; padding: .2rem .35rem; border: 1px solid; border-radius: 5px; font: 800 .58rem 'DM Mono', monospace; }
 .manual-target-indicator { border-color: #287653; background: #10251e; color: #55e1a0; }
 .manual-stop-indicator { border-color: #8b4147; background: #2a171b; color: #ff8588; }
+.manual-leverage-indicator { display: inline-flex; flex: 0 0 auto; align-items: center; min-height: 25px; padding: .2rem .35rem; border: 1px solid #286779; border-radius: 5px; background: #102027; color: #67dcf4; font: 800 .58rem 'DM Mono', monospace; }
 .manual-period-indicator { width: 2.45rem; min-height: 25px; padding: .15rem .25rem; border: 1px solid #725aa7; border-radius: 5px; color: #f4ecff; background: #100d1a; font: 800 .65rem 'DM Mono', monospace; text-align: center; }
-.manual-scanner-chips { display: flex; flex: 1 1 80px; flex-wrap: nowrap; gap: .25rem; min-width: 0; max-width: min(36vw, 460px); overflow-x: auto; padding: .1rem; scrollbar-width: thin; }
+.manual-scanner-chips { display: flex; flex: 1 1 0; flex-wrap: nowrap; gap: .25rem; width: 0; min-width: 0; overflow-x: auto; padding: .1rem; scrollbar-width: thin; }
+.manual-scanner-profit-sum { display: inline-flex; flex: 0 0 auto; align-items: center; min-height: 25px; padding: .2rem .35rem; border: 1px solid #8b6a2d; border-radius: 5px; background: #211a0e; color: #f5c45e; font: 800 .58rem 'DM Mono', monospace; }
+.manual-scanner-profit-sum.profit-positive { color: #55e1a0; border-color: #287653; background: #10251e; }
+.manual-scanner-profit-sum.profit-negative { color: #ff8588; border-color: #8b4147; background: #2a171b; }
 .manual-scanner-chip { display: inline-flex; flex: 0 0 auto; align-items: center; gap: .35rem; min-height: 25px; padding: .2rem .4rem; border: 1px solid #334452; border-radius: 999px; background: #111b24; color: #c8d7e2; cursor: pointer; font: 600 .49rem 'DM Mono', monospace; }
 .manual-scanner-chip b { color: #e8f0f7; font-weight: 800; }
 .manual-scanner-chip span { color: #a6b3bf; }
@@ -428,5 +432,4 @@
 .manual-scanner-chip-negative span { color: #ff8588; }
 .manual-scanner-chip:hover, .manual-scanner-chip-active { border-color: #b08aff; box-shadow: 0 0 0 1px #b08aff50; }
 .manual-scanner-chip-active b { color: #d3bbff; }
-@media (max-width: 1000px) { .manual-scanner-chips { max-width: 28vw; } }
 @media (max-width: 650px) { .manual-mode-indicator { flex-basis: 20px; width: 20px; height: 20px; }.manual-scanner-chips { flex: 1 1 100%; max-width: 100%; order: 5; }.manual-scanner-chip { min-height: 28px; }.pwa-mobile-header:has(.manual-mode-indicator) { height: auto; min-height: 58px; flex-wrap: wrap; justify-content: flex-start; }.pwa-mobile-header .manual-scanner-chips { flex: 1 1 100%; max-width: 100%; } }
