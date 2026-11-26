@@ -17,6 +17,26 @@ const apiUrl = configuredApiUrl === '/api' && window.location.hostname === 'dev.
   ? 'https://api.dev.helloworld.goodmorning.mx'
   : configuredApiUrl;
 const marketWsUrl = apiUrl.replace(/^http/, 'ws');
+const INDICATOR_DEFAULTS_VERSION = 'manual-only-v1';
+
+function applyDefaultIndicatorPreset() {
+  if (localStorage.getItem('helloworld-indicator-defaults-version') === INDICATOR_DEFAULTS_VERSION) return;
+  const defaults: Array<[string, string]> = [
+    ['helloworld-indicator-sessions', 'false'],
+    ['helloworld-indicator-seven-am', 'false'],
+    ['helloworld-indicator-rsi', 'false'],
+    ['helloworld-indicator-ssl', 'false'],
+    ['helloworld-indicator-tracker', 'false'],
+    ['helloworld-indicator-manual-tracker', 'true'],
+    ['helloworld-indicator-wick-extensions', 'false'],
+    ['helloworld-indicator-mae-mfe-study', 'false'],
+    ['helloworld-indicator-balances', 'false'],
+    ['helloworld-indicator-binance-account', 'false'],
+    ['helloworld-indicator-ctrader-account', 'false'],
+  ];
+  defaults.forEach(([key, value]) => localStorage.setItem(key, value));
+  localStorage.setItem('helloworld-indicator-defaults-version', INDICATOR_DEFAULTS_VERSION);
+}
 
 function formatApiErrorDetail(detail: unknown): string | null {
   if (typeof detail === 'string') return detail;
@@ -1286,15 +1306,18 @@ function Workspace() {
   const entryInterval = '1m' as const;
   const brokerSymbols = broker === 'ctrader' ? ['AUDUSD', 'XAUUSD', 'XAGUSD'] : ['BTCUSDT', 'ETHUSDT', 'BNBUSDT', 'SOLUSDT', 'XRPUSDT', 'DOGEUSDT'];
   const [timezone, setTimezone] = useState('America/Cancun');
-  const [showSessions, setShowSessions] = useState(true);
+  const [showSessions, setShowSessions] = useState(() => {
+    applyDefaultIndicatorPreset();
+    return localStorage.getItem('helloworld-indicator-sessions') === 'true';
+  });
   const [showSevenAmMarkers, setShowSevenAmMarkers] = useState(() => localStorage.getItem('helloworld-indicator-seven-am') !== 'false');
   const [showRsi, setShowRsi] = useState(() => localStorage.getItem('helloworld-indicator-rsi') === 'true');
   const [showSsl, setShowSsl] = useState(() => localStorage.getItem('helloworld-indicator-ssl') === 'true');
   // Keep one active Tracker mode so the production and manual strategies can
   // never render or draw their levels at the same time.
   const [trackerMode, setTrackerMode] = useState<'off' | 'normal' | 'manual'>(() => {
-    if (localStorage.getItem('helloworld-indicator-tracker') === 'true') return 'normal';
     if (localStorage.getItem('helloworld-indicator-manual-tracker') === 'true') return 'manual';
+    if (localStorage.getItem('helloworld-indicator-tracker') === 'true') return 'normal';
     return 'off';
   });
   const showTracker = trackerMode === 'normal';
@@ -1518,6 +1541,15 @@ function Workspace() {
   const [chartEventsPaused, setChartEventsPaused] = useState(() => localStorage.getItem('helloworld-chart-events-paused') === 'true');
   useEffect(() => { localStorage.setItem('helloworld-chart-events-paused', String(chartEventsPaused)); }, [chartEventsPaused]);
   useEffect(() => { localStorage.setItem('helloworld-indicator-mae-mfe-study', String(showMaeMfeStudy)); }, [showMaeMfeStudy]);
+  useEffect(() => { localStorage.setItem('helloworld-indicator-sessions', String(showSessions)); }, [showSessions]);
+  useEffect(() => { localStorage.setItem('helloworld-indicator-seven-am', String(showSevenAmMarkers)); }, [showSevenAmMarkers]);
+  useEffect(() => { localStorage.setItem('helloworld-indicator-rsi', String(showRsi)); }, [showRsi]);
+  useEffect(() => { localStorage.setItem('helloworld-indicator-ssl', String(showSsl)); }, [showSsl]);
+  useEffect(() => {
+    localStorage.setItem('helloworld-indicator-tracker', String(showTracker));
+    localStorage.setItem('helloworld-indicator-manual-tracker', String(showManualTracker));
+  }, [showTracker, showManualTracker]);
+  useEffect(() => { localStorage.setItem('helloworld-indicator-wick-extensions', String(showWickExtensions)); }, [showWickExtensions]);
   useEffect(() => { localStorage.setItem('helloworld-indicator-balances', String(showBalancesPanel)); }, [showBalancesPanel]);
   useEffect(() => { localStorage.setItem('helloworld-indicator-binance-account', String(showBinanceAccountPanel)); }, [showBinanceAccountPanel]);
   useEffect(() => { localStorage.setItem('helloworld-indicator-ctrader-account', String(showCTraderAccountPanel)); }, [showCTraderAccountPanel]);
@@ -1565,7 +1597,6 @@ function Workspace() {
   const [, setActivePositionIndex] = useState<number | null>(null);
   const activePositionIndexRef = useRef<number | null>(null);
   const nativePriceLinesRef = useRef<Array<{ series: ReturnType<ReturnType<typeof createChart>['addSeries']>; line: IPriceLine }>>([]);
-  const trackerPriceLinesRef = useRef<Array<{ line: IPriceLine; canvas: ChartCanvas; level: 'h2' | 'h1' | 'l1' | 'l2'; price: number }>>([]);
   const paperReadyRef = useRef(false);
   const [paperReady, setPaperReady] = useState(false);
   const [paperSyncError, setPaperSyncError] = useState('');
@@ -1958,24 +1989,10 @@ function Workspace() {
     return () => window.clearTimeout(timer);
   }, [drawings, auth.accessToken, paperReady, symbol]);
 
-  const trackerLabel = (level: 'h2' | 'h1' | 'l1' | 'l2', price: number, close?: number) => {
-    if ((level !== 'h2' && level !== 'l2') || !close || close <= 0) return level.toUpperCase();
-    const distance = (price - close) / close * 100;
-    return `${level.toUpperCase()} ${distance >= 0 ? '+' : ''}${distance.toFixed(3)}%`;
-  };
-
-  const updateTrackerLabels = (canvas: ChartCanvas, close: number) => {
-    if (!showTracker || !Number.isFinite(close) || close <= 0) return;
-    trackerPriceLinesRef.current.forEach(item => {
-      if (item.canvas === canvas) item.line.applyOptions({ title: trackerLabel(item.level, item.price, close) });
-    });
-  };
-
   useEffect(() => {
     void trackerRevision;
     nativePriceLinesRef.current.forEach(({ series, line }) => series.removePriceLine(line));
     nativePriceLinesRef.current = [];
-    trackerPriceLinesRef.current = [];
     const addLines = (canvas: ChartCanvas, series: ReturnType<ReturnType<typeof createChart>['addSeries']> | null) => {
       if (!series) return;
       // Binance positions are live exchange state and must remain visible in
@@ -2041,46 +2058,6 @@ function Workspace() {
         });
         nativePriceLinesRef.current.push({ series, line: targetLine }, { series, line: stopLine });
       }
-      // Tracker is the entry strategy and uses the same closed 1m candles as
-      // the scanner. Keep its levels identical on both chart canvases; the
-      // context chart's selected interval only changes its candle display.
-      const sourceBars = candleBarsRef.current;
-      const trackerWindow = sourceBars.slice(-(trackerPeriod + 1));
-      const trackerValues = calculateTrackerLevels(trackerWindow, trackerPeriod);
-      const latest = trackerValues[trackerValues.length - 1];
-      if (latest) (['h2', 'h1', 'l1', 'l2'] as const).forEach(level => {
-        const line = series.createPriceLine({
-          id: `tracker-${level}-${canvas}`,
-          price: latest[level],
-          color: '#f59e0b',
-          lineWidth: 2,
-          lineStyle: 0,
-          lineVisible: true,
-          axisLabelVisible: true,
-          title: trackerLabel(level, latest[level], sourceBars[sourceBars.length - 1]?.close),
-          axisLabelColor: '#f59e0b',
-          axisLabelTextColor: '#080a0d',
-        });
-        nativePriceLinesRef.current.push({ series, line });
-        trackerPriceLinesRef.current.push({ line, canvas, level, price: latest[level] });
-      });
-      }
-      if (showManualTracker) {
-        const sourceBars = candleBarsRef.current;
-        const trackerWindow = sourceBars.slice(-(manualTrackerEffectivePeriod + 1));
-        const values = calculateTrackerLevels(trackerWindow, manualTrackerEffectivePeriod);
-        const latest = values[values.length - 1];
-        if (latest) (['h2', 'h1', 'l1', 'l2'] as const).forEach(level => {
-          const line = series.createPriceLine({
-            id: `manual-tracker-${level}-${canvas}`,
-            price: latest[level],
-            color: '#a78bfa', lineWidth: 2, lineStyle: 2, lineVisible: true,
-            axisLabelVisible: true,
-            title: `M ${level.toUpperCase()} · ${formatPaperPrice(latest[level])}`,
-            axisLabelColor: '#8b5cf6', axisLabelTextColor: '#f5f3ff',
-          });
-          nativePriceLinesRef.current.push({ series, line });
-        });
       }
     };
     addLines('entry', candlesRef.current);
@@ -2088,7 +2065,6 @@ function Workspace() {
     return () => {
       nativePriceLinesRef.current.forEach(({ series, line }) => series.removePriceLine(line));
       nativePriceLinesRef.current = [];
-      trackerPriceLinesRef.current = [];
     };
   }, [drawings, binanceLiveAccount, binanceExecutionIntents, pendingBinanceTp, executionMode, broker, symbol, interval, mobilePwa, visibleClosedId, showTracker, showManualTracker, manualTrackerPeriod, manualTrackerPeriodDraft, manualTrackerEffectivePeriod, symbolHistoryReady, trackerVirtualOperations, trackerLivePriceOverride, trackerPeriod, trackerRevision]);
 
@@ -2250,7 +2226,6 @@ function Workspace() {
             if (heikinBar) candles.update(heikinBar);
           }
           else candles.update(liveBar);
-          updateTrackerLabels('entry', liveBar.close);
           scheduleViewportRefresh();
           if (candleBarsRef.current[candleBarsRef.current.length - 1]?.time !== previousBarTime) setTrackerRevision(value => value + 1);
         }).catch(() => undefined);
@@ -2343,7 +2318,6 @@ function Workspace() {
             if (heikinBar) candles.update(heikinBar);
           }
           else candles.update(liveBar);
-          updateTrackerLabels('entry', liveBar.close);
         }
         return;
       }
@@ -2366,7 +2340,6 @@ function Workspace() {
         if (heikinBar) candles.update(heikinBar);
       }
       else candles.update(next);
-      updateTrackerLabels('entry', next.close);
       // The rolling impulse average follows the active candle in real time;
       // requestAnimationFrame coalesces bursts without repainting per tick.
       scheduleViewportRefresh();
@@ -2611,7 +2584,6 @@ function Workspace() {
             if (heikinBar) candles.update(heikinBar);
           }
           else candles.update(liveBar);
-          updateTrackerLabels('context', liveBar.close);
           scheduleOverviewRefresh();
           if (overviewBarsRef.current[overviewBarsRef.current.length - 1]?.time !== previousBarTime) setTrackerRevision(value => value + 1);
         }).catch(() => undefined);
@@ -2690,7 +2662,6 @@ function Workspace() {
             if (heikinBar) candles.update(heikinBar);
           }
           else candles.update(liveBar);
-          updateTrackerLabels('context', liveBar.close);
         }
         return;
       }
@@ -2710,7 +2681,6 @@ function Workspace() {
         if (heikinBar) candles.update(heikinBar);
       }
       else candles.update(next);
-      updateTrackerLabels('context', next.close);
       scheduleOverviewRefresh();
       if (isNewBar) setTrackerRevision(value => value + 1);
     };
