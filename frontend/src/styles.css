@@ -472,6 +472,8 @@
 .manual-scanner-status .manual-scanner-chips { flex: 1 1 0; }
 .manual-scanner-run { flex: 0 0 auto; min-height: 25px; padding: .2rem .42rem; border: 1px solid #256277; border-radius: 6px; background: #0e222b; color: #71d7ff; cursor: pointer; font: 800 .49rem 'DM Mono', monospace; white-space: nowrap; }
 .manual-scanner-run:hover:not(:disabled) { border-color: #71d7ff; background: #12303b; }
+.manual-scanner-run-auto { border-color: #9b72e8; background: #241b35; color: #d1adff; }
+.manual-scanner-run-auto:hover:not(:disabled) { border-color: #d1adff; background: #33244a; }
 .manual-scanner-run:disabled { cursor: wait; opacity: .65; }
 @media (max-width: 650px) { .manual-scanner-status { flex: 1 1 100%; max-width: 100%; flex-wrap: wrap; order: 5; }.manual-scanner-status .manual-scanner-chips { flex: 1 1 100%; width: auto; max-width: 100%; order: 2; }.manual-scanner-run { order: 1; } }
 .manual-scanner-profit-sum { display: inline-flex; flex: 0 0 auto; align-items: center; min-height: 25px; padding: .2rem .35rem; border: 1px solid #8b6a2d; border-radius: 5px; background: #211a0e; color: #f5c45e; font: 800 .58rem 'DM Mono', monospace; }
