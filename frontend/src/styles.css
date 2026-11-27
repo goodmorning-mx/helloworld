@@ -98,6 +98,10 @@
 .tracker-summary-limited rect { fill: #2b1b08; stroke: #ff9800; }
 .tracker-summary-limited text { fill: #ffe0a8; }
 .tracker-summary-limited .tracker-result-emphasis { fill: #ffad33; }
+.tracker-operation-tooltip.tracker-side-long rect, .tracker-operation-summary-tooltip.tracker-side-long rect, .tracker-operation-result-tooltip.tracker-side-long rect { stroke: #00ff87; }
+.tracker-operation-tooltip.tracker-side-long text, .tracker-operation-summary-tooltip.tracker-side-long text, .tracker-operation-result-tooltip.tracker-side-long text { fill: #b9ffd9; }
+.tracker-operation-tooltip.tracker-side-short rect, .tracker-operation-summary-tooltip.tracker-side-short rect, .tracker-operation-result-tooltip.tracker-side-short rect { stroke: #ff4d62; }
+.tracker-operation-tooltip.tracker-side-short text, .tracker-operation-summary-tooltip.tracker-side-short text, .tracker-operation-result-tooltip.tracker-side-short text { fill: #ffd0d8; }
 .tracker-limited-operation .position-profit, .tracker-limited-operation .position-risk, .tracker-limited-operation .position-loss-closed { fill: #ff980036; stroke: #ff9800; }
 .tracker-limited-operation .position-entry { stroke: #ff9800; }
 .tracker-limited-stop-line { stroke: #ffb52e; stroke-width: 2; stroke-dasharray: 4 3; pointer-events: none; }
