@@ -85,14 +85,12 @@
 .tracker-extreme-real-min { fill: #ff9800; stroke: #fff5df; }
 .tracker-operation-tooltip rect { fill: #080d14; stroke: #f5b84b; stroke-width: 1; }
 .tracker-operation-tooltip text { fill: #e8edf5; font: 10px 'DM Mono', monospace; }
-.tracker-operation-tooltip { display: none; }
 .tracker-operation-summary-tooltip rect { fill: #080d14; stroke: #f5b84b; stroke-width: 1; }
 .tracker-operation-summary-tooltip text { fill: #e8edf5; font: 10px 'DM Mono', monospace; }
-.tracker-operation-summary-tooltip { display: none; }
 .tracker-operation-result-tooltip rect { stroke-width: 1.2; }
 .tracker-operation-result-tooltip text { fill: #e8edf5; font: 10px 'DM Mono', monospace; }
 .tracker-operation-result-tooltip .tracker-result-emphasis { font-size: 11px; font-weight: 900; paint-order: stroke fill; stroke: #080a0d; stroke-width: 2px; }
-.tracker-operation-result-tooltip .tracker-operation-key-metric { font-weight: 900; }
+.tracker-operation-result-tooltip .tracker-operation-key-metric { font-weight: 900; }.tracker-hover-inline-label { display: none; }
 .tracker-summary-win rect { fill: #0b2118; stroke: #00ff87; }
 .tracker-summary-win text { fill: #b9ffd9; }
 .tracker-summary-failed rect { fill: #260d13; stroke: #ff1744; }
@@ -366,7 +364,7 @@
   .trading-shell:not(.pwa-shell) > .symbol-bar { order: 0; }
   .trading-shell:not(.pwa-shell) > .market-overview { display: contents; }
   .trading-shell:not(.pwa-shell) .market-overview .market-scanner-training { order: 1; width: 100%; }
-  .trading-shell:not(.pwa-shell) > .manual-tracker-control-card { order: 1.5; }
+  .trading-shell:not(.pwa-shell) > .manual-tracker-chart-layout { order: 1.5; min-width: 0; }
   .trading-shell:not(.pwa-shell) > .charts-row { order: 2; }
   .trading-shell:not(.pwa-shell) .market-overview .market-preview-slot { order: 3; width: 100%; margin: .9rem 0 0; }
   .trading-shell:not(.pwa-shell) > .tracker-stats-panel { order: 4; }
@@ -428,7 +426,7 @@
 .manual-stop-indicator { border-color: #8b4147; background: #2a171b; color: #ff8588; }
 .manual-leverage-indicator { display: inline-flex; flex: 0 0 auto; align-items: center; min-height: 25px; padding: .2rem .35rem; border: 1px solid #286779; border-radius: 5px; background: #102027; color: #67dcf4; font: 800 .58rem 'DM Mono', monospace; }
 .manual-period-indicator { width: 2.45rem; min-height: 25px; padding: .15rem .25rem; border: 1px solid #725aa7; border-radius: 5px; color: #f4ecff; background: #100d1a; font: 800 .65rem 'DM Mono', monospace; text-align: center; }
-.manual-tracker-control-card { margin: .55rem 0 .75rem; padding: .6rem; border: 1px solid #4e3e71; border-radius: 9px; background: linear-gradient(110deg, #11131d, #111820 62%, #10201b); box-shadow: inset 3px 0 #a78bfa; }
+.manual-tracker-chart-layout { display: flex; min-width: 0; flex-direction: column; }.manual-tracker-control-card { margin: .55rem 0 .75rem; padding: .6rem; border: 1px solid #4e3e71; border-radius: 9px; background: linear-gradient(110deg, #11131d, #111820 62%, #10201b); box-shadow: inset 3px 0 #a78bfa; }
 .manual-tracker-control-card > header { display: flex; align-items: center; justify-content: space-between; gap: .5rem; margin: 0 0 .45rem; color: #c4b5fd; font: 800 .6rem 'DM Mono', monospace; letter-spacing: .08em; }
 .manual-tracker-control-card > header small { color: #8090a4; font: 500 .52rem 'DM Mono', monospace; }
 .manual-tracker-control-grid { display: grid; grid-template-columns: repeat(8, minmax(0, 1fr)); gap: .4rem; }
