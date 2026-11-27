@@ -3826,7 +3826,18 @@ function Workspace() {
         // at the prior candle close, only draw excursion points from the
         // first candle at/after that close and through the exit boundary.
         if (Number(point.time) < Number(drawing.start.time) || Number(point.time) > Number(drawing.end.time)) return [];
-        const screen = screenPoint({ time: point.time as UTCTimestamp, price: point.price }, canvas);
+        // Extreme points must belong to an actual candle in this chart. The
+        // generic screenPoint helper intentionally snaps paper trades between
+        // intervals to the nearest candle; that makes backtest extrema look
+        // like they float when a cached timestamp is missing from the chart.
+        const bar = candleBarsRef.current.find(candidate => Number(candidate.time) === Number(point.time));
+        if (!bar) return [];
+        const price = label === 'MAXROE'
+          ? (drawing.type === 'long' ? bar.high : bar.low)
+          : label === 'MINROE'
+            ? (drawing.type === 'long' ? bar.low : bar.high)
+            : bar.close;
+        const screen = screenPoint({ time: bar.time, price }, canvas);
         if (!screen) return [];
         const operationId = String(drawing.id ?? index);
         return [<circle key={`${operationId}-${label}`} cx={screen.x} cy={screen.y} r="6" className={`tracker-extreme-point ${markerClass}`} pointerEvents="all" onPointerEnter={() => setTrackerOperationHover({ id: operationId, x: screen.x, y: screen.y, label, roePercent: point.roePercent, pnlUsd: point.pnlUsd, time: point.time })} onPointerLeave={() => setTrackerOperationHover(null)}><title>{label} · {formatRoePercent(point.roePercent)} · PNL {point.pnlUsd >= 0 ? '+' : ''}{point.pnlUsd.toFixed(4)} USDT</title></circle>];
