@@ -452,6 +452,7 @@
 .manual-control-leverage { border-color: #286779; background: #0d1a20; }
 .manual-control-leverage > strong { color: #67dcf4; }
 .manual-control-period { border-color: #725aa7; background: #161220; }
+.manual-control-ssl-period { border-color: #39708c; background: #101c27; }
 .manual-control-period > .manual-period-indicator { width: 3.2rem; }
 .manual-control-scanner-sum { border-color: #80601f; background: #1b170f; }
 .manual-control-scanner-sum > strong { color: #f5c45e; }
