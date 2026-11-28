@@ -78,6 +78,7 @@ if settings.telegram_enabled:
     ))
 production_worker_config_store = ProductionWorkerConfigStore(engine)
 scanner_snapshot_store = ScannerSnapshotStore(engine)
+scanner_scan_progress_by_user: dict[str, dict[str, object]] = {}
 _shared_analysis_refresh_tasks: dict[tuple[str, str], asyncio.Task[None]] = {}
 _shared_analysis_refresh_requested: dict[tuple[str, str], dict[str, object]] = {}
 
@@ -775,11 +776,34 @@ def latest_scanner_snapshot(identity: AuthIdentity = Depends(identity_dependency
     return public_snapshot(stored)
 
 
+@app.get("/market/binance/scanner-progress")
+def scanner_scan_progress(identity: AuthIdentity = Depends(identity_dependency(auth_service))) -> dict[str, object]:
+    """Return per-symbol progress for the caller's active/latest scan."""
+    return dict(scanner_scan_progress_by_user.get(identity.user_id, {
+        "status": "IDLE",
+        "phase": "idle",
+        "completed": 0,
+        "total": 0,
+        "current_symbol": None,
+        "completed_symbols": [],
+    }))
+
+
 @app.post("/market/binance/scanner-snapshot")
 async def update_scanner_snapshot(payload: ScannerSnapshotInput, identity: AuthIdentity = Depends(identity_dependency(auth_service))) -> dict[str, object]:
     """Run the web-configured scan serially and atomically replace its latest snapshot."""
     started_at = datetime.now(timezone.utc)
     scan_id = str(uuid4())
+    completed_symbols: list[str] = []
+    scanner_scan_progress_by_user[identity.user_id] = {
+        "scan_id": scan_id,
+        "status": "RUNNING",
+        "phase": "snapshot",
+        "completed": 0,
+        "total": len(payload.symbols),
+        "current_symbol": None,
+        "completed_symbols": completed_symbols.copy(),
+    }
     config = {
         "tracker_period": payload.tracker_period,
         "stop_percent": payload.stop_percent,
@@ -800,6 +824,15 @@ async def update_scanner_snapshot(payload: ScannerSnapshotInput, identity: AuthI
         if isinstance(row, dict)
     }
     for candidate in payload.symbols:
+        scanner_scan_progress_by_user[identity.user_id] = {
+            "scan_id": scan_id,
+            "status": "RUNNING",
+            "phase": "snapshot",
+            "completed": len(completed_symbols),
+            "total": len(payload.symbols),
+            "current_symbol": candidate.symbol,
+            "completed_symbols": completed_symbols.copy(),
+        }
         previous = previous_rows.get(candidate.symbol)
         previous_worker_parameters = previous.get("worker_parameters") if previous else None
         worker_parameters = previous_worker_parameters if isinstance(previous_worker_parameters, dict) and previous_worker_parameters.get("running") else None
@@ -881,6 +914,16 @@ async def update_scanner_snapshot(payload: ScannerSnapshotInput, identity: AuthI
         if worker_parameters:
             row["analysis_parameter_version"] = worker_parameters.get("parameter_version")
         rows.append(row)
+        completed_symbols.append(candidate.symbol)
+        scanner_scan_progress_by_user[identity.user_id] = {
+            "scan_id": scan_id,
+            "status": "RUNNING",
+            "phase": "snapshot",
+            "completed": len(completed_symbols),
+            "total": len(payload.symbols),
+            "current_symbol": None,
+            "completed_symbols": completed_symbols.copy(),
+        }
 
     stored = await asyncio.to_thread(
         scanner_snapshot_store.replace,
@@ -891,6 +934,15 @@ async def update_scanner_snapshot(payload: ScannerSnapshotInput, identity: AuthI
         symbols=rows,
         started_at=started_at,
     )
+    scanner_scan_progress_by_user[identity.user_id] = {
+        "scan_id": scan_id,
+        "status": "COMPLETED",
+        "phase": "snapshot",
+        "completed": len(completed_symbols),
+        "total": len(payload.symbols),
+        "current_symbol": None,
+        "completed_symbols": completed_symbols.copy(),
+    }
     return public_snapshot(stored)
 
 

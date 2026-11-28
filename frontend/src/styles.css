@@ -483,6 +483,9 @@
 .manual-scanner-chip { display: inline-flex; flex: 0 0 auto; align-items: center; gap: .35rem; min-height: 25px; padding: .2rem .4rem; border: 1px solid #334452; border-radius: 999px; background: #111b24; color: #c8d7e2; cursor: pointer; font: 600 .49rem 'DM Mono', monospace; }
 .manual-scanner-chip b { color: #e8f0f7; font-weight: 800; }
 .manual-scanner-chip span { color: #a6b3bf; }
+.manual-scanner-chip > em { color: #63e6ad; font: 900 .55rem 'DM Mono', monospace; font-style: normal; }
+.manual-scanner-chip-processing { outline: 1px solid #f5c45e; outline-offset: -2px; }
+.manual-scanner-chip-processing > em { color: #f5c45e; }
 .manual-scanner-chip-positive { border-color: #287653; background: #10251e; }
 .manual-scanner-chip-positive span { color: #54e19a; }
 .manual-scanner-chip-negative { border-color: #8b4147; background: #2a171b; }

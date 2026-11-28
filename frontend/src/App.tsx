@@ -1355,7 +1355,7 @@ function Workspace() {
   });
   const [showSevenAmMarkers, setShowSevenAmMarkers] = useState(() => localStorage.getItem('helloworld-indicator-seven-am') !== 'false');
   const [showRsi, setShowRsi] = useState(() => localStorage.getItem('helloworld-indicator-rsi') === 'true');
-  const [showSsl, setShowSsl] = useState(() => localStorage.getItem('helloworld-indicator-ssl') === 'true');
+  const [showSsl, setShowSsl] = useState(() => localStorage.getItem('helloworld-indicator-manual-tracker') === 'true' || localStorage.getItem('helloworld-indicator-ssl') === 'true');
   // Keep one active Tracker mode so the production and manual strategies can
   // never render or draw their levels at the same time.
   const [trackerMode, setTrackerMode] = useState<'off' | 'normal' | 'manual'>(() => {
@@ -1365,8 +1365,11 @@ function Workspace() {
   });
   const showTracker = trackerMode === 'normal';
   const showManualTracker = trackerMode === 'manual';
-  const toggleTrackerMode = (mode: 'normal' | 'manual') =>
-    setTrackerMode(current => current === mode ? 'off' : mode);
+  const toggleTrackerMode = (mode: 'normal' | 'manual') => {
+    const next = trackerMode === mode ? 'off' : mode;
+    setTrackerMode(next);
+    if (next === 'manual') setShowSsl(true);
+  };
   const [manualTrackerPeriod, setManualTrackerPeriod] = useState(() => Math.max(4, Math.min(20, Number(localStorage.getItem('helloworld-manual-tracker-period') ?? localStorage.getItem('helloworld-tracker-period') ?? 5) || 5)));
   const [manualTrackerPeriodDraft, setManualTrackerPeriodDraft] = useState(() => localStorage.getItem('helloworld-manual-tracker-period') ?? localStorage.getItem('helloworld-tracker-period') ?? '5');
   const [manualTrackerTargetPercent, setManualTrackerTargetPercent] = useState(() => {
@@ -1732,7 +1735,7 @@ function Workspace() {
   const [scannerSort, setScannerSort] = useState<{ key: ScannerSortKey; direction: 'asc' | 'desc' }>({ key: 'operations', direction: 'desc' });
   const scannerProfilerRef = useRef(new Profiling('scanner'));
   const [scannerProfiling, setScannerProfiling] = useState<ProfilingSnapshot>(() => scannerProfilerRef.current.snapshot());
-  const [scannerAnalysisProgress, setScannerAnalysisProgress] = useState({ completed: 0, total: 0 });
+  const [scannerAnalysisProgress, setScannerAnalysisProgress] = useState<{ completed: number; total: number; phase?: string; currentSymbol?: string; completedSymbols?: string[] }>({ completed: 0, total: 0 });
   const [scannerLastScannedAt, setScannerLastScannedAt] = useState<number | null>(null);
   const [scannerSnapshotFreshness, setScannerSnapshotFreshness] = useState<'EMPTY' | 'FRESH' | 'STALE'>('EMPTY');
   const [scannerWindowHours, setScannerWindowHours] = useState(() => {
@@ -1800,7 +1803,7 @@ function Workspace() {
     manualScanModeRef.current = null;
     if (loadManualTrackerData) {
       setManualScannerBarsBySymbol({});
-      setScannerAnalysisProgress({ completed: 0, total: 0 });
+      setScannerAnalysisProgress({ completed: 0, total: 0, phase: 'LIQUIDEZ', currentSymbol: undefined, completedSymbols: [] });
     }
     let active = true;
     const runManualScanner = async () => {
@@ -1815,19 +1818,46 @@ function Workspace() {
         const markets = Array.isArray(payload.symbols) ? payload.symbols : [];
         if (!active) return;
         const validMarkets = markets.filter(candidate => /^[A-Z0-9]{1,32}USDT$/.test(String(candidate.symbol ?? '').trim().toUpperCase()));
-        setScannerAnalysisProgress({ completed: 0, total: validMarkets.length });
+        setScannerAnalysisProgress({ completed: 0, total: validMarkets.length, phase: 'SNAPSHOT', currentSymbol: undefined, completedSymbols: [] });
         if (!validMarkets.length && markets.length) throw new Error('El universo no contiene símbolos Binance USDT válidos.');
         const universe = validMarkets.map(candidate => ({
           ...candidate,
           symbol: candidate.symbol.trim().toUpperCase(),
           leverage: Math.min(scannerTheoreticalLeverage, maxLeverageFor('binance', candidate.symbol)),
         }));
-        const snapshot = await scannerProfilerRef.current.measure('scanner.shared_snapshot', () => fetchJson<ScannerSnapshot>(`${apiUrl}/market/binance/scanner-snapshot`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json', ...(auth.accessToken ? { Authorization: `Bearer ${auth.accessToken}` } : {}) },
-          credentials: 'include',
-          body: JSON.stringify({ symbols: universe, window_hours: scannerWindowHours, tracker_period: trackerPeriod, stop_percent: binanceStopPercent, initial_balance: paperInitialBalance, risk_percent: paperRiskPercent }),
-        }));
+        let stopProgressPolling = false;
+        const pollSharedScanProgress = async () => {
+          while (active && !stopProgressPolling) {
+            try {
+              const progress = await fetchJson<{ status?: string; phase?: string; completed?: number; total?: number; current_symbol?: string | null; completed_symbols?: string[] }>(`${apiUrl}/market/binance/scanner-progress`, {
+                headers: auth.accessToken ? { Authorization: `Bearer ${auth.accessToken}` } : undefined,
+                credentials: 'include',
+                cache: 'no-store',
+              });
+              if (active && progress.status === 'RUNNING') setScannerAnalysisProgress({
+                completed: progress.completed ?? 0,
+                total: progress.total ?? universe.length,
+                phase: progress.phase?.toUpperCase() ?? 'SNAPSHOT',
+                currentSymbol: progress.current_symbol ?? undefined,
+                completedSymbols: progress.completed_symbols ?? [],
+              });
+            } catch { /* The scan result request remains authoritative if progress polling fails. */ }
+            if (!stopProgressPolling) await new Promise<void>(resolve => window.setTimeout(resolve, 100));
+          }
+        };
+        const progressTask = pollSharedScanProgress();
+        let snapshot: ScannerSnapshot;
+        try {
+          snapshot = await scannerProfilerRef.current.measure('scanner.shared_snapshot', () => fetchJson<ScannerSnapshot>(`${apiUrl}/market/binance/scanner-snapshot`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', ...(auth.accessToken ? { Authorization: `Bearer ${auth.accessToken}` } : {}) },
+            credentials: 'include',
+            body: JSON.stringify({ symbols: universe, window_hours: scannerWindowHours, tracker_period: trackerPeriod, stop_percent: binanceStopPercent, initial_balance: paperInitialBalance, risk_percent: paperRiskPercent }),
+          }));
+        } finally {
+          stopProgressPolling = true;
+          await progressTask;
+        }
         if (!active) return;
         const savedUniverse = Array.isArray(snapshot.universe) ? snapshot.universe : universe;
         const savedRows = Array.isArray(snapshot.symbols) ? snapshot.symbols : [];
@@ -1837,7 +1867,7 @@ function Workspace() {
         scannerLastScannedAtRef.current = lastScannedAt;
         setScannerLastScannedAt(lastScannedAt);
         setScannerSnapshotFreshness(snapshot.freshness);
-        setScannerAnalysisProgress({ completed: loadManualTrackerData ? 0 : savedRows.length, total: loadManualTrackerData ? savedUniverse.length : savedRows.length });
+        setScannerAnalysisProgress({ completed: loadManualTrackerData ? 0 : savedRows.length, total: loadManualTrackerData ? savedUniverse.length : savedRows.length, phase: loadManualTrackerData ? 'HISTORIAL' : 'COMPLETADO', currentSymbol: undefined, completedSymbols: loadManualTrackerData ? [] : savedRows.map(row => row.symbol) });
         setActiveMarketError(savedRows.some(row => row.status === 'ERROR' || row.status === 'STALE')
           ? 'El snapshot compartido contiene símbolos con datos stale o error.'
           : snapshot.freshness === 'STALE' ? 'El snapshot compartido está desactualizado.' : '');
@@ -1845,13 +1875,14 @@ function Workspace() {
           setManualScannerBarsBySymbol({});
           const loadedBarsBySymbol: Record<string, MarketBar[]> = {};
           let nextIndex = 0;
-          let completed = 0;
+          const completedSymbols: string[] = [];
           let failed = 0;
           const worker = async () => {
             while (active) {
               const index = nextIndex++;
               if (index >= savedUniverse.length) return;
               const candidate = savedUniverse[index];
+              if (active) setScannerAnalysisProgress(current => ({ ...current, phase: 'HISTORIAL', currentSymbol: candidate.symbol }));
               try {
                 const response = await fetch(`${apiUrl}/market/binance/candles/${encodeURIComponent(candidate.symbol)}?interval=1m&limit=481`, {
                   headers: auth.accessToken ? { Authorization: `Bearer ${auth.accessToken}` } : {},
@@ -1871,18 +1902,19 @@ function Workspace() {
                 failed += 1;
                 if (active) setManualScannerBarsBySymbol(current => ({ ...current, [candidate.symbol]: [] }));
               } finally {
-                completed += 1;
-                if (active) setScannerAnalysisProgress({ completed, total: savedUniverse.length });
+                completedSymbols.push(candidate.symbol);
+                if (active) setScannerAnalysisProgress({ completed: completedSymbols.length, total: savedUniverse.length, phase: 'HISTORIAL', currentSymbol: undefined, completedSymbols: [...completedSymbols] });
               }
             }
           };
           await Promise.all(Array.from({ length: Math.min(4, savedUniverse.length) }, () => worker()));
           if (active && manualScanMode === 'automatic') {
             const optimizedTargets: Record<string, number> = {};
-            setScannerAnalysisProgress({ completed: 0, total: savedUniverse.length });
-            let optimizedCount = 0;
+            setScannerAnalysisProgress({ completed: 0, total: savedUniverse.length, phase: 'TP AUTO', currentSymbol: undefined, completedSymbols: [] });
+            const optimizedSymbols: string[] = [];
             for (const candidate of savedUniverse) {
               const bars = loadedBarsBySymbol[candidate.symbol] ?? [];
+              if (active) setScannerAnalysisProgress({ completed: optimizedSymbols.length, total: savedUniverse.length, phase: 'TP AUTO', currentSymbol: candidate.symbol, completedSymbols: [...optimizedSymbols] });
               if (bars.length > manualTrackerEffectivePeriod) {
                 const result = await optimizeManualTrackerTarget(
                   bars,
@@ -1893,8 +1925,8 @@ function Workspace() {
                 );
                 optimizedTargets[candidate.symbol] = result.targetPercent;
               }
-              optimizedCount += 1;
-              if (active) setScannerAnalysisProgress({ completed: optimizedCount, total: savedUniverse.length });
+              optimizedSymbols.push(candidate.symbol);
+              if (active) setScannerAnalysisProgress({ completed: optimizedSymbols.length, total: savedUniverse.length, phase: 'TP AUTO', currentSymbol: undefined, completedSymbols: [...optimizedSymbols] });
             }
             if (active && Object.keys(optimizedTargets).length) {
               setManualTrackerTargetsBySymbol(current => {
@@ -1905,12 +1937,15 @@ function Workspace() {
               localStorage.setItem('helloworld-manual-tracker-tp-percent', String(optimizedTargets[symbol] ?? manualTrackerFallbackTargetRef.current));
             }
           }
+          if (active && manualScanMode === 'manual') setScannerAnalysisProgress({ completed: savedUniverse.length, total: savedUniverse.length, phase: 'COMPLETADO', currentSymbol: undefined, completedSymbols: savedUniverse.map(candidate => candidate.symbol) });
+          if (active && manualScanMode === 'automatic') setScannerAnalysisProgress(current => ({ ...current, phase: 'COMPLETADO', currentSymbol: undefined }));
           if (active && failed > 0) setActiveMarketError(`Tracker Manual: no se pudo cargar el historial de ${failed} de ${savedUniverse.length} símbolos.`);
         }
       } catch (error) {
         if (active) {
           const message = error instanceof Error ? error.message : 'No se pudo completar el scan.';
           const lastSnapshot = scannerLastScannedAtRef.current;
+          setScannerAnalysisProgress(current => ({ ...current, phase: 'ERROR', currentSymbol: undefined }));
           if (lastSnapshot != null && Date.now() / 1000 - lastSnapshot > 180) setScannerSnapshotFreshness('STALE');
           setActiveMarketError(message);
         }
@@ -4406,7 +4441,7 @@ function Workspace() {
   const scannerProfileStage = scannerProfiling.stages[0];
   const scannerProfilingLabel = scannerAnalysisProgress.total > 0
     ? activeMarketLoading
-      ? `SCANNER · ANALIZANDO ${scannerAnalysisProgress.total} SÍMBOLOS`
+      ? `SCANNER · ${scannerAnalysisProgress.phase ?? 'ANALIZANDO'} ${scannerAnalysisProgress.completed}/${scannerAnalysisProgress.total}${scannerAnalysisProgress.currentSymbol ? ` · ${scannerAnalysisProgress.currentSymbol}` : ''}`
       : `ANÁLISIS ${scannerAnalysisProgress.completed}/${scannerAnalysisProgress.total} · ${scannerProfileStage ? `${scannerProfileStage.stage} ${scannerProfileStage.lastMs.toFixed(0)}ms` : 'midiendo…'}`
     : scannerProfileStage ? `${scannerProfileStage.stage} ${scannerProfileStage.lastMs.toFixed(0)}ms` : 'PROFILING listo';
   const scannerRowsForTable = [...scannerCardSymbols].map(candidate => ({ candidate, analysis: scannerAnalysisBySymbol[candidate.symbol] })).sort((left, right) => {
@@ -4482,7 +4517,8 @@ function Workspace() {
   }, { value: 0, count: 0 });
   const scannerResultsTable = showTracker && broker === 'binance' ? <details className="scanner-results-panel"><summary>Scan compartido · SNAPSHOT {scannerTableSnapshotHours}H / FORWARD {scannerTableEvaluationHours}H · {scannerSnapshotFreshness} · {scannerSnapshotTimeLabel} · {scannerRowsForTable.length} símbolos · FWD {scannerTotals.operations} ops / {scannerTotals.wins} wins / {scannerTotals.losses} losses</summary><div className="scanner-results-scroll"><table className="scanner-results-table"><thead><tr><th>Símbolo</th><th>Estado</th><th>{scannerSortButton('TP snapshot', 'tp_optimal_percent')}</th><th>{scannerSortButton('Ops snapshot', 'operations')}</th><th>{scannerSortButton('USD snapshot', 'snapshot_final_result_usdt')}</th><th>{scannerSortButton('Ops forward', 'forward_operations' as ScannerSortKey)}</th><th>W / L forward</th><th>{scannerSortButton('USD forward', 'final_result_usdt')}</th></tr></thead><tbody>{scannerRowsForTable.map(({ candidate, analysis }) => { const snapshotPnl = analysis?.snapshot_final_result_usdt ?? analysis?.snapshot?.final_result_usdt; const forwardPnl = analysis?.forward_final_result_usdt ?? analysis?.final_result_usdt; return <tr key={candidate.symbol} className={candidate.symbol === symbol ? 'scanner-table-active' : ''}><td><button type="button" className="scanner-table-symbol" onClick={() => { setLabRecommendations(null); setSymbol(candidate.symbol); }}>{candidate.symbol}</button></td><td>{analysis?.status ?? (candidate.symbol === runningWorkerSymbol ? 'WORKER ACTIVO' : 'ANALYZING')}</td><td>{analysis?.tp_optimal_percent != null ? `${analysis.tp_optimal_percent.toFixed(2)}%` : '—'}</td><td>{analysis?.snapshot?.operations ?? analysis?.snapshot_operations ?? '—'}</td><td className={snapshotPnl != null ? snapshotPnl >= 0 ? 'scanner-table-positive' : 'scanner-table-negative' : ''}>{snapshotPnl != null ? `${snapshotPnl >= 0 ? '+' : ''}${snapshotPnl.toFixed(2)}` : '—'}</td><td>{analysis?.forward?.operations ?? analysis?.forward_operations ?? analysis?.operations ?? '—'}</td><td>{analysis?.forward ? `${analysis.forward.wins} / ${analysis.forward.losses}` : `${analysis?.wins ?? '—'} / ${analysis?.losses ?? '—'}`}</td><td className={forwardPnl != null ? forwardPnl >= 0 ? 'scanner-table-positive' : 'scanner-table-negative' : ''}>{forwardPnl != null ? `${forwardPnl >= 0 ? '+' : ''}${forwardPnl.toFixed(2)}` : '—'}</td></tr>; })}</tbody><tfoot><tr><th colSpan={2}>Totales</th><td colSpan={2}>Snapshot · {scannerNetResult.symbols} símbolos</td><td className={scannerNetResult.snapshot >= 0 ? 'scanner-table-positive' : 'scanner-table-negative'}>{scannerNetResult.symbols ? `${scannerNetResult.snapshot >= 0 ? '+' : ''}${scannerNetResult.snapshot.toFixed(2)}` : '—'}</td><td colSpan={2}>{activeMarketLoading ? 'Actualizando las ventanas…' : `${scannerAnalysisProgress.completed}/${scannerAnalysisProgress.total} analizados`}</td><td className={scannerNetResult.value >= 0 ? 'scanner-table-positive' : 'scanner-table-negative'}>{scannerNetResult.symbols ? `${scannerNetResult.value >= 0 ? '+' : ''}${scannerNetResult.value.toFixed(2)}` : '—'}</td></tr></tfoot></table></div></details> : null;
   const scannerStatusBar = showTracker && broker === 'binance' ? <div className="header-market-scanner" aria-label="Market scanner Binance"><div className="scanner-topline"><small className="scanner-profiling" title={`Tiempo total del ciclo: ${scannerProfiling.totalMs.toFixed(0)}ms`}>{scannerProfilingLabel}</small><label className="scanner-window-control"><span>VENTANA</span><select aria-label="Horas de cada ventana del scanner" value={scannerWindowHours} disabled={activeMarketLoading} onChange={event => setScannerWindowHours(Math.max(1, Math.min(8, Number(event.target.value) || 8)))}>{Array.from({ length: 8 }, (_, index) => index + 1).map(hours => <option key={hours} value={hours}>{hours}h</option>)}</select></label><button type="button" className="scanner-refresh-button" disabled={activeMarketLoading} aria-label="Volver a ejecutar el scan compartido" title="Ejecuta manualmente el snapshot y el forward; se publica para Telegram" onClick={() => { manualScanModeRef.current = null; setScannerRefreshRequest(value => value + 1); }}>{activeMarketLoading ? "ANALIZANDO" : "↻ SCAN"}</button><small className="scanner-last-scan" title={scannerLastScanTitle}>ÚLTIMO SCAN · {scannerSnapshotTimeLabel}</small>{runningWorkerSymbol && <small className="scanner-running-symbol" title={`Worker ${productionWorkerStatus?.mode ?? 'paper'} · ${productionWorkerStatus?.status ?? 'RUNNING'}`}>▶ WORKER · {runningWorkerSymbol}</small>}</div><article className={`scanner-total-card ${scannerNetResult.value >= 0 ? 'scanner-total-positive' : 'scanner-total-negative'}`} aria-label={`Resultado de snapshot y forward para ${scannerNetResult.symbols} símbolos`} title="Suma neta de resultados históricos; Snapshot es ajuste y Forward es evaluación con parámetros congelados. Excluye PNL flotante del worker"><small>SNAPSHOT · TOTAL</small><strong className={scannerNetResult.snapshot >= 0 ? 'scanner-metric-positive' : 'scanner-metric-negative'}>{scannerNetResult.symbols ? `${scannerNetResult.snapshot >= 0 ? '+' : ''}${scannerNetResult.snapshot.toFixed(2)}` : '—'} USDT</strong><small>FORWARD · TOTAL</small><strong className={scannerNetResult.value >= 0 ? 'scanner-metric-positive' : 'scanner-metric-negative'}>{scannerNetResult.symbols ? `${scannerNetResult.value >= 0 ? '+' : ''}${scannerNetResult.value.toFixed(2)}` : '—'} USDT</strong><em>{scannerNetResult.symbols}/{scannerRowsForTable.length} símbolos</em></article>{scannerCardsByResult.map(candidate => { const analysis = scannerAnalysisBySymbol[candidate.symbol]; const workerOnSymbol = runningWorkerSymbol === candidate.symbol.toUpperCase(); const activeParameters = workerOnSymbol && productionWorkerStatus?.adaptive_parameters ? { ...productionWorkerStatus.adaptive_parameters, source: 'WORKER' } : analysis?.active_parameters; const snapshotResult = analysis?.snapshot_final_result_usdt ?? analysis?.snapshot?.final_result_usdt ?? null; const forwardResult = analysis?.forward_final_result_usdt ?? analysis?.final_result_usdt ?? null; const resultClass = forwardResult == null ? '' : forwardResult > 0 ? 'scanner-result-positive' : forwardResult < 0 ? 'scanner-result-negative' : ''; const scannerTitle = analysis?.status === 'ERROR' ? `ERROR del scanner: no se pudo completar el análisis. Se reintentará en el próximo ciclo. ${analysis.error ?? ''}` : `SNAPSHOT ${snapshotResult == null ? '—' : `${snapshotResult >= 0 ? '+' : ''}${snapshotResult.toFixed(2)} USDT`} · FORWARD ${forwardResult == null ? '—' : `${forwardResult >= 0 ? '+' : ''}${forwardResult.toFixed(2)} USDT`} · TP ${analysis?.tp_optimal_percent?.toFixed(2) ?? '—'}% · MINROE ${analysis?.loss_limit_percent?.toFixed(2) ?? '—'}% · N ${activeParameters?.tracker_period ?? analysis?.tracker_period ?? trackerPeriod}${workerOnSymbol ? ` · WORKER ${activeParameters?.source ?? 'ACTIVO'} · v${activeParameters?.parameter_version ?? 0}` : ''}`; const windowMinutes = analysis?.bars ? Math.min(((analysis.snapshot_hours ?? WALK_FORWARD_SNAPSHOT_HOURS) + (analysis.evaluation_hours ?? WALK_FORWARD_EVALUATION_HOURS)) * 60, analysis.bars) : null; const windowLabel = windowMinutes == null ? '—' : `${Math.floor(windowMinutes / 60) ? `${Math.floor(windowMinutes / 60)}h` : ''}${windowMinutes % 60 ? `${windowMinutes % 60}m` : ''}` || '1m'; const windowTitle = `Ventanas contiguas: snapshot ${analysis?.snapshot_hours ?? WALK_FORWARD_SNAPSHOT_HOURS}h + forward ${analysis?.evaluation_hours ?? WALK_FORWARD_EVALUATION_HOURS}h`; return <article key={candidate.symbol} className={`header-market-item ${candidate.symbol === symbol ? 'active' : ''} ${resultClass} ${workerOnSymbol ? 'scanner-worker-active' : ''}`}><button type="button" className="header-market-main" title={scannerTitle} onClick={() => { setLabRecommendations(null); setSymbol(candidate.symbol); }}><b>{candidate.symbol}</b>{workerOnSymbol && <em className="scanner-worker-badge" aria-label="Worker ejecutando para este símbolo" title="Este símbolo tiene el worker activo">▶ RUNNING</em>}<small className="scanner-metrics"><i className={snapshotResult == null ? '' : snapshotResult >= 0 ? 'scanner-metric-positive' : 'scanner-metric-negative'} title="Resultado neto de la ventana de ajuste">SNAP {snapshotResult != null ? `${snapshotResult >= 0 ? '+' : ''}${snapshotResult.toFixed(2)}` : '—'} USD</i><i className={forwardResult == null ? '' : forwardResult >= 0 ? 'scanner-metric-positive' : 'scanner-metric-negative'} title="Resultado neto de evaluación con TP y SL limitado congelados">FWD {forwardResult != null ? `${forwardResult >= 0 ? '+' : ''}${forwardResult.toFixed(2)}` : '—'} USD</i><i title="Operaciones cerradas en el forward">FWD OPS {analysis?.forward?.operations ?? analysis?.forward_operations ?? analysis?.operations ?? '—'} · {analysis?.forward?.wins ?? analysis?.forward_wins ?? analysis?.wins ?? 0}W/{analysis?.forward?.losses ?? analysis?.forward_losses ?? analysis?.losses ?? 0}L</i><i title="Duración promedio de las operaciones forward">⌀ FWD {analysis?.forward?.average_duration_minutes != null ? `${analysis.forward.average_duration_minutes.toFixed(1)}m` : analysis?.average_duration_minutes != null ? `${analysis.average_duration_minutes.toFixed(1)}m` : '—'}</i><i title={windowTitle}>HISTORIAL {windowLabel}</i><i title="Balance máximo del forward">MAX BAL {analysis?.forward?.max_balance != null ? `${analysis.forward.max_balance.toFixed(2)} USDT` : analysis?.max_balance != null ? `${analysis.max_balance.toFixed(2)} USDT` : '—'}</i><i title="Balance mínimo del forward">MIN BAL {analysis?.forward?.min_balance != null ? `${analysis.forward.min_balance.toFixed(2)} USDT` : analysis?.min_balance != null ? `${analysis.min_balance.toFixed(2)} USDT` : '—'}</i></small></button></article>; })}</div> : null;
-  const manualScannerChips = showManualTracker && broker === 'binance' ? <div className="manual-scanner-status"><button type="button" className="manual-scanner-run" disabled={activeMarketLoading} aria-label="Volver a escanear liquidez y recalcular Tracker Manual en todos los símbolos" title="Vuelve a consultar liquidez, reemplaza el universo y ejecuta el Tracker Manual con los parámetros actuales" onClick={() => { manualScanModeRef.current = 'manual'; setScannerRefreshRequest(value => value + 1); }}>{activeMarketLoading ? `ESCANEANDO ${scannerAnalysisProgress.completed}/${scannerAnalysisProgress.total}` : '↻ SCAN MANUAL'}</button><button type="button" className="manual-scanner-run manual-scanner-run-auto" disabled={activeMarketLoading} aria-label="Buscar automáticamente el mejor TP por símbolo" title="Prueba TP de 0.05% a 20% en incrementos de 0.05% con el historial cargado y guarda el mejor resultado para cada símbolo" onClick={() => { manualScanModeRef.current = 'automatic'; setScannerRefreshRequest(value => value + 1); }}>{activeMarketLoading ? `OPTIMIZANDO ${scannerAnalysisProgress.completed}/${scannerAnalysisProgress.total}` : '✦ SCAN AUTO'}</button><div className="manual-scanner-chips" aria-label="Resultados del Tracker Manual por símbolo">{manualScannerCardsByResult.map(candidate => { const candidateSymbol = candidate.symbol; const result = manualScannerResultsBySymbol[candidateSymbol]; const resultClass = result == null ? '' : result.pnl > 0 ? 'manual-scanner-chip-positive' : result.pnl < 0 ? 'manual-scanner-chip-negative' : ''; const resultLabel = result == null ? '—' : `${result.pnl >= 0 ? '+' : ''}${result.pnl.toFixed(2)}`; const title = result == null ? `${candidateSymbol} · Ejecuta SCAN MANUAL para cargar su ventana` : `${candidateSymbol} · Tracker Manual: ${result.pnl >= 0 ? '+' : ''}${result.pnl.toFixed(4)} USDT · ${result.operations} ops (${result.wins}W/${result.losses}L) · TP ${result.targetPercent.toFixed(2)}% · SL −${manualTrackerStopPercent.toFixed(2)}% · N ${manualTrackerEffectivePeriod} · ${result.bars} velas cerradas`; return <button key={candidateSymbol} type="button" className={`manual-scanner-chip ${candidateSymbol === symbol ? 'manual-scanner-chip-active' : ''} ${resultClass}`} aria-pressed={candidateSymbol === symbol} title={title} onClick={() => { setLabRecommendations(null); setSymbol(candidateSymbol); }}><b>{candidateSymbol}</b><span>{resultLabel}</span></button>; })}</div></div> : null;
+  const manualScanProgressDetails = `${scannerAnalysisProgress.phase ?? 'SCAN'} · ${scannerAnalysisProgress.completed}/${scannerAnalysisProgress.total}${scannerAnalysisProgress.currentSymbol ? ` · ${scannerAnalysisProgress.currentSymbol}` : ''}${scannerAnalysisProgress.completedSymbols?.length ? ` · CONTADOS: ${scannerAnalysisProgress.completedSymbols.join(', ')}` : ''}`;
+  const manualScannerChips = showManualTracker && broker === 'binance' ? <div className="manual-scanner-status"><button type="button" className="manual-scanner-run" disabled={activeMarketLoading} aria-label="Volver a escanear liquidez y recalcular Tracker Manual en todos los símbolos" title={`Vuelve a consultar liquidez y ejecuta el Tracker Manual. ${manualScanProgressDetails}`} onClick={() => { manualScanModeRef.current = 'manual'; setScannerAnalysisProgress({ completed: 0, total: 0, phase: 'LIQUIDEZ', completedSymbols: [] }); setScannerRefreshRequest(value => value + 1); }}>{activeMarketLoading ? `${scannerAnalysisProgress.phase ?? 'SCAN'} ${scannerAnalysisProgress.completed}/${scannerAnalysisProgress.total}${scannerAnalysisProgress.currentSymbol ? ` · ${scannerAnalysisProgress.currentSymbol}` : ''}` : '↻ SCAN MANUAL'}</button><button type="button" className="manual-scanner-run manual-scanner-run-auto" disabled={activeMarketLoading} aria-label="Buscar automáticamente el mejor TP por símbolo" title={`Prueba TP de 0.05% a 20% en pasos de 0.05%, guarda el mejor por símbolo. ${manualScanProgressDetails}`} onClick={() => { manualScanModeRef.current = 'automatic'; setScannerAnalysisProgress({ completed: 0, total: 0, phase: 'LIQUIDEZ', completedSymbols: [] }); setScannerRefreshRequest(value => value + 1); }}>{activeMarketLoading ? `${scannerAnalysisProgress.phase ?? 'TP AUTO'} ${scannerAnalysisProgress.completed}/${scannerAnalysisProgress.total}${scannerAnalysisProgress.currentSymbol ? ` · ${scannerAnalysisProgress.currentSymbol}` : ''}` : '✦ SCAN AUTO'}</button><div className="manual-scanner-chips" aria-label="Resultados del Tracker Manual por símbolo">{manualScannerCardsByResult.map(candidate => { const candidateSymbol = candidate.symbol; const result = manualScannerResultsBySymbol[candidateSymbol]; const counted = scannerAnalysisProgress.completedSymbols?.includes(candidateSymbol) ?? false; const processing = scannerAnalysisProgress.currentSymbol === candidateSymbol && activeMarketLoading; const resultClass = result == null ? '' : result.pnl > 0 ? 'manual-scanner-chip-positive' : result.pnl < 0 ? 'manual-scanner-chip-negative' : ''; const resultLabel = result == null ? '—' : `${result.pnl >= 0 ? '+' : ''}${result.pnl.toFixed(2)}`; const title = `${result == null ? `${candidateSymbol} · Ejecuta SCAN MANUAL para cargar su ventana` : `${candidateSymbol} · Tracker Manual: ${result.pnl >= 0 ? '+' : ''}${result.pnl.toFixed(4)} USDT · ${result.operations} ops (${result.wins}W/${result.losses}L) · TP ${result.targetPercent.toFixed(2)}% · SL −${manualTrackerStopPercent.toFixed(2)}% · N ${manualTrackerEffectivePeriod} · ${result.bars} velas cerradas`}${counted ? ' · CONTABILIZADO' : ''}${processing ? ' · EN PROCESO' : ''}`; return <button key={candidateSymbol} type="button" className={`manual-scanner-chip ${candidateSymbol === symbol ? 'manual-scanner-chip-active' : ''} ${resultClass} ${counted ? 'manual-scanner-chip-counted' : ''} ${processing ? 'manual-scanner-chip-processing' : ''}`} aria-pressed={candidateSymbol === symbol} title={title} onClick={() => { setLabRecommendations(null); setSymbol(candidateSymbol); }}><b>{candidateSymbol}</b><span>{resultLabel}</span>{counted && <em aria-label="Contabilizado">✓</em>}{processing && <em aria-label="En proceso">…</em>}</button>; })}</div></div> : null;
   const manualTrackerStatusBar = showManualTracker ? manualScannerChips : null;
   const statusBarMessage = paperSyncError || binanceLeverageError || activeMarketError || productionWorkerError;
   const binanceReady = binanceOnline;
